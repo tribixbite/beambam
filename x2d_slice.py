@@ -43,6 +43,64 @@ from xml.etree import ElementTree as ET
 X2D_ROOT = Path(os.environ.get("X2D_ROOT", "/data/data/com.termux/files/home/git/x2d"))
 DEFAULT_TEMPLATE = X2D_ROOT / "rumi_frame.gcode.3mf"
 BS_BIN = X2D_ROOT / "bs-bionic" / "build" / "src" / "bambu-studio"
+COLOR_CODES_JSON = (X2D_ROOT / "bs-bionic" / "resources" / "profiles"
+                    / "BBL" / "filament" / "filaments_color_codes.json")
+
+
+def resolve_color_name(spec: str) -> str:
+    """Accept either a #RRGGBB / #RRGGBBAA hex literal or a Bambu color name
+    (e.g. "Gold", "PLA Silk Gold", "GFA05 Gold") and return a hex string.
+
+    Bambu's filaments_color_codes.json maps `fila_color_name.en` → hex per
+    `fila_id` × `fila_type` × name. Accepted query forms:
+      - "Gold"                   → first match by name (English)
+      - "PLA Silk Gold"          → match by type+name
+      - "GFA05 Gold"             → match by fila_id+name
+    Case-insensitive. Falls through to the literal hex if it parses as one.
+    """
+    import json
+    import re as _re
+
+    s = spec.strip()
+    # Already a hex literal? Pass through.
+    if s.startswith("#"):
+        body = s.lstrip("#")
+        if _re.fullmatch(r"[0-9A-Fa-f]{6}([0-9A-Fa-f]{2})?", body):
+            return s
+    # Try the color-codes JSON
+    if not COLOR_CODES_JSON.exists():
+        raise ValueError(f"--color not a hex literal and {COLOR_CODES_JSON} "
+                         f"missing for name lookup; got {spec!r}")
+    data = json.loads(COLOR_CODES_JSON.read_text())["data"]
+    sl = s.lower()
+    candidates = []
+    for entry in data:
+        nm = entry.get("fila_color_name", {}).get("en", "")
+        ftype = entry.get("fila_type", "")
+        fid = entry.get("fila_id", "")
+        cols = entry.get("fila_color", [])
+        if not (nm and cols):
+            continue
+        full = f"{fid} {ftype} {nm}".lower()
+        # Build a flexible token-set match so "GFA05 Gold" matches
+        # "GFA05 PLA Silk Gold", "PLA Silk Gold" matches "GFA05 PLA Silk Gold",
+        # and bare "Gold" matches the first PLA-Basic Gold.
+        toks = sl.split()
+        if sl == nm.lower():
+            candidates.append((0, fid, ftype, nm, cols[0]))           # exact name
+        elif all(t in full for t in toks):
+            candidates.append((1, fid, ftype, nm, cols[0]))           # all tokens present
+        elif sl in full:
+            candidates.append((2, fid, ftype, nm, cols[0]))           # contiguous subset
+    if not candidates:
+        raise ValueError(f"no Bambu color matches {spec!r}; try one of: "
+                         f"Gold, Silver, Bronze, Copper, Champagne, "
+                         f"or e.g. 'PLA Silk Gold' / 'GFA05 Gold'")
+    candidates.sort()
+    rank, fid, ftype, nm, hx = candidates[0]
+    print(f"[x2d_slice] color {spec!r} → {hx} ({fid} {ftype} {nm})",
+          file=sys.stderr)
+    return hx
 
 # 3MF model XML namespace
 NS_3MF = "http://schemas.microsoft.com/3dmanufacturing/core/2015/02"
@@ -174,8 +232,10 @@ def patch_model_settings_for_color(xml_bytes: bytes, color: str) -> bytes:
     # Simple regex pass — model_settings.config schema is shallow XML.
     import re as _re
     new_color = color.lstrip("#").upper()
-    if not _re.fullmatch(r"[0-9A-F]{6}", new_color):
-        raise ValueError(f"--color must be #RRGGBB, got {color!r}")
+    # Accept #RRGGBB or #RRGGBBAA — Bambu's catalogue uses the 8-char form.
+    if not _re.fullmatch(r"[0-9A-F]{6}([0-9A-F]{2})?", new_color):
+        raise ValueError(f"--color must be #RRGGBB[AA], got {color!r}")
+    new_color = new_color[:6]
     # Replace existing extruder_color metadata if any, else add as a
     # part-level attribute. Use the simplest approach: find any
     # <metadata key="extruder_filament_color" ...> and update value.
@@ -290,8 +350,10 @@ def main() -> int:
                    help="uniform scale factor applied to the STL before slicing "
                         "(baked into the 3MF build-item transform; 1.0 = original)")
     p.add_argument("--color",
-                   help="primary filament color as #RRGGBB; patches the template's "
-                        "filament_colour[0] in project_settings.config")
+                   help="primary filament color: either #RRGGBB hex or a Bambu "
+                        "color name (e.g. 'Gold', 'PLA Silk Gold', 'GFA05 Gold'). "
+                        "Names resolve via filaments_color_codes.json — use any "
+                        "fila_color_name.en value from the catalogue.")
     p.add_argument("--keep-graft", action="store_true",
                    help="keep the intermediate grafted 3mf for debugging")
     args = p.parse_args()
@@ -306,10 +368,12 @@ def main() -> int:
         print(f"bambu-studio not found at {BS_BIN}", file=sys.stderr)
         return 2
 
+    color_hex = resolve_color_name(args.color) if args.color else None
+
     with tempfile.TemporaryDirectory(prefix="x2d_slice_") as td:
         graft = Path(td) / "graft.gcode.3mf"
         graft_stl_into_template(args.template, args.stl, graft,
-                                 scale=args.scale, color=args.color)
+                                 scale=args.scale, color=color_hex)
         if args.keep_graft:
             kept = args.out.with_suffix(".graft.3mf")
             shutil.copy2(graft, kept)
