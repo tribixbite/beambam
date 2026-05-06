@@ -1,8 +1,8 @@
 diff --git a/src/slic3r/GUI/MainFrame.cpp b/src/slic3r/GUI/MainFrame.cpp
-index f8dd9e2..f3cb2d6 100644
---- a/src/slic3r/GUI/MainFrame.cpp
-+++ b/src/slic3r/GUI/MainFrame.cpp
-@@ -301,6 +301,28 @@ DPIFrame(NULL, wxID_ANY, "", wxDefaultPosition, wxDefaultSize, BORDERLESS_FRAME_
+index 0000000..0000001 100644
+--- a/src/slic3r/GUI/MainFrame.cpp	2026-04-20 03:03:29.505983014 -0400
++++ b/src/slic3r/GUI/MainFrame.cpp	2026-05-05 19:40:05.102981337 -0400
+@@ -301,6 +301,52 @@
      SetAcceleratorTable(accel);
  #endif // _WIN32
  
@@ -10,12 +10,24 @@ index f8dd9e2..f3cb2d6 100644
 +    // Lets phone-portrait users hide the sidebar entirely without trips to
 +    // the View menu (which itself doesn't always render right under
 +    // termux-x11). Re-shows on the same chord.
++    //
++    // x2d/termux #105 — Ctrl+R fires the Slice-plate action. The
++    // KBShortcutsDialog (KBShortcutsDialog.cpp:184) advertises Ctrl+R as
++    // the slice-plate shortcut, but no MainFrame accelerator was actually
++    // bound — so under termux-x11 (where the SideButton at the topbar's
++    // right edge is clipped past the 896-px X server width) there was no
++    // way to invoke slicing without a working pixel-level click. This
++    // entry posts a wxEVT_BUTTON to m_slice_btn so its existing handler
++    // runs the same code path as a real click. Ctrl+P does the same for
++    // the Print-plate button (also clipped on narrow screens).
 +    {
-+        wxAcceleratorEntry sidebar_toggle_entry;
-+        sidebar_toggle_entry.Set(wxACCEL_CTRL | wxACCEL_SHIFT, (int)'L',
-+                                 wxID_HIGHEST + 9979);
-+        wxAcceleratorTable sidebar_accel(1, &sidebar_toggle_entry);
-+        SetAcceleratorTable(sidebar_accel);
++        wxAcceleratorEntry entries[3];
++        entries[0].Set(wxACCEL_CTRL | wxACCEL_SHIFT, (int)'L',
++                       wxID_HIGHEST + 9979);
++        entries[1].Set(wxACCEL_CTRL, (int)'R', wxID_HIGHEST + 9980);
++        entries[2].Set(wxACCEL_CTRL, (int)'P', wxID_HIGHEST + 9981);
++        wxAcceleratorTable accel(3, entries);
++        SetAcceleratorTable(accel);
 +        Bind(wxEVT_MENU, [this](wxCommandEvent&) {
 +            if (!m_plater) return;
 +            auto& sb = m_plater->sidebar();
@@ -26,18 +38,32 @@ index f8dd9e2..f3cb2d6 100644
 +            }
 +            m_plater->Layout();
 +        }, wxID_HIGHEST + 9979);
++        Bind(wxEVT_MENU, [this](wxCommandEvent&) {
++            if (!m_slice_btn) return;
++            wxCommandEvent ev(wxEVT_BUTTON, m_slice_btn->GetId());
++            ev.SetEventObject(m_slice_btn);
++            m_slice_btn->GetEventHandler()->ProcessEvent(ev);
++        }, wxID_HIGHEST + 9980);
++        Bind(wxEVT_MENU, [this](wxCommandEvent&) {
++            if (!m_print_btn) return;
++            wxCommandEvent ev(wxEVT_BUTTON, m_print_btn->GetId());
++            ev.SetEventObject(m_print_btn);
++            m_print_btn->GetEventHandler()->ProcessEvent(ev);
++        }, wxID_HIGHEST + 9981);
 +    }
 +
      // BBS
      //wxAcceleratorEntry entries[13];
      //int index = 0;
-@@ -447,10 +469,40 @@ DPIFrame(NULL, wxID_ANY, "", wxDefaultPosition, wxDefaultSize, BORDERLESS_FRAME_
+@@ -447,10 +493,40 @@
      // BBS
      Fit();
  
 -    const wxSize min_size = wxGetApp().get_min_size(); //wxSize(76*wxGetApp().em_unit(), 49*wxGetApp().em_unit());
 +    wxSize min_size = wxGetApp().get_min_size(); //wxSize(76*wxGetApp().em_unit(), 49*wxGetApp().em_unit());
-+
+ 
+-    SetMinSize(min_size/*wxSize(760, 490)*/);
+-    SetSize(wxSize(FromDIP(1200), FromDIP(800)));
 +    // Termux + small portrait displays: BambuStudio's hard-coded 1000x600
 +    // floor exceeds the X server's actual screen on phones, which pushes
 +    // the topbar (with its max/min/close buttons) off the right edge so the
@@ -52,9 +78,7 @@ index f8dd9e2..f3cb2d6 100644
 +        min_size.x = std::min(min_size.x, disp_size.GetWidth());
 +        min_size.y = std::min(min_size.y, disp_size.GetHeight());
 +    }
- 
--    SetMinSize(min_size/*wxSize(760, 490)*/);
--    SetSize(wxSize(FromDIP(1200), FromDIP(800)));
++
 +    SetMinSize(min_size);
 +    // x2d/termux #88 — was init_size 1200x800 capped to display. On a phone
 +    // display (1080x2340) the cap shrinks to 1080x2340 but the actual window
@@ -75,7 +99,7 @@ index f8dd9e2..f3cb2d6 100644
  
      Layout();
  
-@@ -725,6 +777,45 @@ DPIFrame(NULL, wxID_ANY, "", wxDefaultPosition, wxDefaultSize, BORDERLESS_FRAME_
+@@ -725,6 +801,45 @@
          if (manger) {
              evt.IsShown() ? manger->start_refresher() : manger->stop_refresher();
          }
@@ -121,7 +145,7 @@ index f8dd9e2..f3cb2d6 100644
      });
      Bind(wxEVT_IDLE, ([this](wxIdleEvent &e) {
               if (m_topbar && m_plater) {
-@@ -1273,6 +1364,40 @@ void MainFrame::init_tabpanel()
+@@ -1273,6 +1388,40 @@
                  wxPostEvent(m_plater, SimpleEvent(EVT_GLVIEWTOOLBAR_PREVIEW));
                  m_param_panel->OnActivate();
              }
@@ -162,7 +186,7 @@ index f8dd9e2..f3cb2d6 100644
          }
          //else if (panel == m_param_panel)
          //    m_param_panel->OnActivate();
-@@ -1817,11 +1942,27 @@ wxBoxSizer* MainFrame::create_side_tools()
+@@ -1817,11 +1966,27 @@
      sizer->Add(FromDIP(4), 0, 0, 0, 0);
      sizer->Add(split_line_icon, 0, wxALIGN_CENTER, 0);
      sizer->Add(FromDIP(10), 0, 0, 0, 0);
