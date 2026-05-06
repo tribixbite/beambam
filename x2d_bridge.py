@@ -625,20 +625,60 @@ def upload_file(creds: Creds, local_path: Path, remote_name: str | None = None) 
         sys.exit(f"file not found: {local_path}")
     if remote_name is None:
         remote_name = local_path.name
-    # Use SSLContext(PROTOCOL_TLS_CLIENT) — NOT create_default_context() —
-    # because the latter sets min_version=TLSv1_3 on this Python build and
-    # the X2D's FTP server's session-reuse handshake hits "INVALID_ALERT"
-    # under TLS 1.3 ticket reuse. The bare PROTOCOL_TLS_CLIENT negotiates
-    # TLSv1.2 which session-resumes cleanly. Same shape as lan_upload.py.
-    ssl_ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    # X2D vsFTPd hits "INVALID_ALERT" with raw SSLContext(PROTOCOL_TLS_CLIENT)
+    # because that init path skips the system default cipher / extension
+    # config — vsFTPd's hello expects extensions Python's bare context
+    # doesn't advertise, and the resulting alert is unparseable.
+    # Use create_default_context() (matches the working baseline in
+    # runtime/network_shim/file_tunnel.py FileTunnelClient._make_ctx)
+    # then force TLSv1.2 to dodge the TLS 1.3 ticket-resume mismatch.
+    ssl_ctx = ssl.create_default_context()
     ssl_ctx.check_hostname = False
     ssl_ctx.verify_mode = ssl.CERT_NONE
-    ftp = _ImplicitFTPTLS(context=ssl_ctx)
-    ftp.connect(creds.ip, 990, timeout=15)
+    try:
+        ssl_ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+    except (AttributeError, ValueError):
+        pass
+    # Bypass _ImplicitFTPTLS' subclass entirely (its `sock` setter chain
+    # double-wraps / mismatches the welcome read on Python 3.12+, hitting
+    # INVALID_ALERT). Mirror the proven file_tunnel.py FileTunnelClient
+    # pattern: manually create the TCP socket, wrap_socket() it ONCE,
+    # inject directly into FTP_TLS, then drive the protocol.
+    import socket
+    from ftplib import FTP_TLS, FTP
+
+    class _FTP_TLS_Reuse(FTP_TLS):
+        """Force the data channel to share the control channel's TLS
+        session — vsFTPd 3.0.5 with `ssl_session_reuse=YES` (default)
+        rejects fresh TLS sessions on PASV connections."""
+        def ntransfercmd(self, cmd, rest=None):
+            conn, size = FTP.ntransfercmd(self, cmd, rest)
+            if self._prot_p:
+                conn = self.context.wrap_socket(
+                    conn,
+                    server_hostname=self.host,
+                    session=self.sock.session,
+                )
+            return conn, size
+
+    ftp = _FTP_TLS_Reuse(context=ssl_ctx)
+    ftp.set_pasv(True)
+    raw = socket.create_connection((creds.ip, 990), timeout=15)
+    ftp.sock = ssl_ctx.wrap_socket(raw, server_hostname=creds.ip)
+    ftp.sock.settimeout(15)
+    ftp.file = ftp.sock.makefile("r", encoding="utf-8")
+    ftp.host = creds.ip
+    ftp.port = 990
+    ftp.af = socket.AF_INET
+    ftp.timeout = 15
+    ftp.passiveserver = True
+    ftp.encoding = "utf-8"
+    ftp._prot_p = False
+    ftp.welcome = ftp.getresp()
     ftp.login(user="bblp", passwd=creds.code)
-    ftp.prot_p()  # TLS-encrypt the data channel as well
+    ftp.prot_p()
     with local_path.open("rb") as f:
-        ftp.storbinary(f"STOR {remote_name}", f)
+        ftp.storbinary(f"STOR {remote_name}", f, blocksize=32768)
     try:
         ftp.quit()
     except (OSError, ssl.SSLError, ftplib.error_perm):
