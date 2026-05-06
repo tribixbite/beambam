@@ -270,8 +270,101 @@ def patch_project_settings_for_color(json_bytes: bytes, color: str) -> bytes:
     return _json.dumps(data, indent=4).encode("utf-8")
 
 
+# curr_bed_type enum values per PrintConfig.cpp:1071-1078. Friendly aliases
+# accepted on the CLI map to the canonical enum value used in the JSON.
+BED_TYPE_VALUES = {
+    "cool":              "Cool Plate",
+    "engineering":       "Engineering Plate",
+    "high_temp":         "High Temp Plate",
+    "smooth_pei":        "High Temp Plate",
+    "pei":               "High Temp Plate",
+    "textured":          "Textured PEI Plate",
+    "textured_pei":      "Textured PEI Plate",
+    "supertack":         "Supertack Plate",
+    "super_tack":        "Supertack Plate",
+    "cool_plate_super":  "Supertack Plate",
+    "5":                 "Supertack Plate",   # BambuBedType enum value (#106)
+    "4":                 "Textured PEI Plate",
+    "3":                 "High Temp Plate",
+    "2":                 "Engineering Plate",
+    "1":                 "Cool Plate",
+}
+
+
+def resolve_bed_type(spec: str) -> str:
+    """Accept friendly bed-type names + the BambuBedType enum integers
+    (1..5) and return the canonical curr_bed_type enum string."""
+    if not spec:
+        return spec
+    s = spec.strip().lower().replace(" ", "_").replace("-", "_")
+    if s in BED_TYPE_VALUES:
+        return BED_TYPE_VALUES[s]
+    # Direct passthrough if already a canonical enum value.
+    canonicals = set(BED_TYPE_VALUES.values())
+    if spec in canonicals:
+        return spec
+    # Title-case match
+    title = spec.strip().title()
+    if title in canonicals:
+        return title
+    raise ValueError(
+        f"unknown bed type {spec!r}; try one of: {sorted(canonicals)} "
+        f"or numeric BambuBedType 1..5 (1=Cool, 2=Engineering, "
+        f"3=High Temp/Smooth PEI, 4=Textured PEI, 5=SuperTack)"
+    )
+
+
+def patch_project_settings_for_bed(json_bytes: bytes, bed_type: str) -> bytes:
+    """Set curr_bed_type in project_settings.config to a canonical enum
+    string. The slicer reads this when generating bed-temp gcode for
+    M104/M140 commands.
+
+    BS rejects the slice with rc=195 ("Plate N: <bed> does not support
+    filament 1") when the chosen bed's temp array is `['0']` for the
+    active filament. The temp arrays are per-filament-slot inside
+    project_settings.config — when the user picks SuperTack/Textured/
+    etc., bake in a sane PLA-compatible default so the slicer doesn't
+    bail. Values mirror what BS's GUI auto-fills when you check the
+    "I have this plate" box for PLA."""
+    import json as _json
+    data = _json.loads(json_bytes.decode("utf-8", errors="replace"))
+    data["curr_bed_type"] = bed_type
+
+    # Default initial-layer + ongoing-layer bed temps per plate type for
+    # PLA. Matches BS's filament profile defaults for Bambu PLA Basic.
+    PLA_BED_TEMPS = {
+        "Cool Plate":          ("35", "35"),
+        "Engineering Plate":   ("55", "55"),
+        "High Temp Plate":     ("55", "55"),
+        "Textured PEI Plate":  ("55", "55"),
+        "Supertack Plate":     ("35", "35"),
+    }
+    init, run = PLA_BED_TEMPS.get(bed_type, (None, None))
+    if init is None:
+        return _json.dumps(data, indent=4).encode("utf-8")
+
+    bed_keys = {
+        "Cool Plate":         ("cool_plate_temp_initial_layer",      "cool_plate_temp"),
+        "Engineering Plate":  ("eng_plate_temp_initial_layer",       "eng_plate_temp"),
+        "High Temp Plate":    ("hot_plate_temp_initial_layer",       "hot_plate_temp"),
+        "Textured PEI Plate": ("textured_plate_temp_initial_layer",  "textured_plate_temp"),
+        "Supertack Plate":    ("supertack_plate_temp_initial_layer", "supertack_plate_temp"),
+    }
+    init_key, run_key = bed_keys[bed_type]
+    # Each is a list keyed by filament slot index. Fill any zero-valued
+    # entry with the PLA default so multi-filament projects work too.
+    for k, v in ((init_key, init), (run_key, run)):
+        cur = data.get(k)
+        if isinstance(cur, list):
+            data[k] = [v if (str(x).strip() in ("", "0")) else x for x in cur]
+        else:
+            data[k] = [v]
+    return _json.dumps(data, indent=4).encode("utf-8")
+
+
 def graft_stl_into_template(template: Path, stl: Path, out: Path,
-                              scale: float = 1.0, color: str | None = None) -> None:
+                              scale: float = 1.0, color: str | None = None,
+                              bed_type: str | None = None) -> None:
     """Copy template 3MF, replace its 3D geometry with the STL's, and write
     to `out`. Preserves project_settings, machine, filament, etc.
 
@@ -313,8 +406,13 @@ def graft_stl_into_template(template: Path, stl: Path, out: Path,
                     if color:
                         data = patch_model_settings_for_color(data, color)
                     zout.writestr(name, data)
-                elif color and name == "Metadata/project_settings.config":
-                    zout.writestr(name, patch_project_settings_for_color(zin.read(name), color))
+                elif name == "Metadata/project_settings.config":
+                    data = zin.read(name)
+                    if color:
+                        data = patch_project_settings_for_color(data, color)
+                    if bed_type:
+                        data = patch_project_settings_for_bed(data, bed_type)
+                    zout.writestr(name, data)
                 else:
                     zout.writestr(name, zin.read(name))
 
@@ -354,6 +452,10 @@ def main() -> int:
                         "color name (e.g. 'Gold', 'PLA Silk Gold', 'GFA05 Gold'). "
                         "Names resolve via filaments_color_codes.json — use any "
                         "fila_color_name.en value from the catalogue.")
+    p.add_argument("--bed",
+                   help="curr_bed_type — one of 'cool', 'engineering', "
+                        "'high_temp' (Smooth PEI), 'textured', 'supertack', or "
+                        "the BambuBedType enum integer 1..5 (5 = SuperTack).")
     p.add_argument("--keep-graft", action="store_true",
                    help="keep the intermediate grafted 3mf for debugging")
     args = p.parse_args()
@@ -369,11 +471,15 @@ def main() -> int:
         return 2
 
     color_hex = resolve_color_name(args.color) if args.color else None
+    bed_type = resolve_bed_type(args.bed) if args.bed else None
+    if bed_type:
+        print(f"[x2d_slice] bed-type {args.bed!r} → {bed_type!r}", file=sys.stderr)
 
     with tempfile.TemporaryDirectory(prefix="x2d_slice_") as td:
         graft = Path(td) / "graft.gcode.3mf"
         graft_stl_into_template(args.template, args.stl, graft,
-                                 scale=args.scale, color=color_hex)
+                                 scale=args.scale, color=color_hex,
+                                 bed_type=bed_type)
         if args.keep_graft:
             kept = args.out.with_suffix(".graft.3mf")
             shutil.copy2(graft, kept)
