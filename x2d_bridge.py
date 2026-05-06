@@ -716,8 +716,8 @@ def start_print(client: X2DClient, gcode_filename: str, *,
                 ams_slot: int | list[int] = 0,
                 bed_levelling: bool = True, flow_cali: bool = False,
                 timelapse: bool = False, vibration_cali: bool = False,
-                bed_type: str = "textured_plate",
-                bed_temp: int = 65,
+                bed_type: str | None = None,
+                bed_temp: int | None = None,
                 local_path: Path | None = None) -> None:
     """Submit a project_file print command to the printer.
 
@@ -749,6 +749,32 @@ def start_print(client: X2DClient, gcode_filename: str, *,
     if local_path is None:
         local_path = Path.cwd() / gcode_filename
     md5_hex = _md5_of(local_path) if local_path.is_file() else ""
+
+    # Safety: derive bed_type / bed_temp from the .gcode.3mf when callers
+    # don't pass them. The pre-2026-05 defaults ("textured_plate" / 65 °C)
+    # would silently misheat SuperTack PLA (35 °C) or Cool Plate PLA
+    # (35 °C) — SuperTack's silicone-rubber surface degrades faster at
+    # sustained 60+ °C, and the firmware silently DROPS project_file
+    # commands when MQTT bed_type disagrees with the slice's
+    # curr_bed_type. The 3MF is the slicer's authoritative contract.
+    # Per code-review #5/#6 we no longer fall through to a hardcoded PLA
+    # bed-temp table — that masked malformed 3MFs and would have driven
+    # PETG-on-hot_plate at 55 °C instead of 80 °C, detaching mid-print.
+    # If we cannot derive AND the caller didn't supply, we REFUSE.
+    if bed_type is None or bed_temp is None:
+        if not local_path.is_file():
+            raise PrintRefusal(
+                f"start_print: bed_type/bed_temp not supplied AND no local "
+                f"3MF available at {local_path} to auto-derive. Refusing to "
+                f"send a print command without a known plate / heat profile. "
+                f"Pass bed_type/bed_temp explicitly or wire local_path.")
+        # If this raises (malformed 3MF, unknown bed enum, etc.) we let it
+        # propagate — better to refuse loudly than fall back to a guess.
+        _d = _derive_print_params_from_3mf(local_path, filament_index=0)
+        if bed_type is None:
+            bed_type = _d["bed_type"]
+        if bed_temp is None:
+            bed_temp = _d["bed_temp"]
     # ams_mapping (legacy flat int list) + ams_mapping2 (newer ams_id/slot_id
     # form) together cover every firmware path. When use_ams is false both
     # must be empty.
@@ -1697,24 +1723,308 @@ def cmd_upload(args: argparse.Namespace) -> int:
     return 0
 
 
+class PrintRefusal(Exception):
+    """A print command was refused for safety reasons (3MF mismatch,
+    empty AMS slot, wrong filament class, etc.). Inherits from
+    Exception (NOT BaseException like SystemExit) so worker threads in
+    serve-mode and the queue dispatcher can catch+surface the error
+    without tearing down the host process."""
+
+
+def _filament_class(s: str) -> str:
+    """Collapse a Bambu-style filament_type string to its class prefix
+    for compatibility comparison. PLA / PLA Silk / PLA-CF -> 'PLA';
+    PETG / PETG-CF -> 'PETG'; ABS / ABS-GF -> 'ABS'. Different chemistries
+    (PLA vs PETG vs ABS vs PA vs PA6 vs TPU vs ASA) still mismatch —
+    that's the danger case the AMS slot validator must refuse on.
+
+    Per BambuStudio's setting_id_to_type() (DeviceManager.cpp:2629) the
+    AMS push-status reports a coarse class string while a 3MF's
+    filament_type can be the longer family name; comparing class prefix
+    avoids false-positive refusals on chemically identical spools."""
+    token = s.replace("-", " ").replace("_", " ").strip().split(" ", 1)[0]
+    return token.upper()
+
+
+# ---------------------------------------------------------------------------
+# Safety derivation: the .gcode.3mf is the slicer's contract — bed_type +
+# bed_temp + filament_type/colour come from project_settings.config and
+# MUST match what we send to the firmware. Trusting CLI defaults
+# ("--bed-type textured_plate --bed-temp 65") when the slice was prepared
+# for a different plate has two failure modes:
+#   1) firmware silently drops the project_file command on bed_type vs
+#      curr_bed_type mismatch (observed live on X2D firmware 01.02.x —
+#      the print never starts and there is no HMS to surface the reason)
+#   2) if firmware did accept, the wrong heat profile drives the wrong
+#      adhesive (e.g. 65°C on SuperTack silicone-rubber every print is
+#      damaging long-term; 35°C on PEI wastes a layer of warpage).
+# `_derive_print_params_from_3mf` is the safe-by-default replacement for
+# the CLI defaults — cmd_print refuses to send if user-supplied values
+# disagree with the slice unless --force is passed.
+# ---------------------------------------------------------------------------
+
+# Mirrors `bed_type_to_gcode_string()` in BambuStudio's PrintConfig.hpp
+# combined with `s_keys_map_BedType` in PrintConfig.cpp — the human-readable
+# `curr_bed_type` enum_value seen in 3MFs to the lowercase MQTT enum string
+# the firmware expects in `print.project_file.bed_type`.
+_BED_NAME_TO_MQTT = {
+    "Cool Plate":         "cool_plate",
+    "Engineering Plate":  "eng_plate",
+    "High Temp Plate":    "hot_plate",
+    "Textured PEI Plate": "textured_plate",
+    "Supertack Plate":    "supertack_plate",
+}
+_BED_TEMP_KEY_BY_MQTT = {
+    "cool_plate":      "cool_plate_temp_initial_layer",
+    "eng_plate":       "eng_plate_temp_initial_layer",
+    "hot_plate":       "hot_plate_temp_initial_layer",
+    "textured_plate":  "textured_plate_temp_initial_layer",
+    "supertack_plate": "supertack_plate_temp_initial_layer",
+}
+
+
+def _derive_print_params_from_3mf(local_path: Path,
+                                  filament_index: int = 0) -> dict:
+    """Pull authoritative bed_type / bed_temp / filament expectations
+    from the .gcode.3mf so cmd_print sends exactly what the slicer
+    intended. `filament_index` selects the per-slot value when the
+    project has multiple filaments; defaults to 0 (single-color)."""
+    if not local_path.is_file():
+        raise PrintRefusal(f"3MF not found locally: {local_path}")
+    import zipfile as _zf, json as _json
+    try:
+        with _zf.ZipFile(local_path) as z:
+            try:
+                ps_bytes = z.read("Metadata/project_settings.config")
+            except KeyError:
+                raise PrintRefusal(
+                    f"3MF {local_path.name} missing Metadata/"
+                    f"project_settings.config — cannot derive print params; "
+                    f"re-slice with x2d_slice.py.")
+    except _zf.BadZipFile:
+        raise PrintRefusal(f"{local_path} is not a valid 3MF (zip)")
+    try:
+        ps = _json.loads(ps_bytes.decode("utf-8", errors="replace"))
+    except _json.JSONDecodeError as e:
+        raise PrintRefusal(f"3MF project_settings.config malformed: {e}")
+
+    bed_name = ps.get("curr_bed_type")
+    bed_type = _BED_NAME_TO_MQTT.get(bed_name)
+    if not bed_type:
+        raise PrintRefusal(
+            f"3MF curr_bed_type {bed_name!r} not in supported plates "
+            f"{sorted(_BED_NAME_TO_MQTT)}. Re-slice with --bed and one of "
+            f"cool|engineering|high_temp|textured|supertack.")
+
+    temps = ps.get(_BED_TEMP_KEY_BY_MQTT[bed_type]) or []
+    if not isinstance(temps, list) or filament_index >= len(temps):
+        raise PrintRefusal(
+            f"3MF {_BED_TEMP_KEY_BY_MQTT[bed_type]} missing index "
+            f"{filament_index}: {temps!r}; refusing to derive bed_temp.")
+    raw = str(temps[filament_index]).strip()
+    if not raw or not raw.isdigit():
+        raise PrintRefusal(
+            f"3MF {_BED_TEMP_KEY_BY_MQTT[bed_type]}[{filament_index}] "
+            f"= {raw!r}; non-numeric or zero — refusing to send. "
+            f"Re-slice (x2d_slice.py --bed bakes in PLA-compatible defaults).")
+    bed_temp = int(raw)
+
+    fila_types  = ps.get("filament_type")     or []
+    fila_colour = ps.get("filament_colour")   or []
+    fila_ids    = ps.get("filament_ids")      or []
+    return {
+        "bed_type": bed_type,
+        "bed_temp": bed_temp,
+        "expected_filament_type":   fila_types[filament_index]  if filament_index < len(fila_types)  else None,
+        "expected_filament_colour": fila_colour[filament_index] if filament_index < len(fila_colour) else None,
+        "expected_filament_id":     fila_ids[filament_index]    if filament_index < len(fila_ids)    else None,
+    }
+
+
+def _validate_ams_slot(state: dict, ams_global_slot: int,
+                       expected: dict, *, force: bool) -> None:
+    """Refuse to send a use_ams=True print when the named AMS slot is empty
+    or carries an incompatible filament type. Bambu firmware does NOT
+    validate this server-side — without this guard the toolhead will
+    extrude air or attempt to extrude e.g. PETG with PLA hotend ramp.
+
+    Hard checks (always enforced, --force NEVER bypasses):
+      - slot index in 0..15
+      - referenced AMS exists and that slot's tray_info_idx is non-empty
+      - tray_type ∈ {expected_filament_type, ''} or compatible class
+
+    Soft checks (warn if --force, refuse without it):
+      - filament brand/id mismatch (e.g. Bambu PLA Silk ≠ Generic PLA Silk
+        — same chemistry, different settings profile).
+    """
+    if ams_global_slot < 0 or ams_global_slot > 15:
+        raise PrintRefusal(f"AMS slot {ams_global_slot} out of range 0..15")
+    ams_id  = ams_global_slot // 4
+    slot_id = ams_global_slot %  4
+
+    p = state.get("print", {}) if isinstance(state, dict) else {}
+    ams_root = p.get("ams") or {}
+    ams_list = ams_root.get("ams") or []
+    target_ams = next((a for a in ams_list if a.get("id") in (ams_id, str(ams_id))), None)
+    if target_ams is None:
+        raise PrintRefusal(
+            f"Live state shows no AMS#{ams_id} attached to printer "
+            f"(found AMS ids: {[a.get('id') for a in ams_list]}). "
+            f"Refusing to send use_ams=True with slot {ams_global_slot}.")
+    trays = target_ams.get("tray") or []
+    target_tray = next((t for t in trays if t.get("id") in (slot_id, str(slot_id))), None)
+    if target_tray is None:
+        raise PrintRefusal(
+            f"AMS#{ams_id} has no slot {slot_id}. Refusing to send.")
+
+    tray_info_idx = (target_tray.get("tray_info_idx") or "").strip()
+    tray_type     = (target_tray.get("tray_type")     or "").strip()
+    tray_color    = (target_tray.get("tray_color")    or "").strip()
+    if not tray_info_idx:
+        raise PrintRefusal(
+            f"AMS#{ams_id} slot {slot_id} (global {ams_global_slot}) is "
+            f"EMPTY (tray_info_idx is blank). use_ams=True with an empty "
+            f"slot would run the toolhead dry. Load filament or pass "
+            f"--no-ams to use the external spool. (NOT bypassable with --force.)")
+
+    exp_type = (expected.get("expected_filament_type") or "").strip()
+    if not exp_type:
+        # Per code-review #7: refuse rather than skip the filament-type
+        # gate. A 3MF with no filament_type is malformed; sending it
+        # blind risks loading wrong material into the wrong hotend ramp.
+        raise PrintRefusal(
+            f"3MF declared no filament_type — cannot validate AMS slot "
+            f"{ams_global_slot} ({tray_type!r}) against print intent. "
+            f"Re-slice with x2d_slice.py. (NOT bypassable with --force.)")
+    if tray_type and _filament_class(exp_type) != _filament_class(tray_type):
+        raise PrintRefusal(
+            f"AMS slot {ams_global_slot} loaded with {tray_type!r} (class "
+            f"{_filament_class(tray_type)}) but the 3MF expects {exp_type!r} "
+            f"(class {_filament_class(exp_type)}). Hotend ramp profile "
+            f"would be wrong — different filament classes have different "
+            f"melt temps. Re-slice with the correct filament_type or load "
+            f"matching material into slot {ams_global_slot}. "
+            f"(NOT bypassable with --force.)")
+
+    # Soft checks below — bypassable with --force, warn loudly otherwise.
+    soft_warnings: list[str] = []
+    exp_id = (expected.get("expected_filament_id") or "").strip()
+    if exp_id and tray_info_idx and exp_id != tray_info_idx:
+        soft_warnings.append(
+            f"filament brand mismatch: 3MF profile id {exp_id!r} ≠ slot "
+            f"{tray_info_idx!r} (same {tray_type or 'type'}, different "
+            f"flow/temp profile)")
+    exp_colour = (expected.get("expected_filament_colour") or "").lstrip("#").upper()
+    slot_colour = tray_color.upper()
+    if exp_colour and slot_colour and exp_colour[:6] != slot_colour[:6]:
+        soft_warnings.append(
+            f"colour mismatch: 3MF wants #{exp_colour[:6]} but slot has "
+            f"#{slot_colour[:6]} (visual only)")
+
+    if soft_warnings:
+        msg = "AMS slot soft mismatch(es):\n  - " + "\n  - ".join(soft_warnings)
+        if force:
+            sys.stderr.write(f"[print] WARN: {msg}\n[print] continuing under --force\n")
+        else:
+            raise PrintRefusal(
+                f"{msg}\nPass --force to ignore (or re-slice / swap spool).")
+
+
 def cmd_print(args: argparse.Namespace) -> int:
     creds = Creds.resolve(args)
     local = Path(args.file)
+    use_ams = not args.no_ams
+    force = bool(getattr(args, "force", False))
+
+    # Step 1: derive authoritative bed_type / bed_temp / filament
+    # expectations from the 3MF before we touch the network. If the
+    # 3MF is unreadable we fail loud here, well before publish.
+    try:
+        derived = _derive_print_params_from_3mf(local, filament_index=0)
+    except PrintRefusal as e:
+        raise SystemExit(str(e))
+
+    # Step 2: reconcile with user-supplied --bed-type / --bed-temp.
+    # Defaults are sentinels (None) so we can tell "user didn't pass"
+    # from "user explicitly passed a contradicting value".
+    user_bed_type = getattr(args, "bed_type", None)
+    user_bed_temp = getattr(args, "bed_temp", None)
+    bed_type = derived["bed_type"]
+    bed_temp = derived["bed_temp"]
+    if user_bed_type and user_bed_type != bed_type:
+        if not force:
+            raise SystemExit(
+                f"--bed-type {user_bed_type!r} contradicts 3MF "
+                f"curr_bed_type ({bed_type!r}). Re-slice with the right "
+                f"plate, OR pass --force if you genuinely want to "
+                f"override (NOT recommended — heat profile WILL be wrong).")
+        sys.stderr.write(
+            f"[print] WARN: bed_type override {bed_type!r} -> "
+            f"{user_bed_type!r} under --force\n")
+        bed_type = user_bed_type
+    if user_bed_temp is not None and user_bed_temp != bed_temp:
+        if not force:
+            raise SystemExit(
+                f"--bed-temp {user_bed_temp} contradicts 3MF-derived "
+                f"value ({bed_temp}°C for {bed_type}). Re-slice or pass "
+                f"--force.")
+        sys.stderr.write(
+            f"[print] WARN: bed_temp override {bed_temp} -> "
+            f"{user_bed_temp} under --force\n")
+        bed_temp = user_bed_temp
+
+    sys.stderr.write(
+        f"[print] derived from 3MF: bed_type={bed_type!r} bed_temp={bed_temp}°C "
+        f"filament_type={derived['expected_filament_type']!r} "
+        f"filament_id={derived['expected_filament_id']!r} "
+        f"colour={derived['expected_filament_colour']!r}\n")
+
+    # Step 3: upload (if requested) BEFORE we open the MQTT client so a
+    # transient FTPS failure doesn't leave a stale subscription.
     if not args.no_upload:
         upload_file(creds, local, remote_name=args.remote)
+
+    # Step 4: open the MQTT client and validate live AMS state.
     cli = X2DClient(creds)
     cli.connect()
     name = args.remote or local.name
-    start_print(cli, name,
-                use_ams=not args.no_ams, ams_slot=args.slot,
-                bed_levelling=not args.no_bed_level,
-                flow_cali=args.flow_cali,
-                timelapse=args.timelapse,
-                vibration_cali=args.vib_cali,
-                bed_type=args.bed_type,
-                local_path=local)
-    print(f"start_print queued: {name} (slot={args.slot}, ams={not args.no_ams})")
-    cli.disconnect()
+    try:
+        if use_ams:
+            try:
+                live = cli.request_state(timeout=15.0)
+            except TimeoutError:
+                raise SystemExit(
+                    "could not pull live printer state to validate AMS slot "
+                    "before sending. Either the printer dropped, or "
+                    "credentials are wrong. Re-run when the bridge can "
+                    "reach the printer (status command works first).")
+            try:
+                _validate_ams_slot(live, args.slot, derived, force=force)
+            except PrintRefusal as e:
+                raise SystemExit(str(e))
+            # Per code-review #4 (race window): warn the user not to
+            # change spools between validation and the actual print
+            # start. The window is small (~1s) but real.
+            sys.stderr.write(
+                "[print] AMS state validated; do not change AMS slots "
+                "until the printer transitions to PREPARE/RUNNING.\n")
+
+        try:
+            start_print(cli, name,
+                        use_ams=use_ams, ams_slot=args.slot,
+                        bed_levelling=not args.no_bed_level,
+                        flow_cali=args.flow_cali,
+                        timelapse=args.timelapse,
+                        vibration_cali=args.vib_cali,
+                        bed_type=bed_type,
+                        bed_temp=bed_temp,
+                        local_path=local)
+        except PrintRefusal as e:
+            raise SystemExit(str(e))
+        print(f"start_print queued: {name} "
+              f"(slot={args.slot}, ams={use_ams}, bed={bed_type}@{bed_temp}°C)")
+    finally:
+        cli.disconnect()
     return 0
 
 
@@ -2493,17 +2803,52 @@ def _op_start_local_print(h: _ConnHandler, args: dict) -> dict:
     except json.JSONDecodeError:
         ams_mapping = [0]
     use_ams = bool(args.get("task_use_ams", True))
+    # Defaults removed (per code-review #1): pre-existing
+    # `task_bed_type="textured_plate"` fallback re-introduced the same
+    # silent-misheat hole. start_print() will auto-derive from `local`
+    # (the 3MF we just uploaded) when the GUI shim doesn't supply
+    # task_bed_type / task_bed_temp.
+    raw_bed = args.get("task_bed_type")
+    bed_type_arg = str(raw_bed) if raw_bed else None
+    raw_temp = args.get("task_bed_temp")
+    # Per second-pass review NIT #6: don't crash the worker on
+    # float-as-string. coerce defensively.
+    try:
+        bed_temp_arg = int(float(raw_temp)) if raw_temp is not None else None
+    except (TypeError, ValueError):
+        bed_temp_arg = None
+    target_slot = ams_mapping[0] if ams_mapping else 0
+    # Per code-review #1: parity with cmd_print — validate AMS state
+    # before publishing. The serve-mode shim is the BS GUI's primary
+    # path and was previously skipping this guard entirely.
+    if use_ams:
+        try:
+            derived = _derive_print_params_from_3mf(local, filament_index=0)
+        except PrintRefusal as e:
+            raise _OpError(-4031, f"3MF derive failed: {e}") from e
+        try:
+            live = sess.client.request_state(timeout=15.0)
+        except TimeoutError as e:
+            raise _OpError(-4032, f"could not pull printer state: {e}") from e
+        try:
+            _validate_ams_slot(live, int(target_slot), derived, force=False)
+        except PrintRefusal as e:
+            raise _OpError(-4033, f"AMS slot validation failed: {e}") from e
     try:
         start_print(
             sess.client, remote,
             use_ams=use_ams,
-            ams_slot=(ams_mapping[0] if ams_mapping else 0),
+            ams_slot=target_slot,
             bed_levelling=bool(args.get("task_bed_leveling", True)),
             flow_cali=bool(args.get("task_flow_cali", False)),
             timelapse=bool(args.get("task_record_timelapse", False)),
             vibration_cali=bool(args.get("task_vibration_cali", False)),
-            bed_type=str(args.get("task_bed_type", "textured_plate")),
+            bed_type=bed_type_arg,
+            bed_temp=bed_temp_arg,
+            local_path=local,
         )
+    except PrintRefusal as e:
+        raise _OpError(-4034, f"start_print refused: {e}") from e
     except Exception as e:
         raise _OpError(-4030, f"start_print MQTT failed: {e}") from e
     return {}
@@ -3270,13 +3615,30 @@ def cmd_slice_print(args: argparse.Namespace) -> int:
         cli = X2DClient(creds)
         cli.connect()
         name = args.remote or out_3mf.name
+        # "auto" sentinel = let start_print() derive from the 3MF we just
+        # produced, which is the slicer's authoritative contract.
+        sliced_bed = args.bed_type if args.bed_type and args.bed_type != "auto" else None
+        # Per code-review #3: parity with cmd_print — refuse to send if
+        # the targeted AMS slot is empty or has the wrong filament class.
+        # `--force` is not exposed on slice-print; users wanting to bypass
+        # should re-slice or load matching material.
+        if not args.no_ams:
+            derived = _derive_print_params_from_3mf(out_3mf, filament_index=0)
+            try:
+                live = cli.request_state(timeout=15.0)
+            except TimeoutError:
+                cli.disconnect()
+                raise SystemExit(
+                    "could not pull live printer state to validate AMS slot "
+                    "before sending. Re-run when the printer is reachable.")
+            _validate_ams_slot(live, args.slot, derived, force=False)
         start_print(cli, name,
                     use_ams=not args.no_ams, ams_slot=args.slot,
                     bed_levelling=not args.no_bed_level,
                     flow_cali=args.flow_cali,
                     timelapse=args.timelapse,
                     vibration_cali=args.vib_cali,
-                    bed_type=args.bed_type,
+                    bed_type=sliced_bed,
                     local_path=out_3mf)
         print(f"[slice-print] queued: {name} on {creds.ip} (ams_slot={args.slot})")
         cli.disconnect()
@@ -3910,8 +4272,20 @@ def cmd_daemon(args: argparse.Namespace) -> int:
                     creds = cli.creds
                     upload_file(creds, Path(job.gcode),
                                   remote_name=Path(job.gcode).name)
-                    start_print(cli, Path(job.gcode).name,
-                                use_ams=True, ams_slot=int(job.slot))
+                    # Per code-review #2: queue dispatch must validate AMS
+                    # state at dispatch time — a job enqueued an hour ago
+                    # may target a slot whose spool was swapped out since.
+                    # local_path also lets start_print() auto-derive
+                    # bed_type/bed_temp so heat profile matches the slice.
+                    queued_3mf = Path(job.gcode)
+                    derived = _derive_print_params_from_3mf(queued_3mf,
+                                                            filament_index=0)
+                    live = cli.request_state(timeout=15.0)
+                    _validate_ams_slot(live, int(job.slot), derived,
+                                        force=False)
+                    start_print(cli, queued_3mf.name,
+                                use_ams=True, ams_slot=int(job.slot),
+                                local_path=queued_3mf)
                 LOG_QUEUE.info("queue dispatched %s → %s slot %d",
                                 job.label or job.gcode, job.printer, job.slot)
                 return True
@@ -5019,9 +5393,23 @@ def main() -> int:
                     help="Skip upload — file is already on the printer")
     pr.add_argument("--no-ams", action="store_true")
     pr.add_argument("--no-bed-level", action="store_true")
-    pr.add_argument("--bed-type", default="textured_plate",
-                    help="Build plate id sent to firmware "
-                         "(textured_plate / cool_plate / engineering_plate / high_temp_plate)")
+    pr.add_argument("--bed-type", default=None,
+                    help="MQTT bed_type enum string. By default this is "
+                         "DERIVED from the 3MF's curr_bed_type so it can "
+                         "never disagree with the slice. Pass to override "
+                         "(must also pass --force). Valid: cool_plate / "
+                         "eng_plate / hot_plate / textured_plate / "
+                         "supertack_plate.")
+    pr.add_argument("--bed-temp", type=int, default=None,
+                    help="Bed initial-layer temperature in °C. By default "
+                         "this is DERIVED from the 3MF's "
+                         "<plate>_plate_temp_initial_layer for the active "
+                         "filament so the heat profile matches the slice. "
+                         "Pass to override (must also pass --force).")
+    pr.add_argument("--force", action="store_true",
+                    help="Bypass the 3MF/AMS soft-mismatch safety guards "
+                         "(brand, colour). Hard guards (empty AMS slot, "
+                         "wrong filament_type) are NEVER bypassable.")
     pr.add_argument("--flow-cali", action="store_true")
     pr.add_argument("--timelapse", action="store_true")
     pr.add_argument("--vib-cali", action="store_true")
