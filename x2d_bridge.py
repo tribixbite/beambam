@@ -3961,7 +3961,12 @@ def cmd_camera(args: argparse.Namespace) -> int:
     # frames are dropped, viewers see live.
     state_lock = _Lock()
     latest_frame = {"data": b"", "ts": 0.0}
-    stop_event = Event()
+    # Two events:
+    #   global_stop  — SIGINT/SIGTERM only; tears down the whole daemon
+    #   local_stop   — per-pump-instance; the supervisor sets this when
+    #                  the idle reaper decides ffmpeg can rest. A fresh
+    #                  Event is created for each new pump spawn.
+    global_stop = Event()
 
     # HLS output dir (item #20). Each segment is ~2s of mpegts; we keep
     # a sliding window of 6 (12s of buffer) and let ffmpeg auto-delete
@@ -3971,9 +3976,9 @@ def cmd_camera(args: argparse.Namespace) -> int:
     hls_playlist = hls_dir / "cam.m3u8"
     hls_segment_pattern = hls_dir / "cam%04d.ts"
 
-    def ffmpeg_pump():
+    def ffmpeg_pump(local_stop: Event):
         backoff = 1.0
-        while not stop_event.is_set():
+        while not local_stop.is_set() and not global_stop.is_set():
             cmd = [
                 "ffmpeg",
                 "-loglevel", "error",
@@ -4006,7 +4011,15 @@ def cmd_camera(args: argparse.Namespace) -> int:
                              close_fds=True)
             try:
                 jpeg_buf = b""
-                while not stop_event.is_set():
+                # stdout.read() blocks indefinitely; we add a tiny poll
+                # loop on local_stop via select-with-timeout so the idle
+                # reaper can stop ffmpeg promptly without waiting for the
+                # next chunk arrival.
+                import select as _select
+                while not local_stop.is_set() and not global_stop.is_set():
+                    rlist, _, _ = _select.select([proc.stdout], [], [], 0.5)
+                    if not rlist:
+                        continue
                     chunk = proc.stdout.read(65536)
                     if not chunk:
                         err = proc.stderr.read().decode(errors="replace")[-400:]
@@ -4027,22 +4040,33 @@ def cmd_camera(args: argparse.Namespace) -> int:
                                 latest_frame["data"] = frame
                                 latest_frame["ts"]   = time.time()
             finally:
+                # Reap the subprocess cleanly — terminate, wait, escalate
+                # to kill if necessary, then wait again. Without the final
+                # wait() after kill() the process becomes a zombie
+                # (<defunct> in ps) until the daemon itself exits.
                 try:
                     proc.terminate()
                     proc.wait(timeout=2)
+                except _sp.TimeoutExpired:
+                    try:
+                        proc.kill()
+                        proc.wait(timeout=2)
+                    except Exception:
+                        pass
                 except Exception:
                     pass
-                try:
-                    proc.kill()
-                except Exception:
-                    pass
-            if stop_event.is_set():
+            if local_stop.is_set() or global_stop.is_set():
                 break
             print(f"[camera] reconnecting in {backoff:.1f}s", file=sys.stderr)
-            stop_event.wait(backoff)
+            local_stop.wait(backoff)
             backoff = min(backoff * 2, 30.0)
+        # On pump exit (idle reaper or shutdown), invalidate the cached
+        # frame so the next supervisor spawn can't serve a stale image.
+        with state_lock:
+            latest_frame["data"] = b""
+            latest_frame["ts"] = 0.0
 
-    def lvl_local_pump():
+    def lvl_local_pump(local_stop: Event):
         # Push module path so a repo-checkout install also imports it.
         # Same dev-vs-dist multi-root lookup as _x2d_search_roots().
         for root in _x2d_search_roots():
@@ -4057,7 +4081,7 @@ def cmd_camera(args: argparse.Namespace) -> int:
             return
 
         def _store(jpeg, ts):
-            if stop_event.is_set():
+            if local_stop.is_set() or global_stop.is_set():
                 raise SystemExit
             with state_lock:
                 latest_frame["data"] = jpeg
@@ -4072,13 +4096,115 @@ def cmd_camera(args: argparse.Namespace) -> int:
             # outer reconnect logic in stream_frames handle the retry
             # (which it does until it gets a non-LVLLocalError).
             print(f"[camera] LVL_Local fatal: {e}", file=sys.stderr)
+        # On pump exit, invalidate the cached frame (see ffmpeg_pump for
+        # rationale).
+        with state_lock:
+            latest_frame["data"] = b""
+            latest_frame["ts"] = 0.0
 
     if args.proto == "local":
         print("[camera] proto=local — using TLS:6000 LVL_Local stream", file=sys.stderr)
-        pump = Thread(target=lvl_local_pump, name="camera-pump-local", daemon=True)
+        pump_factory = lvl_local_pump
+        pump_label = "lvl_local"
     else:
-        pump = Thread(target=ffmpeg_pump, name="camera-pump", daemon=True)
-    pump.start()
+        pump_factory = ffmpeg_pump
+        pump_label = "ffmpeg"
+
+    # ---------------------------------------------------------------------
+    # On-demand pump supervisor (item-89 — battery drain triage).
+    # Previously the pump (ffmpeg or lvl_local) was eagerly started at
+    # daemon launch and ran 24/7 at ~66% CPU even when nobody was viewing
+    # the stream. The supervisor lazy-spawns the pump on first request,
+    # tracks long-poll viewers (refcount) plus one-shot endpoint hits
+    # (last-touch deadline), and the reaper thread terminates the pump
+    # after IDLE_TIMEOUT seconds of zero activity. Touch endpoints
+    # (/cam.jpg, /cam.m3u8, /cam*.ts) keep the pump alive between polls.
+    # ---------------------------------------------------------------------
+    class CameraStreamSupervisor:
+        IDLE_TIMEOUT = float(getattr(args, "idle_timeout", 30.0))
+        FIRST_FRAME_TIMEOUT = 8.0  # max seconds to wait for ffmpeg's first JPEG
+
+        def __init__(self):
+            self._lock = _Lock()
+            self._refs = 0
+            self._last_touch = 0.0
+            self._local_stop: Event | None = None
+            self._thread: Thread | None = None
+            self._reaper = Thread(target=self._reap_loop,
+                                   name="camera-reaper", daemon=True)
+            self._reaper.start()
+
+        def _ensure_running_locked(self) -> None:
+            if self._thread is not None and self._thread.is_alive():
+                return
+            self._local_stop = Event()
+            local = self._local_stop
+            self._thread = Thread(target=lambda: pump_factory(local),
+                                   name=f"camera-pump-{pump_label}",
+                                   daemon=True)
+            print(f"[camera] starting {pump_label} pump (refs={self._refs}, "
+                  f"idle_timeout={self.IDLE_TIMEOUT}s)", file=sys.stderr)
+            self._thread.start()
+
+        def acquire(self) -> None:
+            with self._lock:
+                self._refs += 1
+                self._last_touch = time.time()
+                self._ensure_running_locked()
+
+        def release(self) -> None:
+            with self._lock:
+                if self._refs > 0:
+                    self._refs -= 1
+
+        def touch(self) -> None:
+            with self._lock:
+                self._last_touch = time.time()
+                self._ensure_running_locked()
+
+        def wait_for_frame(self, timeout: float) -> bool:
+            """Block until latest_frame has data, or timeout expires.
+            Used by /cam.jpg and /cam.m3u8 on the cold-start path so the
+            first request after idle doesn't 503 immediately."""
+            deadline = time.time() + timeout
+            while time.time() < deadline:
+                if global_stop.is_set():
+                    return False
+                with state_lock:
+                    if latest_frame["data"]:
+                        return True
+                time.sleep(0.1)
+            with state_lock:
+                return bool(latest_frame["data"])
+
+        def _reap_loop(self) -> None:
+            while not global_stop.is_set():
+                global_stop.wait(2.0)
+                if global_stop.is_set():
+                    break
+                with self._lock:
+                    if self._thread is None or not self._thread.is_alive():
+                        continue
+                    if self._refs > 0:
+                        continue
+                    idle = time.time() - self._last_touch
+                    if idle <= self.IDLE_TIMEOUT:
+                        continue
+                    print(f"[camera] idle {idle:.0f}s ≥ {self.IDLE_TIMEOUT}s "
+                          f"with no viewers; stopping {pump_label} pump",
+                          file=sys.stderr)
+                    if self._local_stop is not None:
+                        self._local_stop.set()
+                    # Don't join here — the pump thread cleans up its own
+                    # subprocess in its finally block. is_alive() check on
+                    # the next reap pass tells us when it's done.
+
+        def shutdown(self) -> None:
+            with self._lock:
+                if self._local_stop is not None:
+                    self._local_stop.set()
+
+    supervisor = CameraStreamSupervisor()
 
     # Tiny HTTP server. Two endpoints:
     #   /cam.mjpeg  → multipart/x-mixed-replace (browser-renderable)
@@ -4089,33 +4215,51 @@ def cmd_camera(args: argparse.Namespace) -> int:
             if not _check_bearer(self, args.auth_token or None, host):
                 return
             if self.path in ("/cam.mjpeg", "/"):
-                self.send_response(200)
-                self.send_header("Content-Type",
-                                 "multipart/x-mixed-replace; boundary=frame")
-                self.send_header("Cache-Control", "no-cache")
-                self.end_headers()
-                last_ts = 0.0
+                # Long-poll viewer — refcount the supervisor so the pump
+                # stays alive while this client is connected, even if no
+                # touch endpoints are being hit.
+                supervisor.acquire()
                 try:
-                    while not stop_event.is_set():
-                        with state_lock:
-                            frame = latest_frame["data"]
-                            ts    = latest_frame["ts"]
-                        if frame and ts > last_ts:
-                            last_ts = ts
-                            self.wfile.write(b"--frame\r\n")
-                            self.wfile.write(b"Content-Type: image/jpeg\r\n")
-                            self.wfile.write(
-                                f"Content-Length: {len(frame)}\r\n\r\n".encode())
-                            self.wfile.write(frame)
-                            self.wfile.write(b"\r\n")
-                            self.wfile.flush()
-                        else:
-                            time.sleep(0.05)
-                except (BrokenPipeError, ConnectionResetError):
-                    return
+                    # Wait briefly for the pump's first frame so we don't
+                    # send headers and then immediately stall.
+                    supervisor.wait_for_frame(supervisor.FIRST_FRAME_TIMEOUT)
+                    self.send_response(200)
+                    self.send_header("Content-Type",
+                                     "multipart/x-mixed-replace; boundary=frame")
+                    self.send_header("Cache-Control", "no-cache")
+                    self.end_headers()
+                    last_ts = 0.0
+                    try:
+                        while not global_stop.is_set():
+                            with state_lock:
+                                frame = latest_frame["data"]
+                                ts    = latest_frame["ts"]
+                            if frame and ts > last_ts:
+                                last_ts = ts
+                                self.wfile.write(b"--frame\r\n")
+                                self.wfile.write(b"Content-Type: image/jpeg\r\n")
+                                self.wfile.write(
+                                    f"Content-Length: {len(frame)}\r\n\r\n".encode())
+                                self.wfile.write(frame)
+                                self.wfile.write(b"\r\n")
+                                self.wfile.flush()
+                            else:
+                                time.sleep(0.05)
+                    except (BrokenPipeError, ConnectionResetError):
+                        return
+                finally:
+                    supervisor.release()
             elif self.path == "/cam.jpg":
+                supervisor.touch()
                 with state_lock:
                     frame = latest_frame["data"]
+                if not frame:
+                    # Cold-start path: pump might have just spawned and is
+                    # waiting for its first JPEG. Block briefly so the
+                    # caller gets a frame instead of 503.
+                    supervisor.wait_for_frame(supervisor.FIRST_FRAME_TIMEOUT)
+                    with state_lock:
+                        frame = latest_frame["data"]
                 if not frame:
                     self.send_response(503)
                     self.end_headers()
@@ -4128,6 +4272,15 @@ def cmd_camera(args: argparse.Namespace) -> int:
             elif self.path == "/cam.m3u8":
                 # HLS playlist (item #20). 503 until ffmpeg has emitted
                 # at least one segment and the playlist file exists.
+                supervisor.touch()
+                if not hls_playlist.exists():
+                    # Cold-start path: wait briefly for ffmpeg to emit
+                    # the first segment after a lazy spawn.
+                    deadline = time.time() + supervisor.FIRST_FRAME_TIMEOUT
+                    while time.time() < deadline and not hls_playlist.exists():
+                        if global_stop.is_set():
+                            break
+                        time.sleep(0.2)
                 if not hls_playlist.exists():
                     self.send_response(503)
                     self.end_headers()
@@ -4147,6 +4300,7 @@ def cmd_camera(args: argparse.Namespace) -> int:
             elif self.path.startswith("/cam") and self.path.endswith(".ts"):
                 # HLS segment. Validate the filename to prevent path
                 # traversal (only `cam<digits>.ts` shape allowed).
+                supervisor.touch()
                 seg_name = self.path[1:]  # strip leading slash
                 import re as _re
                 if not _re.fullmatch(r"cam\d+\.ts", seg_name):
@@ -4184,21 +4338,24 @@ def cmd_camera(args: argparse.Namespace) -> int:
     server = ThreadingServer((host, port), CameraHandler)
 
     def _stop(signum, frame):  # noqa: ARG001
-        stop_event.set()
+        global_stop.set()
+        supervisor.shutdown()
         server.shutdown()
     _signal.signal(_signal.SIGINT,  _stop)
     _signal.signal(_signal.SIGTERM, _stop)
 
-    print(f"[camera] streaming at http://{host}:{port}/cam.mjpeg "
-          f"(JPEG snapshot at /cam.jpg, HLS at /cam.m3u8). Ctrl-C to quit.",
-          file=sys.stderr)
+    print(f"[camera] HTTP at http://{host}:{port}/cam.mjpeg "
+          f"(JPEG snapshot /cam.jpg, HLS /cam.m3u8). On-demand pump "
+          f"(idles after {CameraStreamSupervisor.IDLE_TIMEOUT}s of no "
+          f"viewers).", file=sys.stderr)
     print(f"[camera] HLS segments → {hls_dir}", file=sys.stderr)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
         pass
     finally:
-        stop_event.set()
+        global_stop.set()
+        supervisor.shutdown()
         server.server_close()
         # HLS cleanup — best-effort, don't propagate errors.
         import shutil as _shutil
@@ -5525,6 +5682,13 @@ def main() -> int:
                     default=os.environ.get("X2D_AUTH_TOKEN", ""),
                     help="Bearer token required for HTTP requests when "
                          "--bind is non-loopback. Default $X2D_AUTH_TOKEN.")
+    cm.add_argument("--idle-timeout", type=float, default=30.0,
+                    help="Seconds of no-viewer activity before the upstream "
+                         "pump (ffmpeg / lvl_local) is stopped to save "
+                         "battery + CPU. Endpoint hits and live MJPEG "
+                         "viewers reset the idle timer. Default 30s. Set "
+                         "very high to keep the pump alive permanently "
+                         "(matches pre-#89 behaviour).")
     cm.set_defaults(fn=cmd_camera)
 
     # x2d/termux #88 — IPCAM control commands (camera-side, not the
