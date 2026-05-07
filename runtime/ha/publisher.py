@@ -137,7 +137,43 @@ SENSOR_ENTITIES: list[Entity] = [
     Entity("sensor", "total_usage_hours", "Total usage hours",
            "{{ (value_json.print.total_usage | int(0)) // 3600 }}",
            "h", "duration", "total_increasing", "mdi:counter"),
-    # Binary sensors for door + online state.
+    # ha-bambulab parity additions (gap audit 2026-05-06): print
+    # metadata, hardware geometry, AMS active tray, AMS humidity,
+    # binary problem indicators.
+    Entity("sensor", "start_time",        "Print start time",
+           "{{ as_datetime(value_json.print.gcode_start_time | int(0)) "
+           "if value_json.print.gcode_start_time | int(0) > 0 else '' }}",
+           "", "timestamp", "", "mdi:clock-start"),
+    Entity("sensor", "end_time",          "Print end time",
+           "{{ as_datetime((value_json.print.gcode_start_time | int(0)) + "
+           "((value_json.print.mc_remaining_time | int(0)) * 60)) "
+           "if value_json.print.gcode_start_time | int(0) > 0 else '' }}",
+           "", "timestamp", "", "mdi:clock-end"),
+    Entity("sensor", "print_length",      "Print length",
+           "{{ value_json.print.print_length | float(0) | round(2) }}",
+           "m", "distance", "measurement", "mdi:tape-measure"),
+    Entity("sensor", "print_weight",      "Print weight",
+           "{{ value_json.print.print_weight | float(0) | round(2) }}",
+           "g", "weight", "measurement", "mdi:weight-gram"),
+    Entity("sensor", "bed_type",          "Bed type",
+           "{{ value_json.print.bed_type | default('') }}",
+           "", "", "", "mdi:checkerboard"),
+    Entity("sensor", "active_tray",       "Active AMS tray",
+           "{{ (value_json.print.ams.tray_now | int(255)) + 1 "
+           "if value_json.print.ams.tray_now | int(255) != 255 else 0 }}",
+           "", "", "measurement", "mdi:tray-full"),
+    Entity("sensor", "nozzle_diameter",   "Nozzle diameter",
+           "{{ value_json.print.nozzle_diameter | float(0.4) | round(2) }}",
+           "mm", "distance", "", "mdi:printer-3d-nozzle"),
+    Entity("sensor", "nozzle_type",       "Nozzle type",
+           "{{ value_json.print.nozzle_type | default('') }}",
+           "", "", "", "mdi:printer-3d-nozzle-alert"),
+    Entity("sensor", "ams_humidity",      "AMS humidity",
+           "{{ value_json.print.ams.ams[0].humidity | float(0) | round(0) "
+           "if value_json.print.ams is defined and value_json.print.ams.ams "
+           "else 0 }}",
+           "%", "humidity", "measurement", "mdi:water-percent"),
+    # Binary sensors for door + online + new problem/timelapse indicators.
     Entity("binary_sensor", "online",     "Online",
            "{{ 'ON' if value_json.print is defined else 'OFF' }}",
            "", "connectivity", "", "mdi:lan-connect",
@@ -145,6 +181,18 @@ SENSOR_ENTITIES: list[Entity] = [
     Entity("binary_sensor", "door_open",  "Door open",
            "{{ 'ON' if value_json.print.hw_switch_state | default(0) == 1 else 'OFF' }}",
            "", "door", "", "mdi:door-open",
+           extra={"payload_on": "ON", "payload_off": "OFF"}),
+    Entity("binary_sensor", "timelapse_running", "Timelapse running",
+           "{{ 'ON' if value_json.print.ipcam.timelapse | default('disable') == 'enable' else 'OFF' }}",
+           "", "running", "", "mdi:movie",
+           extra={"payload_on": "ON", "payload_off": "OFF"}),
+    Entity("binary_sensor", "hms_problem", "HMS problem",
+           "{{ 'ON' if (value_json.print.hms | length | default(0)) > 0 else 'OFF' }}",
+           "", "problem", "", "mdi:alert-circle",
+           extra={"payload_on": "ON", "payload_off": "OFF"}),
+    Entity("binary_sensor", "print_error", "Print error",
+           "{{ 'ON' if value_json.print.print_error | int(0) != 0 else 'OFF' }}",
+           "", "problem", "", "mdi:alert-octagon",
            extra={"payload_on": "ON", "payload_off": "OFF"}),
 ]
 
@@ -224,6 +272,25 @@ CONTROL_ENTITIES: list[Entity] = [
            "", "", "", "", "mdi:bell-off",
            extra={"command_topic": "__BASE__/buzzer/set",
                   "payload_press": "SILENCE"}),
+    # ha-bambulab parity: chamber light as a `light` entity (HA's lighting
+    # cards prefer this domain over `switch`). The existing
+    # `switch.<id>_light` stays for back-compat with dashboards that
+    # already reference it.
+    Entity("light", "chamber_light", "Chamber light",
+           "{{ value_json.print.lights_report[0].mode | default('off') }}",
+           "", "", "", "mdi:lightbulb",
+           extra={"command_topic": "__BASE__/light/set",
+                  "state_value_template": "{{ 'on' if value == 'on' else 'off' }}",
+                  "payload_on": "ON", "payload_off": "OFF"}),
+    # ha-bambulab parity: prompt-sound toggle. Bambu firmware's print.sound_enable
+    # field carries the current state; the bridge daemon's /control/sound
+    # route dispatches the M300 toggle.
+    Entity("switch", "prompt_sound", "Prompt sound",
+           "{{ value_json.print.sound_enable | default('off') }}",
+           "", "", "", "mdi:volume-high",
+           extra={"command_topic": "__BASE__/sound/set",
+                  "state_on": "on", "state_off": "off",
+                  "payload_on": "ON", "payload_off": "OFF"}),
 ]
 
 
@@ -240,6 +307,21 @@ def camera_entity(_snapshot_url: str, base_topic: str) -> Entity:
         "", "", "", "", "mdi:camera",
         extra={"image_topic":   f"{base_topic}/snapshot",
                 "content_type":  "image/jpeg"})
+
+
+def mqtt_camera_entity(base_topic: str) -> Entity:
+    """Same JPEG bytes, exposed as a `camera` entity rather than `image`.
+    HA's picture-glance / picture-entity Lovelace cards prefer the
+    camera domain; ha-bambulab also publishes one. Sharing the topic
+    means no extra publisher load — viewers just pick whichever
+    entity their dashboard references."""
+    return Entity(
+        "camera", "chamber_camera", "Chamber camera (live)",
+        "", "", "", "", "mdi:camera",
+        # `topic` carries raw JPEG bytes (publisher's _snapshot_loop
+        # publishes binary directly; no base64 wrapping). HA's mqtt
+        # camera platform accepts that natively.
+        extra={"topic": f"{base_topic}/snapshot"})
 
 
 # ---------------------------------------------------------------------------
@@ -287,7 +369,8 @@ class HAPublisher:
         self._entities = list(SENSOR_ENTITIES) + ams_entities() + \
                          list(CONTROL_ENTITIES) + [
                              camera_entity(self.daemon_url + "/cam.jpg",
-                                            self.base_topic)]
+                                            self.base_topic),
+                             mqtt_camera_entity(self.base_topic)]
         self._client = mqtt.Client(
             mqtt.CallbackAPIVersion.VERSION2, self._client_id)
         if broker_username:
@@ -428,6 +511,10 @@ class HAPublisher:
                     self._http_post("/control/temp",
                                      {"target": m.group(1),
                                       "value":  int(float(payload))})
+            elif topic == f"{self.base_topic}/sound/set":
+                # ha-bambulab parity: prompt-sound switch.
+                state = "on" if payload.upper() in ("ON", "1", "TRUE") else "off"
+                self._http_post("/control/sound", {"state": state})
         except Exception as e:
             LOG.exception("dispatch failed for %s: %s", topic, e)
 
