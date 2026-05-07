@@ -113,8 +113,13 @@ Five short H.264 MP4s in [`docs/demos/`](docs/demos/) — render with
 | Web UI               | [`docs/WEB_UI.md`](docs/WEB_UI.md) |
 | MCP server (Claude Desktop, Cursor, ...) | [`docs/MCP.md`](docs/MCP.md) |
 | WebRTC streaming     | [`docs/WEBRTC.md`](docs/WEBRTC.md) |
-| Home Assistant       | [`docs/HA.md`](docs/HA.md) |
-| HA vs ha-bambulab    | [`docs/HA_VS_BAMBULAB.md`](docs/HA_VS_BAMBULAB.md) |
+| Home Assistant — overview | [`docs/HA.md`](docs/HA.md) |
+| Home Assistant — install + dashboard guide | [`docs/HA_SETUP.md`](docs/HA_SETUP.md) |
+| HA vs ha-bambulab feature parity | [`docs/HA_VS_BAMBULAB.md`](docs/HA_VS_BAMBULAB.md) |
+| Cloud bridge (cloud-state, cloud-print) | [`docs/CLOUD_BRIDGE.md`](docs/CLOUD_BRIDGE.md) |
+| Local control paths (LAN MQTT, FTPS, RTSPS, LVL_Local) | [`docs/LOCAL_CONTROL_PATHS.md`](docs/LOCAL_CONTROL_PATHS.md) |
+| Signed vs unsigned MQTT — leaked-key truth table | [`docs/SIGNED_VS_UNSIGNED.md`](docs/SIGNED_VS_UNSIGNED.md) |
+| X2D runtime pipeline (canonical reference) | [`docs/X2D_RUNTIME_PIPELINE.md`](docs/X2D_RUNTIME_PIPELINE.md) |
 | Multi-printer setup  | [`docs/MULTI_PRINTER.md`](docs/MULTI_PRINTER.md) |
 | Print queue          | [`docs/QUEUE.md`](docs/QUEUE.md) |
 | Timelapse browser    | [`docs/TIMELAPSE.md`](docs/TIMELAPSE.md) |
@@ -137,13 +142,21 @@ Layout:
 
 ```
 .
-├── patches/                  # 6 unified diffs against upstream BambuStudio
-│   ├── Button.cpp.termux.patch
-│   ├── AxisCtrlButton.cpp.termux.patch
-│   ├── SideButton.cpp.termux.patch
-│   ├── TabButton.cpp.termux.patch
-│   ├── BBLTopbar.cpp.termux.patch
-│   └── BBLTopbar.hpp.termux.patch
+├── patches/                  # 50+ unified diffs against upstream BambuStudio
+│   │                         # (touchscreen-tap slop, AMSControl width,
+│   │                         #  GLCanvas3D termux-x11 paint, MainFrame
+│   │                         #  Ctrl+R/Ctrl+P slice/print accelerators,
+│   │                         #  Plater sidebar, deps build wiring, …)
+│   ├── Button.cpp.termux.patch              # touch-target 15-px slop
+│   ├── AxisCtrlButton.cpp.termux.patch      # touch-target 15-px slop
+│   ├── SideButton.cpp.termux.patch          # touch-target 15-px slop
+│   ├── TabButton.cpp.termux.patch           # touch-target 15-px slop
+│   ├── BBLTopbar.cpp.termux.patch           # vertical Print/plate stack
+│   ├── BBLTopbar.hpp.termux.patch
+│   ├── MainFrame.cpp.termux.patch           # Ctrl+R/Ctrl+P + sidebar tog
+│   ├── GLCanvas3D.cpp.termux.patch          # termux-x11 force-paint
+│   ├── AMSControl.cpp.termux.patch          # AMS strip width
+│   ├── (… and ~40 more — patches/ for the full set)
 ├── runtime/
 │   ├── preload_gtkinit.c     # LD_PRELOAD shim: GTK pre-init, locale fix,
 │   │                         # wxLocale ICU bypass, wx 3.3 assert silencer,
@@ -356,11 +369,50 @@ tail -f ~/.x2d/access.log
 Credentials can also come from `--ip / --code / --serial` flags or
 `X2D_IP / X2D_CODE / X2D_SERIAL` environment variables.
 
+### Slicing + printing an STL
+
+End-to-end one-shot: slice an STL, upload to the printer, queue the
+print. The 3MF is the slicer's authoritative contract — `cmd_print`
+auto-derives `bed_type` and bed initial-layer temperature from
+`Metadata/project_settings.config` and refuses to publish if the
+target AMS slot is empty or holds an incompatible filament class
+(PLA-vs-PETG-vs-ABS). The hard guards (empty slot, class mismatch)
+are not bypassable; soft brand/colour mismatches warn under `--force`.
+
+```
+# Standalone slicer (STL → .gcode.3mf with proper plate + filament profile)
+python3.12 x2d_slice.py model.stl --out out.gcode.3mf \
+    --scale 1.0                     # uniform geometry scale
+    --color "PLA Silk Gold"         # Bambu colour-name resolution against
+                                     # filaments_color_codes.json (304 entries)
+    --bed supertack                 # plate type — cool/engineering/high_temp/
+                                     # textured/supertack OR int 1..5
+
+# One-shot slice → upload → queue
+x2d_bridge.py slice-print model.stl --slot 3 --color Gold --bed 5 --timelapse
+
+# Send an already-sliced .gcode.3mf
+x2d_bridge.py print model.gcode.3mf --slot 3 --timelapse
+    # bed_type + bed_temp auto-derived from the 3MF; refuses on AMS
+    # slot empty / wrong-class filament. Pass --force to bypass soft
+    # brand/colour mismatches; hard guards never bypassable.
+```
+
 ### Print-control commands
 
 Each verb is a single signed-MQTT publish — same protocol the official
 GUI uses, just routed through our bridge so it works on aarch64. Every
 command exits as soon as the printer ACKs the publish.
+
+> ⚠️ **LAN signing limitation.** Only `system.*` commands (chamber
+> light, etc.) actually verify against the leaked Bambu Connect global
+> cert. `print.*` commands (project_file, ams_change_filament, etc.)
+> are verified by the firmware against per-device factory certs and
+> silently dropped if our cert isn't in the trust list. See
+> [`docs/SIGNED_VS_UNSIGNED.md`](docs/SIGNED_VS_UNSIGNED.md). For
+> `print.*` actions the working path is `cloud-print` (cloud broker,
+> JWT auth, no signing) or starting the print from the touchscreen
+> after the bridge has uploaded the 3MF.
 
 ```
 x2d_bridge.py pause                      # pause the current print
@@ -397,7 +449,17 @@ Once enabled, run:
 ```
 x2d_bridge.py camera                     # bind 127.0.0.1:8766 by default
 x2d_bridge.py camera --bind 0.0.0.0:8766 # expose on LAN (be careful!)
+x2d_bridge.py camera --idle-timeout 60   # stop ffmpeg after 60s of no viewers
+                                          # default 30s; set very high to keep
+                                          # the pump permanently warm
 ```
+
+The pump is **on-demand** since 2026-05-06: ffmpeg only starts after
+the first `/cam.mjpeg` connect or `/cam.jpg`/`/cam.m3u8` request, and
+the supervisor reaps it after `--idle-timeout` seconds of zero
+viewers + zero one-shot endpoint hits. Subsequent requests respawn
+within ~3-4 s (RTSPS reconnect + first JPEG). On phone hosts this
+drops idle CPU from a continuous ~66% to 0%.
 
 Then point any browser at `http://127.0.0.1:8766/cam.mjpeg` for the
 multipart MJPEG stream, or `/cam.jpg` for a one-shot snapshot. Multiple
