@@ -1,0 +1,78 @@
+diff --git a/src/slic3r/GUI/Preferences.cpp b/src/slic3r/GUI/Preferences.cpp
+index 2e2ee53..1b9aa25 100644
+--- a/src/slic3r/GUI/Preferences.cpp
++++ b/src/slic3r/GUI/Preferences.cpp
+@@ -226,7 +226,7 @@ wxBoxSizer *PreferencesDialog::create_item_language_combobox(
+         if (combobox->GetSelection() == m_current_language_selected)
+             return;
+ 
+-        if (e.GetString().mb_str() != app_config->get(param)) {
++        if (std::string(e.GetString().mb_str()) != app_config->get(param)) {
+             {
+                 //check if the project has changed
+                 if (wxGetApp().plater()->is_project_dirty()) {
+@@ -1128,8 +1128,11 @@ wxWindow *PreferencesDialog ::create_item_radiobox(wxString title, wxWindow *par
+ }
+ 
+ PreferencesDialog::PreferencesDialog(wxWindow *parent, wxWindowID id, const wxString &title, const wxPoint &pos, const wxSize &size, long style)
+-    : DPIDialog(parent, id, _L("Preferences"), pos, size, style)
++    : DPIDialog(parent, id, _L("Preferences"), pos, size, style | wxRESIZE_BORDER)
+ {
++    // x2d/termux: add wxRESIZE_BORDER so the dialog can be resized + dragged
++    // on portrait phone displays (1080×2000 etc.) where the default 540-DIP
++    // width plus internal padding exceeds the screen.
+     SetBackgroundColour(*wxWHITE);
+     m_original_use_12h_time_format = wxGetApp().app_config->get("use_12h_time_format");
+     create();
+@@ -1203,11 +1206,23 @@ void PreferencesDialog::create()
+     }
+     if (m_screen_height == std::numeric_limits<int>::max())
+         m_screen_height = wxGetDisplaySize().GetY();
+-    this->SetSize(this->GetSize().GetX() + FromDIP(40), m_screen_height * 0.7);
++    // x2d/termux: clamp width AND height to the available display so the
++    // dialog can never spawn larger than the screen on phones / small
++    // panels (was: just height clamped). 24-DIP margin leaves room for the
++    // window-manager border + the bottom xfce panel.
++    int max_w = wxGetDisplaySize().GetX() - FromDIP(24);
++    int max_h = m_screen_height - FromDIP(24);
++    int want_w = this->GetSize().GetX() + FromDIP(40);
++    int want_h = m_screen_height * 0.7;
++    this->SetSize(std::min(want_w, max_w), std::min(want_h, max_h));
++    // Also relax the SetSizeHints from create() so the user can drag the
++    // resize border in either direction.
++    this->SetSizeHints(wxSize(FromDIP(360), FromDIP(360)), wxDefaultSize);
+ 
+     CenterOnParent();
+     wxPoint start_pos = this->GetPosition();
+     if (start_pos.y < 0) { this->SetPosition(wxPoint(start_pos.x, 0)); }
++    if (start_pos.x < 0) { this->SetPosition(wxPoint(0, start_pos.y)); }
+ 
+     //select first
+     auto event = wxCommandEvent(EVT_PREFERENCES_SELECT_TAB);
+@@ -1801,7 +1816,7 @@ wxWindow* PreferencesDialog::create_debug_page()
+ 
+ void PreferencesDialog::on_select_radio(std::string param)
+ {
+-    RadioSelectorList::Node *node    = m_radio_group.GetFirst();
++    auto node    = m_radio_group.GetFirst();
+     auto                     groupid = 0;
+ 
+     while (node) {
+@@ -1821,7 +1836,7 @@ void PreferencesDialog::on_select_radio(std::string param)
+ 
+ wxString PreferencesDialog::get_select_radio(int groupid)
+ {
+-    RadioSelectorList::Node *node = m_radio_group.GetFirst();
++    auto node = m_radio_group.GetFirst();
+     while (node) {
+         RadioSelector *rs = node->GetData();
+         if (rs->m_groupid == groupid && rs->m_radiobox->GetValue()) { return rs->m_param_name; }
+@@ -1833,7 +1848,7 @@ wxString PreferencesDialog::get_select_radio(int groupid)
+ 
+ void PreferencesDialog::OnSelectRadio(wxMouseEvent &event)
+ {
+-    RadioSelectorList::Node *node    = m_radio_group.GetFirst();
++    auto node    = m_radio_group.GetFirst();
+     auto                     groupid = 0;
+ 
+     while (node) {
