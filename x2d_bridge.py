@@ -412,6 +412,22 @@ class X2DClient:
         signed = sign_payload(payload)
         topic = f"device/{self.creds.serial}/request"
         body = json.dumps(signed, separators=(",", ":"))
+        # Wire-level intercept (env-var controlled). Set X2D_WIRE_LOG=path
+        # to capture every outbound MQTT publish — used to debug what
+        # BambuStudio's GUI shim sends when its Print button is clicked,
+        # vs what our CLI sends. One JSON line per publish; appended.
+        wire_log = os.environ.get("X2D_WIRE_LOG", "")
+        if wire_log:
+            try:
+                with open(wire_log, "a") as f:
+                    f.write(json.dumps({
+                        "ts":     time.time(),
+                        "serial": self.creds.serial,
+                        "topic":  topic,
+                        "payload": signed,
+                    }) + "\n")
+            except OSError:
+                pass
         last_err: Exception | None = None
         for attempt in range(max_attempts):
             try:
