@@ -120,9 +120,56 @@ int creat(const char* path, mode_t mode) {
     return fd;
 }
 
+// ---------- anti-debug spoofing ----------
+//
+// Bambu's plugin polls /proc/self/status and /proc/<PPID>/cmdline
+// looking for "tracer" indicators. Under qemu-x86_64 the parent
+// cmdline contains "qemu-x86_64" + "LD_PRELOAD" + the dylib path,
+// which trips the anti-debug → connect_server returns -2 early.
+// Spoof both files with sanitized content via fopen interposition.
+
+static FILE* sanitized_status(void) {
+    // /proc/self/status with TracerPid:0 and a benign Name
+    const char* body =
+        "Name:\tbambu-studio\n"
+        "State:\tR (running)\n"
+        "Tgid:\t1234\n"
+        "Pid:\t1234\n"
+        "PPid:\t1\n"
+        "TracerPid:\t0\n"
+        "Uid:\t1000\t1000\t1000\t1000\n"
+        "Gid:\t1000\t1000\t1000\t1000\n"
+        "FDSize:\t256\n"
+        "VmSize:\t  120000 kB\n"
+        "VmRSS:\t   80000 kB\n";
+    FILE* f = fmemopen((void*)body, strlen(body), "r");
+    return f;
+}
+
+static FILE* sanitized_cmdline(void) {
+    // /proc/<PPID>/cmdline — looks like BambuStudio launched normally.
+    // NUL-separated argv ending with NUL.
+    static char body[] = "bambu-studio\0--no-bg\0\0";
+    FILE* f = fmemopen((void*)body, sizeof body - 1, "r");
+    return f;
+}
+
 FILE* fopen(const char* path, const char* mode) {
     static FILE* (*real)(const char*, const char*) = NULL;
     if (!real) real = (FILE*(*)(const char*, const char*))dlsym(RTLD_NEXT, "fopen");
+    if (path && getenv("BAMBU_SPOOF_PROC")) {
+        if (strcmp(path, "/proc/self/status") == 0) {
+            log_fmt("[fopen-SPOOF] /proc/self/status\n");
+            return sanitized_status();
+        }
+        // /proc/<n>/cmdline path — match any PID
+        if (strncmp(path, "/proc/", 6) == 0 &&
+            strlen(path) > 6 &&
+            strstr(path, "/cmdline")) {
+            log_fmt("[fopen-SPOOF] %s\n", path);
+            return sanitized_cmdline();
+        }
+    }
     FILE* f = real(path, mode);
     if (path) log_fmt("[fopen] %s mode=%s -> %p\n", path, mode, (void*)f);
     return f;

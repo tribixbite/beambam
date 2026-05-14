@@ -6,7 +6,43 @@ firmware's signature gate. The plugin's bootstrap signing key is wrapped in
 a VMProtect-style VM (we'd need days to crack statically); proxy through the
 real plugin under qemu-x86_64 instead.
 
-## Status (2026-05-09)
+## Status (2026-05-13)
+
+**Verdict — qemu-dlopen path is blocked by the same VMProtect VM.**
+
+After adding the missing init calls (`set_cert_file`, `connect_server`,
+`update_cert`) per BS `GUI_App.cpp:3488-3515` + 5073, plus
+`/proc/self/status` and `/proc/<ppid>/cmdline` anti-debug spoofing in
+the trace shim, the plugin still fails at `connect_server` with
+return code -2 (`BAMBU_NETWORK_ERR_CONNECT_FAILED`). Zero TCP connects
+or DNS lookups observed by the LD_PRELOAD trace shim — the plugin
+short-circuits before any network call. `connect_server` failing
+means `is_user_login` stays false, which means `install_device_cert`
+short-circuits — no HTTPS to the cert-issuance endpoint.
+
+Verified separately that `qemu-x86_64` itself CAN reach
+`us.mqtt.bambulab.com:8883` and `api.bambulab.com:443` (TCP connect
++ DNS work fine — see `out/qemu_mqtt_probe`). The block is inside
+the plugin's VMProtect-wrapped MQTT-auth code, which requires the
+embedded bootstrap client cert (AES-GCM-encrypted in `__TEXT,__const`,
+only decrypted inside the VM) to authenticate against the cloud
+broker. Without unpacking the VM we can't get past this point.
+
+The remaining practical paths to a working per-installation cert+key
+pair are:
+
+1. **Run real BambuStudio on a glibc-x86_64 / Linux / Mac / Windows
+   machine.** Log in with the user's Bambu account. Snapshot the
+   cert + key that the plugin writes to `~/.config/BambuStudio/cert/`
+   (Linux) or equivalent. Copy to the Termux installation's
+   `bambu_cert.py`. ~30 minutes of work; no RE.
+2. **Frida-extract from a logged-in Bambu Handy phone** (pending
+   task #24). Layer-3-complete, Layer-4 blocked on Android seccomp.
+   Multi-day.
+3. **Statically unpack the VMProtect VM** in the plugin. Multi-week
+   RE work; recommend skipping.
+
+## Original status (2026-05-09)
 
 | Stage | Status |
 |---|---|

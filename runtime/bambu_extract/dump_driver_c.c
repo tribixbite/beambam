@@ -74,9 +74,12 @@ typedef int   (*set_config_dir_fn)(void*, const stdstring_t*);
 typedef int   (*change_user_fn)(void*, const stdstring_t*);
 typedef void  (*install_device_cert_fn)(void*, const stdstring_t*, bool);
 typedef int   (*set_country_code_fn)(void*, const stdstring_t*);
+typedef int   (*set_cert_file_fn)(void*, const stdstring_t*, const stdstring_t*);
 typedef int   (*start_fn)(void*);
 typedef int   (*init_log_fn)(void*);
+typedef int   (*connect_server_fn)(void*);
 typedef bool  (*is_user_login_fn)(void*);
+typedef int   (*update_cert_fn)(void*);
 
 int main(int argc, char** argv) {
     setvbuf(stdout, NULL, _IONBF, 0);
@@ -110,9 +113,12 @@ int main(int argc, char** argv) {
     change_user_fn         change_user         = (change_user_fn)dlsym(h, "bambu_network_change_user");
     install_device_cert_fn install_device_cert = (install_device_cert_fn)dlsym(h, "bambu_network_install_device_cert");
     set_country_code_fn    set_country_code    = (set_country_code_fn)dlsym(h, "bambu_network_set_country_code");
+    set_cert_file_fn       set_cert_file       = (set_cert_file_fn)dlsym(h, "bambu_network_set_cert_file");
     start_fn               network_start       = (start_fn)dlsym(h, "bambu_network_start");
     init_log_fn            init_log            = (init_log_fn)dlsym(h, "bambu_network_init_log");
+    connect_server_fn      connect_server      = (connect_server_fn)dlsym(h, "bambu_network_connect_server");
     is_user_login_fn       is_user_login       = (is_user_login_fn)dlsym(h, "bambu_network_is_user_login");
+    update_cert_fn         update_cert         = (update_cert_fn)dlsym(h, "bambu_network_update_cert");
 
     fprintf(stderr, "[driver] symbols: create=%p set_cfg=%p change_user=%p install_cert=%p\n",
             (void*)create_agent, (void*)set_config_dir,
@@ -128,12 +134,31 @@ int main(int argc, char** argv) {
     fprintf(stderr, "[driver] agent=%p\n", agent);
     if (!agent) return 1;
 
+    // Canonical init sequence per BS GUI_App.cpp:3488-3515:
+    //   set_config_dir → init_log → set_cert_file → set_country_code → start
     if (set_config_dir) {
         stdstring_t s = mkstr(config_dir);
         int rc = set_config_dir(agent, &s);
         fprintf(stderr, "[driver] set_config_dir(%s)=%d\n", config_dir, rc);
     }
     if (init_log) fprintf(stderr, "[driver] init_log=%d\n", init_log(agent));
+
+    // set_cert_file (BS GUI_App.cpp:3507) — points the plugin at its
+    // bundled TLS CA bundle for verifying api.bambulab.com etc.
+    // The file is `slicer_base64.cer` inside BS's resources/cert/.
+    // We provide our own copy.
+    const char* cert_folder = getenv("BAMBU_CERT_FOLDER");
+    const char* cert_filename = getenv("BAMBU_CERT_FILE");
+    if (!cert_folder) cert_folder = "/data/data/com.termux/files/home/git/x2d/bs-bionic/resources/cert";
+    if (!cert_filename) cert_filename = "slicer_base64.cer";
+    if (set_cert_file) {
+        stdstring_t f = mkstr(cert_folder);
+        stdstring_t n = mkstr(cert_filename);
+        int rc = set_cert_file(agent, &f, &n);
+        fprintf(stderr, "[driver] set_cert_file(%s/%s)=%d\n",
+                cert_folder, cert_filename, rc);
+    }
+
     if (set_country_code) {
         stdstring_t s = mkstr("us");
         fprintf(stderr, "[driver] set_country_code(us)=%d\n",
@@ -165,9 +190,25 @@ int main(int argc, char** argv) {
         fprintf(stderr, "[driver] change_user=%d\n", rc);
     }
     free(user_info);
+    // connect_server (BS GUI_App.cpp:5073) — connects to the cloud
+    // MQTT broker. is_user_login flips to true only after this.
+    if (connect_server) {
+        int rc = connect_server(agent);
+        fprintf(stderr, "[driver] connect_server=%d\n", rc);
+    }
+
+    // Give the cloud handshake a moment to complete.
+    fprintf(stderr, "[driver] waiting 8s for cloud handshake...\n");
+    sleep(8);
+
     if (is_user_login)
         fprintf(stderr, "[driver] is_user_login=%s\n",
                 is_user_login(agent) ? "true" : "false");
+
+    if (update_cert) {
+        int rc = update_cert(agent);
+        fprintf(stderr, "[driver] update_cert=%d\n", rc);
+    }
 
     fprintf(stderr, "[driver] install_device_cert(dev_id='%s', lan_only=0) ...\n", dev_id);
     {
