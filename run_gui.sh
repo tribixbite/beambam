@@ -245,6 +245,48 @@ rotate_log() {
     fi
 }
 
+# Kill any stray x2d_bridge processes of the given mode so we end up with
+# exactly one watchdog-supervised instance. Use case: previous run_gui.sh
+# exited without firing its EXIT trap (e.g. Termux app killed, OOM), or
+# the user launched BS bypassing run_gui.sh, leaving an orphaned bridge
+# bound to the socket/port. Without this dedupe the new watchdog races
+# the orphan: serve hits EADDRINUSE on the bridge.sock and the camera
+# daemon hits EADDRINUSE on 127.0.0.1:8767, both crashing back to the
+# watchdog retry loop. Camera daemons in particular sometimes wedge with
+# their accept loop blocked (see camera.log BrokenPipeError storms) and
+# only respond after a fresh spawn.
+#
+# Match by full argv slice so we don't accidentally TERM unrelated
+# python processes — pgrep -f -x is strict-match on the whole cmdline.
+ensure_single_bridge() {
+    local mode="$1"   # serve | camera | daemon
+    local pattern="x2d_bridge.py $mode"
+    local pids
+    pids=$(pgrep -f "$pattern" || true)
+    local count=0
+    if [[ -n "$pids" ]]; then
+        count=$(echo "$pids" | wc -l)
+    fi
+    if (( count > 1 )); then
+        echo "[run_gui] $count stray '$pattern' processes — TERM all (watchdog respawns one)" >&2
+        # shellcheck disable=SC2086
+        kill -TERM $pids 2>/dev/null || true
+        sleep 1
+        pids=$(pgrep -f "$pattern" || true)
+        if [[ -n "$pids" ]]; then
+            # shellcheck disable=SC2086
+            kill -KILL $pids 2>/dev/null || true
+            sleep 0.5
+        fi
+    fi
+}
+ensure_single_bridge serve
+ensure_single_bridge camera
+# `daemon` is the HA-bridge HTTP service (separate from `serve`); user
+# may run it under their own supervisor (cron, systemd-equivalent) so
+# we only dedupe duplicates, never kill a single existing one.
+ensure_single_bridge daemon
+
 bridge_watchdog() {
     local backoff=1
     while true; do
