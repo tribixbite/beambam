@@ -3553,36 +3553,57 @@ def cmd_fetch(args: argparse.Namespace) -> int:
         if not m:
             sys.exit(f"can't extract Printables model ID from {url!r}")
         pid_ = m.group(1)
-        # Printables uses a GraphQL backend; the public download URL is exposed
-        # via /api/v2/models/<id>/files which doesn't require auth for public models.
-        api_v2 = f"https://api.printables.com/v2/models/{pid_}/files"
+        # Printables uses a public GraphQL endpoint (2026 surface). The legacy
+        # REST /v2/models/<id>/files returns 404 since the 2026 backend
+        # rewrite. The Query.print(id:) field returns stls + otherFiles with
+        # filePreviewPath; the real file URL is the same directory minus the
+        # "_preview.png" suffix, joined under files.printables.com.
+        gql_q = ("query($id:ID!){print(id:$id){id name slug "
+                 "stls{id name fileSize filePreviewPath} "
+                 "otherFiles{id name fileSize filePreviewPath fileFormat}}}")
         try:
-            files_meta = _json.loads(http_get(api_v2, accept="application/json"))
-            for entry in (files_meta if isinstance(files_meta, list)
-                          else files_meta.get("files", [])):
-                fu = (entry.get("file_preview_path") or entry.get("file_url")
-                      or entry.get("download_url"))
-                if fu and any(fu.lower().endswith(e) for e in (".stl", ".3mf", ".obj")):
-                    name = Path(urllib.parse.unquote(urllib.parse.urlparse(fu).path)).name
-                    saved.append(save(name, http_get(fu, accept="application/octet-stream")))
+            body = _json.dumps({"query": gql_q, "variables": {"id": pid_}}).encode()
+            req = urllib.request.Request(
+                "https://api.printables.com/graphql/",
+                data=body,
+                headers={"Content-Type": "application/json",
+                         "User-Agent": "x2d-bridge/1.0"})
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                gql = _json.loads(resp.read())
+            prt = (gql.get("data") or {}).get("print") or {}
+            entries = []
+            entries += [(s, ".stl") for s in (prt.get("stls") or [])]
+            entries += [(s, "") for s in (prt.get("otherFiles") or [])]
+            for entry, fallback_ext in entries:
+                preview = entry.get("filePreviewPath") or ""
+                name = entry.get("name") or ""
+                # name may already include extension (otherFiles); stls don't
+                # always carry it on the API but always do in the path.
+                if name and not any(name.lower().endswith(e)
+                                    for e in (".stl", ".3mf", ".obj", ".step",
+                                              ".stp")):
+                    name += fallback_ext
+                if not name or not preview:
+                    continue
+                # preview path: "media/prints/<PID>/stls/<UID>/<stem>_preview.png"
+                # real path:    "media/prints/<PID>/stls/<UID>/<name>"
+                p = Path(preview)
+                dir_ = "/".join(p.parts[:-1])
+                file_url = f"https://files.printables.com/{dir_}/{name}"
+                try:
+                    saved.append(save(name, http_get(
+                        file_url, accept="application/octet-stream")))
                     if not args.all:
                         break
+                except Exception as e:
+                    print(f"[fetch] {file_url} → {e}", file=sys.stderr)
         except Exception as e:
-            print(f"[fetch] Printables v2 API failed: {e}, trying GraphQL/page",
-                  file=sys.stderr)
+            print(f"[fetch] Printables GraphQL failed: {e}", file=sys.stderr)
         if not saved:
-            # Fall back to scraping the rendered page (works for older models)
-            page = http_get(url).decode("utf-8", errors="replace")
-            for m2 in re.finditer(r'"download_url":\s*"([^"]+\.(?:stl|3mf|obj))"', page):
-                file_url = m2.group(1).encode("utf-8").decode("unicode_escape")
-                name = Path(urllib.parse.unquote(urllib.parse.urlparse(file_url).path)).name
-                saved.append(save(name, http_get(file_url, accept="application/octet-stream")))
-                if not args.all:
-                    break
-        if not saved:
-            sys.exit(f"no STL/3MF download_url found for Printables {pid_} — "
-                     f"may need login (PRINTABLES_TOKEN env var) or model is "
-                     f"premium-only. Workaround: download manually + use direct URL.")
+            sys.exit(f"no STL/3MF download URL found for Printables {pid_} — "
+                     f"model may be premium-only or the GraphQL schema has "
+                     f"shifted again. Workaround: open in browser, save the "
+                     f"download URL, and pass it directly to `fetch`.")
 
     elif "thingiverse" in host:
         m = re.search(r"thing:(\d+)", path)
