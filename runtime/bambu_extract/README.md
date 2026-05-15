@@ -6,6 +6,60 @@ firmware's signature gate. The plugin's bootstrap signing key is wrapped in
 a VMProtect-style VM (we'd need days to crack statically); proxy through the
 real plugin under qemu-x86_64 instead.
 
+## Status (2026-05-15) — definitive findings
+
+**The cert wall is in the X2D firmware, not in the plugin or LAN MQTT.**
+
+End-to-end run with the unmodified Bambu `libbambu_networking.so`, a
+working `BambuNetworkEngine.conf` (snapshotted from a logged-in BS
+install on x86_64 Linux), the full 9-callback C++ shim
+(`cb_register.so`), plus `connect_printer` + `start_subscribe("app")`:
+
+| Path | `system.*` | `pushing.*` | `print.*` |
+|---|---|---|---|
+| LAN `send_message_to_printer` | ✅ rc=0, light toggles | ✅ rc=0 | ❌ rc=-4 (SEND_MSG_FAILED) |
+| Cloud `send_message` | ✅ rc=0, light toggles | n/a | ❌ rc=-2 (CONNECT_FAILED) earlier |
+
+Printer state pushes via `on_local_message_fn` are received continuously
+while `print.*` publishes are pending — confirming LAN MQTT is fully
+bidirectional and authenticated. The firmware accepts `system.*` and
+`pushing.*` published with the plugin's cached cert+key, but **silently
+drops `print.*`** even when the plugin signs them with its own
+per-install material from the conf.
+
+This means:
+- Extracting a cert+key from `BambuNetworkEngine.conf` would NOT bypass
+  the wall — the wall isn't on the TLS layer or the plugin's signing
+  scheme; it's a per-message-type gate inside the X2D firmware.
+- The earlier "snapshot cert + drop into bambu_cert.py" plan
+  (`docs/EXTRACT_CERT_FROM_REAL_BS.md`) would have failed for the same
+  reason: even with the real cert+key, `print.*` is dropped.
+
+**Two remaining avenues, both untested:**
+
+1. `bambu_network_start_print` — the high-level "begin a print job"
+   entry that BS uses for every print. It bundles FTPS upload +
+   signed `print.project_file` MQTT + status callbacks. Possibly
+   signs with a different scheme than `send_message_to_printer`.
+   Build cost: a `start_print` wrapper in `cb_register.cpp` that
+   builds the `PrintParams` struct (29 string+bool fields) and
+   invokes `start_print_ptr(params, on_update, on_cancel, on_wait)`.
+2. **X2D firmware patch** — modify the firmware's `print.*` signature
+   verifier to accept (or skip). Requires sshfs/uart access to the
+   printer's SoC; not in scope here.
+
+The original "extract cert + write our own signer" plan is now
+**deprecated** by these findings.
+
+## Earlier hypotheses (now disproven)
+
+The status notes below from 2026-05-13 were written under the
+assumption that the wall was either in the VMProtect VM (gating the
+plugin's auth flow) or in the LAN-MQTT signing path. The 2026-05-15
+end-to-end run with the plugin reaching `is_user_login=true +
+is_server_connected=true + local_connect status=0` and still hitting
+rc=-4 for `print.*` rules both of those out. Kept for context.
+
 ## Status (2026-05-13)
 
 **Verdict — qemu-dlopen path is blocked by the same VMProtect VM.**

@@ -1,5 +1,31 @@
 # Extract per-install cert + key from a real BambuStudio install
 
+> **⚠️ 2026-05-15 UPDATE — this plan does NOT unblock `print.*` LAN publishing.**
+>
+> End-to-end testing with the unmodified Bambu plugin running with its
+> proper `BambuNetworkEngine.conf` (snapshotted from a logged-in BS
+> install on real x86_64 Linux WSL) confirms that even the plugin's
+> own publish path receives `rc=-4 BAMBU_NETWORK_ERR_SEND_MSG_FAILED`
+> for `print.*` messages. The wall is inside the X2D firmware itself:
+> it accepts `system.*` (e.g. `ledctrl` → chamber light toggled) and
+> `pushing.*` (e.g. `pushall`) from any plugin-signed publish but
+> silently drops `print.*`. Extracting the cert PEM would not change
+> this.
+>
+> Evidence: `runtime/bambu_extract/README.md` "2026-05-15" section.
+> Test driver: `runtime/bambu_extract/dump_driver_c.c` +
+> `cb_register.cpp` (libstdc++ C++ shim that registers all 12
+> `std::function` callbacks the plugin expects).
+>
+> Remaining untried avenue: `bambu_network_start_print` (which signs
+> `print.project_file` via a separate code path than
+> `send_message_to_printer`) — may behave differently in firmware.
+>
+> The text below is preserved as the original plan; it remains
+> historically accurate for *what BS writes to disk*, but the
+> assumption "filesystem access → firmware accepts the cert" turned
+> out wrong.
+
 After exhausting every cracking path on-device, this is the **cheapest
 viable route** to a working per-installation cert+key the X2D firmware
 will accept for `print.*` MQTT commands.

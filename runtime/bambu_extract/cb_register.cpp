@@ -28,6 +28,9 @@ typedef int (*set_msg_t)(void*, OnMessageFn);
 typedef int (*set_printer_conn_t)(void*, OnPrinterConnectedFn);
 typedef int (*set_http_err_t)(void*, std::function<void(unsigned int, std::string)>);
 typedef int (*set_ssdp_t)(void*, std::function<void(std::string)>);
+typedef int (*set_country_t)(void*, std::function<std::string()>);
+typedef int (*set_sub_fail_t)(void*, std::function<void(std::string)>);
+typedef int (*set_queue_t)(void*, std::function<void(std::function<void()>)>);
 
 extern "C" int register_all_callbacks(void* lib, void* agent) {
     auto set_login        = (set_login_t)       dlsym(lib, "bambu_network_set_on_user_login_fn");
@@ -94,6 +97,29 @@ extern "C" int register_all_callbacks(void* lib, void* agent) {
             fprintf(stderr, "[cb] ssdp msg=%.80s\n", msg.c_str());
         });
         fprintf(stderr, "[cb-reg] set_on_ssdp_msg_fn OK\n");
+    }
+
+    auto set_country = (set_country_t)  dlsym(lib, "bambu_network_set_get_country_code_fn");
+    auto set_subfail = (set_sub_fail_t) dlsym(lib, "bambu_network_set_on_subscribe_failure_fn");
+    auto set_queue   = (set_queue_t)    dlsym(lib, "bambu_network_set_queue_on_main_fn");
+    if (set_country) {
+        set_country(agent, []() -> std::string { return std::string("us"); });
+        fprintf(stderr, "[cb-reg] set_get_country_code_fn OK\n");
+    }
+    if (set_subfail) {
+        set_subfail(agent, [](std::string dev_id) {
+            fprintf(stderr, "[cb] subscribe_failure dev=%s\n", dev_id.c_str());
+        });
+        fprintf(stderr, "[cb-reg] set_on_subscribe_failure_fn OK\n");
+    }
+    if (set_queue) {
+        // Run on main thread — we don't have a wx event loop, so just invoke inline.
+        set_queue(agent, [](std::function<void()> work) {
+            try { work(); } catch (...) {
+                fprintf(stderr, "[cb] queue_on_main work threw\n");
+            }
+        });
+        fprintf(stderr, "[cb-reg] set_queue_on_main_fn OK\n");
     }
     return 0;
 }
