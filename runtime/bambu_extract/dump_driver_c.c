@@ -80,6 +80,12 @@ typedef int   (*init_log_fn)(void*);
 typedef int   (*connect_server_fn)(void*);
 typedef bool  (*is_user_login_fn)(void*);
 typedef int   (*update_cert_fn)(void*);
+typedef bool  (*is_server_connected_fn)(void*);
+typedef int   (*send_msg_to_printer_fn)(void*, const stdstring_t*, const stdstring_t*, int, int);
+typedef int   (*connect_printer_fn)(void*, const stdstring_t*, const stdstring_t*, const stdstring_t*, const stdstring_t*, bool);
+typedef int   (*set_user_selected_machine_fn)(void*, const stdstring_t*);
+typedef int   (*start_subscribe_fn)(void*, const stdstring_t*);
+typedef int   (*send_message_fn)(void*, const stdstring_t*, const stdstring_t*, int, int);
 
 int main(int argc, char** argv) {
     setvbuf(stdout, NULL, _IONBF, 0);
@@ -133,6 +139,25 @@ int main(int argc, char** argv) {
     void* agent = create_agent(&s_log);
     fprintf(stderr, "[driver] agent=%p\n", agent);
     if (!agent) return 1;
+
+    // Register std::function callbacks (via cb_register.so built with libstdc++).
+    // Without these, the plugin silently bails out of install_device_cert.
+    const char* cb_so = getenv("BAMBU_CB_SO");
+    if (cb_so && *cb_so) {
+        void* cbh = dlopen(cb_so, RTLD_NOW | RTLD_GLOBAL);
+        if (!cbh) {
+            fprintf(stderr, "[driver] dlopen(%s) failed: %s\n", cb_so, dlerror());
+        } else {
+            int (*reg_fn)(void*, void*) =
+                (int (*)(void*, void*))dlsym(cbh, "register_all_callbacks");
+            if (reg_fn) {
+                int rc = reg_fn(h, agent);
+                fprintf(stderr, "[driver] register_all_callbacks rc=%d\n", rc);
+            } else {
+                fprintf(stderr, "[driver] register_all_callbacks symbol missing\n");
+            }
+        }
+    }
 
     // Canonical init sequence per BS GUI_App.cpp:3488-3515:
     //   set_config_dir → init_log → set_cert_file → set_country_code → start
@@ -216,6 +241,112 @@ int main(int argc, char** argv) {
         install_device_cert(agent, &s, false);
     }
     fprintf(stderr, "[driver] install_device_cert RETURNED\n");
+
+    // Optional publish mode: when BAMBU_PUBLISH_MSG is set, call
+    // bambu_network_send_message_to_printer(agent, dev_id, json_str, qos, flag).
+    // qos defaults to 1, flag to 0; override via BAMBU_PUBLISH_QOS / BAMBU_PUBLISH_FLAG.
+    const char* publish_msg_inline = getenv("BAMBU_PUBLISH_MSG");
+    const char* publish_msg_file   = getenv("BAMBU_PUBLISH_MSG_FILE");
+    char* publish_msg_buf = NULL;
+    const char* publish_msg = publish_msg_inline;
+    if (publish_msg_file && *publish_msg_file) {
+        FILE* f = fopen(publish_msg_file, "rb");
+        if (f) {
+            fseek(f, 0, SEEK_END);
+            long n = ftell(f);
+            fseek(f, 0, SEEK_SET);
+            publish_msg_buf = (char*)malloc(n + 1);
+            if (fread(publish_msg_buf, 1, n, f) != (size_t)n) {
+                fprintf(stderr, "[driver] short read on publish msg file\n");
+            }
+            publish_msg_buf[n] = '\0';
+            fclose(f);
+            // strip trailing newline
+            while (n > 0 && (publish_msg_buf[n-1] == '\n' || publish_msg_buf[n-1] == '\r'))
+                publish_msg_buf[--n] = '\0';
+            publish_msg = publish_msg_buf;
+        } else {
+            fprintf(stderr, "[driver] failed to open BAMBU_PUBLISH_MSG_FILE=%s\n", publish_msg_file);
+        }
+    }
+    if (publish_msg && *publish_msg && *dev_id) {
+        is_server_connected_fn is_server_connected =
+            (is_server_connected_fn)dlsym(h, "bambu_network_is_server_connected");
+        send_msg_to_printer_fn send_msg =
+            (send_msg_to_printer_fn)dlsym(h, "bambu_network_send_message_to_printer");
+        connect_printer_fn connect_printer =
+            (connect_printer_fn)dlsym(h, "bambu_network_connect_printer");
+        set_user_selected_machine_fn set_selected =
+            (set_user_selected_machine_fn)dlsym(h, "bambu_network_set_user_selected_machine");
+        start_subscribe_fn start_subscribe =
+            (start_subscribe_fn)dlsym(h, "bambu_network_start_subscribe");
+        int qos  = getenv("BAMBU_PUBLISH_QOS")  ? atoi(getenv("BAMBU_PUBLISH_QOS"))  : 1;
+        int flag = getenv("BAMBU_PUBLISH_FLAG") ? atoi(getenv("BAMBU_PUBLISH_FLAG")) : 0;
+
+        // Wait up to 20s for is_server_connected to flip true
+        int connected = 0;
+        for (int i = 0; i < 40; ++i) {
+            if (is_server_connected && is_server_connected(agent)) {
+                connected = 1; break;
+            }
+            usleep(500 * 1000);
+        }
+        fprintf(stderr, "[driver] is_server_connected=%s\n", connected ? "true" : "false");
+
+        // LAN path: if BAMBU_DEV_IP set, connect_printer first (use plugin's per-install
+        // cert for TLS to printer:8883 — bypasses the cert wall).
+        const char* dev_ip   = getenv("BAMBU_DEV_IP");
+        const char* dev_user = getenv("BAMBU_DEV_USER");
+        const char* dev_pass = getenv("BAMBU_DEV_PASS");  // access_code
+        if (!dev_user) dev_user = "bblp";
+        if (dev_ip && *dev_ip && dev_pass && *dev_pass && connect_printer) {
+            stdstring_t d = mkstr(dev_id);
+            stdstring_t i = mkstr(dev_ip);
+            stdstring_t u = mkstr(dev_user);
+            stdstring_t p = mkstr(dev_pass);
+            int rc = connect_printer(agent, &d, &i, &u, &p, true);
+            fprintf(stderr, "[driver] connect_printer(%s @ %s)=%d\n", dev_id, dev_ip, rc);
+            sleep(3);
+        }
+
+        // Cloud path: if no LAN, register dev_id with the agent + subscribe.
+        if ((!dev_ip || !*dev_ip) && set_selected) {
+            stdstring_t d = mkstr(dev_id);
+            int rc = set_selected(agent, &d);
+            fprintf(stderr, "[driver] set_user_selected_machine(%s)=%d\n", dev_id, rc);
+        }
+        if (start_subscribe) {
+            stdstring_t m = mkstr("app");
+            int rc = start_subscribe(agent, &m);
+            fprintf(stderr, "[driver] start_subscribe(app)=%d\n", rc);
+            sleep(2);
+        }
+
+        // Choose route based on BAMBU_PUBLISH_ROUTE env (default: lan/send_message_to_printer)
+        const char* route = getenv("BAMBU_PUBLISH_ROUTE");
+        if (!route) route = "lan";
+        if (strcmp(route, "cloud") == 0) {
+            send_message_fn send_cloud =
+                (send_message_fn)dlsym(h, "bambu_network_send_message");
+            if (send_cloud) {
+                stdstring_t d = mkstr(dev_id);
+                stdstring_t j = mkstr(publish_msg);
+                int rc = send_cloud(agent, &d, &j, qos, flag);
+                fprintf(stderr, "[driver] send_message(cloud) rc=%d  qos=%d flag=%d  json=%s\n",
+                        rc, qos, flag, publish_msg);
+            } else {
+                fprintf(stderr, "[driver] send_message(cloud) symbol not resolved\n");
+            }
+        } else if (send_msg) {
+            stdstring_t d = mkstr(dev_id);
+            stdstring_t j = mkstr(publish_msg);
+            int rc = send_msg(agent, &d, &j, qos, flag);
+            fprintf(stderr, "[driver] send_message_to_printer rc=%d  qos=%d flag=%d  json=%s\n",
+                    rc, qos, flag, publish_msg);
+        } else {
+            fprintf(stderr, "[driver] send_message_to_printer symbol not resolved; skipping publish\n");
+        }
+    }
 
     fprintf(stderr, "[driver] sleeping 30s for async work to complete...\n");
     sleep(30);
