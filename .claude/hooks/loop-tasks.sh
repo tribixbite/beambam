@@ -39,11 +39,15 @@ if [ ! -d "$tasks_dir" ]; then
 fi
 
 # Collect open tasks (pending or in_progress, excluding deleted).
+# Tasks whose subject starts with "BLOCKED-on-" are considered
+# parked-pending-external-input and don't keep the loop alive on their
+# own — they show up in the listing but aren't counted as "open".
 mapfile -t open_lines < <(
     for f in "$tasks_dir"/*.json; do
         [ -f "$f" ] || continue
         jq -r '
-          select(.status == "pending" or .status == "in_progress")
+          select((.status == "pending" or .status == "in_progress")
+                 and ((.subject // "") | startswith("BLOCKED-on-") | not))
           | "\(.status)\t#\(.id) \(.subject)"
         ' "$f" 2>/dev/null
     done
