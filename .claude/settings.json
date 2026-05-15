@@ -9,6 +9,12 @@
             "command": "/data/data/com.termux/files/home/git/x2d/.claude/hooks/loop-improvements.sh",
             "timeout": 5,
             "statusMessage": "Checking IMPROVEMENTS.md ledger"
+          },
+          {
+            "type": "command",
+            "command": "/data/data/com.termux/files/home/git/x2d/.claude/hooks/loop-tasks.sh",
+            "timeout": 5,
+            "statusMessage": "Checking TaskList for open items"
           }
         ]
       }
