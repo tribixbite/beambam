@@ -348,6 +348,27 @@ int main(int argc, char** argv) {
         }
     }
 
+    // Optional: invoke high-level start_print via the C++ shim.
+    // Driven by BAMBU_START_PRINT=1 + BAMBU_PRINT_* env vars consumed by
+    // do_start_print_from_env (see cb_register.cpp).
+    if (getenv("BAMBU_START_PRINT") && cb_so && *cb_so) {
+        void* cbh2 = dlopen(cb_so, RTLD_NOW | RTLD_GLOBAL);
+        if (cbh2) {
+            int (*sp_fn)(void*, void*) =
+                (int (*)(void*, void*))dlsym(cbh2, "do_start_print_from_env");
+            if (sp_fn) {
+                fprintf(stderr, "[driver] calling do_start_print_from_env ...\n");
+                int sp_rc = sp_fn(h, agent);
+                fprintf(stderr, "[driver] do_start_print_from_env rc=%d\n", sp_rc);
+                // give it time for FTPS upload + MQTT publish
+                fprintf(stderr, "[driver] sleeping 60s for print to enter PREPARE/RUNNING ...\n");
+                sleep(60);
+            } else {
+                fprintf(stderr, "[driver] do_start_print_from_env symbol missing\n");
+            }
+        }
+    }
+
     fprintf(stderr, "[driver] sleeping 30s for async work to complete...\n");
     sleep(30);
 

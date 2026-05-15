@@ -302,3 +302,53 @@ extern "C" int do_start_print(void* lib, void* agent,
         return fn(agent, p, on_update, was_cancelled, on_wait);
     }
 }
+
+// Convenience entrypoint: populate from env-vars so dump_driver_c.c can
+// call this without constructing StartPrintInputs itself.
+extern "C" int do_start_print_from_env(void* lib, void* agent)
+{
+    auto e = [](const char* k) -> const char* {
+        const char* v = getenv(k); return v ? v : "";
+    };
+    auto eb = [](const char* k, int def_) -> int {
+        const char* v = getenv(k);
+        if (!v || !*v) return def_;
+        return (v[0]=='1' || v[0]=='t' || v[0]=='T' || v[0]=='y' || v[0]=='Y') ? 1 : 0;
+    };
+    auto ei = [](const char* k, int def_) -> int {
+        const char* v = getenv(k);
+        if (!v || !*v) return def_;
+        return atoi(v);
+    };
+    StartPrintInputs in;
+    in.dev_id          = e("BAMBU_PRINT_DEV_ID");
+    in.dev_ip          = e("BAMBU_PRINT_DEV_IP");
+    in.dev_name        = e("BAMBU_PRINT_DEV_NAME");
+    in.username        = e("BAMBU_PRINT_USERNAME");
+    in.password        = e("BAMBU_PRINT_PASSWORD");
+    in.connection_type = e("BAMBU_PRINT_CONN_TYPE");
+    in.filename        = e("BAMBU_PRINT_FILENAME");
+    in.config_filename = e("BAMBU_PRINT_CONFIG_FILE");
+    in.project_name    = e("BAMBU_PRINT_PROJECT");
+    in.task_name       = e("BAMBU_PRINT_TASK");
+    in.preset_name     = e("BAMBU_PRINT_PRESET");
+    in.plate_index     = ei("BAMBU_PRINT_PLATE_IDX", 0);
+    in.ftp_folder      = e("BAMBU_PRINT_FTP_FOLDER");
+    in.ftp_file        = e("BAMBU_PRINT_FTP_FILE");
+    in.ftp_file_md5    = e("BAMBU_PRINT_FTP_MD5");
+    in.ams_mapping     = e("BAMBU_PRINT_AMS_MAP");
+    in.ams_mapping2    = e("BAMBU_PRINT_AMS_MAP2");
+    in.nozzle_mapping  = e("BAMBU_PRINT_NOZZLE_MAP");
+    in.task_bed_type   = e("BAMBU_PRINT_BED_TYPE");
+    in.task_use_ams           = eb("BAMBU_PRINT_USE_AMS", 0);
+    in.task_bed_leveling      = eb("BAMBU_PRINT_BED_LEVEL", 1);
+    in.task_flow_cali         = eb("BAMBU_PRINT_FLOW_CALI", 0);
+    in.task_vibration_cali    = eb("BAMBU_PRINT_VIB_CALI", 0);
+    in.task_layer_inspect     = eb("BAMBU_PRINT_LAYER_INSPECT", 0);
+    in.task_record_timelapse  = eb("BAMBU_PRINT_TIMELAPSE", 0);
+    in.use_ssl_for_ftp        = eb("BAMBU_PRINT_SSL_FTP", 1);
+    in.use_ssl_for_mqtt       = eb("BAMBU_PRINT_SSL_MQTT", 1);
+
+    const char* route = getenv("BAMBU_PRINT_ROUTE");
+    return do_start_print(lib, agent, &in, route);
+}
