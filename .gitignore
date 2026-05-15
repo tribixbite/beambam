@@ -68,6 +68,7 @@ runtime/libEGL_x2dadreno.so
 # probe binaries (no extension); keep the .c sources tracked
 runtime/probes/probe_vendor_gl
 runtime/probes/probe_angle_direct
+runtime/probes/probe_vendor_window
 
 # Old draft notes
 UNANSWERED_QUESTIONS.md
