@@ -3610,34 +3610,48 @@ def cmd_fetch(args: argparse.Namespace) -> int:
         if not m:
             sys.exit(f"can't extract Thingiverse model ID from {url!r}")
         tid = m.group(1)
-        # Thingiverse API requires a Bearer token (free, signup at thingiverse.com/developers)
-        ti_token = os.environ.get("THINGIVERSE_TOKEN", "").strip()
+        # Thingiverse gated public-API + /download:NNN behind auth in 2026.
+        # Three input modes, in priority order:
+        #   1) THINGIVERSE_TOKEN — official Bearer token from
+        #      https://www.thingiverse.com/apps/create (free).
+        #   2) THINGIVERSE_COOKIE — raw Cookie header from a logged-in
+        #      browser session. Use this if you've signed in on the same
+        #      machine: copy the Cookie value from devtools Network tab on
+        #      any thingiverse.com request.
+        #   3) No auth → public-API will 401 and we surface a clear error.
+        ti_token  = os.environ.get("THINGIVERSE_TOKEN", "").strip()
+        ti_cookie = os.environ.get("THINGIVERSE_COOKIE", "").strip()
         api = f"https://api.thingiverse.com/things/{tid}/files"
         try:
-            extra = {"Authorization": f"Bearer {ti_token}"} if ti_token else None
-            files_meta = _json.loads(http_get(api, accept="application/json",
-                                              extra_headers=extra))
+            extra = {}
+            if ti_token:  extra["Authorization"] = f"Bearer {ti_token}"
+            if ti_cookie: extra["Cookie"] = ti_cookie
+            files_meta = _json.loads(http_get(
+                api, accept="application/json",
+                extra_headers=extra or None))
             for entry in files_meta:
                 dl = entry.get("download_url") or entry.get("public_url")
                 name = entry.get("name", f"thingiverse-{tid}-{entry.get('id', 'x')}.stl")
                 if dl and name.lower().endswith((".stl", ".3mf", ".obj", ".step", ".stp")):
-                    saved.append(save(name, http_get(dl, accept="application/octet-stream")))
+                    saved.append(save(name, http_get(
+                        dl, accept="application/octet-stream",
+                        extra_headers=(
+                            {"Cookie": ti_cookie} if ti_cookie else None))))
                     if not args.all:
                         break
-            if saved:
-                pass  # done
         except Exception as e:
-            print(f"[fetch] Thingiverse API failed: {e}, falling back to page scrape",
-                  file=sys.stderr)
+            print(f"[fetch] Thingiverse API failed: {e}", file=sys.stderr)
         if not saved:
-            # Scrape the public page for download URLs (data-href attributes
-            # on the file list are direct .stl/.3mf links).
+            # Page scrape (still works for some legacy models)
             page_url = f"https://www.thingiverse.com/thing:{tid}"
             try:
-                page = http_get(page_url).decode("utf-8", errors="replace")
+                page = http_get(
+                    page_url,
+                    extra_headers=({"Cookie": ti_cookie} if ti_cookie else None)
+                ).decode("utf-8", errors="replace")
             except Exception as e:
-                sys.exit(f"thingiverse page fetch failed: {e}")
-            # Look for /download:NNN paths or direct CDN URLs
+                print(f"[fetch] page fetch failed: {e}", file=sys.stderr)
+                page = ""
             for fpat in (r'href="(https://cdn\.thingiverse\.com/[^"]+\.(?:stl|3mf|obj))"',
                          r'href="(/download:\d+)"'):
                 for fm in re.finditer(fpat, page):
@@ -3648,7 +3662,10 @@ def cmd_fetch(args: argparse.Namespace) -> int:
                     if not any(name.lower().endswith(e) for e in (".stl", ".3mf", ".obj")):
                         name += ".stl"
                     try:
-                        saved.append(save(name, http_get(fu, accept="application/octet-stream")))
+                        saved.append(save(name, http_get(
+                            fu, accept="application/octet-stream",
+                            extra_headers=(
+                                {"Cookie": ti_cookie} if ti_cookie else None))))
                     except Exception as e:
                         print(f"[fetch] {fu} → {e}", file=sys.stderr)
                     if not args.all:
@@ -3656,9 +3673,15 @@ def cmd_fetch(args: argparse.Namespace) -> int:
                 if saved:
                     break
         if not saved:
-            sys.exit(f"no STL/3MF links found for Thingiverse {tid} — "
-                     f"model may require API key (THINGIVERSE_TOKEN env). "
-                     f"Workaround: download manually + use direct file URL.")
+            sys.exit(f"no STL/3MF links found for Thingiverse {tid}.\n"
+                     f"Thingiverse requires authentication for downloads as of "
+                     f"2026 — set ONE of:\n"
+                     f"  THINGIVERSE_TOKEN=<bearer>   "
+                     f"(get one at thingiverse.com/apps/create, free)\n"
+                     f"  THINGIVERSE_COOKIE='session=...'   "
+                     f"(copy Cookie header from a logged-in browser)\n"
+                     f"Alternatively: open in browser, save the .stl/.3mf, "
+                     f"and pass the local file path to BambuStudio directly.")
     else:
         sys.exit(f"unsupported URL host {host!r} — supported: "
                  f"direct STL/3MF/OBJ links, makerworld.com, printables.com, "
