@@ -489,6 +489,12 @@ def main() -> int:
             print(f"[x2d_slice] BS CLI exited rc={rc}", file=sys.stderr)
             return rc
 
+    # Post-process: patch slice_info.config to fill X2D-specific fields
+    # the BS CLI writes blank but the firmware validates. Matches the
+    # shape of an official BS Desktop export (see docs/SLICE_COMPARISON_*).
+    if args.out.exists():
+        patch_slice_info(args.out, color=color_hex if color_hex else None)
+
     # Print summary
     if args.out.exists():
         with zipfile.ZipFile(args.out) as z:
@@ -502,6 +508,88 @@ def main() -> int:
                     print(f"  {line.strip()}", file=sys.stderr)
                     break
     return 0
+
+
+def patch_slice_info(out_3mf: Path, color: str | None = None) -> None:
+    """Post-process slice_info.config in `out_3mf` to inject the X2D-specific
+    metadata fields that the BS CLI build writes blank (printer_model_id,
+    tray_info_idx, weight) but which the X2D firmware validates when it
+    receives a print.project_file MQTT command.
+
+    Strategy:
+      * printer_model_id: always "N6" (X2D's official model identifier).
+      * tray_info_idx: derive from the filament colour using the Bambu
+        SKU map (see filaments_color_codes.json). Fallback "GFA00".
+      * weight: copy from the filament line's `used_g` attribute when
+        the slicer populated it; leave alone otherwise (let prediction-
+        based formats stay consistent).
+    """
+    import re
+
+    try:
+        with zipfile.ZipFile(out_3mf, "r") as zin:
+            try:
+                raw = zin.read("Metadata/slice_info.config").decode("utf-8")
+            except KeyError:
+                return
+            other = {n: zin.read(n) for n in zin.namelist()
+                     if n != "Metadata/slice_info.config"}
+    except (zipfile.BadZipFile, KeyError):
+        return
+
+    patched = raw
+
+    # printer_model_id
+    patched = re.sub(
+        r'<metadata key="printer_model_id" value=""\s*/>',
+        '<metadata key="printer_model_id" value="N6"/>',
+        patched,
+    )
+
+    # tray_info_idx — pick first SKU matching the filament hex colour
+    sku = "GFA00"
+    if color and COLOR_CODES_JSON.exists():
+        try:
+            import json as _j
+            codes = _j.loads(COLOR_CODES_JSON.read_text())
+            wanted = color.upper().lstrip("#").rstrip("FF")
+            for entry in codes:
+                hexv = (entry.get("color_code") or "").lstrip("#").upper().rstrip("FF")
+                if hexv == wanted and entry.get("sku"):
+                    sku = entry["sku"]
+                    break
+        except Exception:
+            pass
+    patched = re.sub(
+        r'(<filament[^/]*?)tray_info_idx=""',
+        rf'\1tray_info_idx="{sku}"',
+        patched,
+    )
+
+    # weight: copy used_g into weight if weight is blank
+    m_used_g = re.search(r'<filament[^>]*used_g="([0-9.]+)"', patched)
+    if m_used_g:
+        used_g = m_used_g.group(1)
+        if used_g and used_g != "0.00":
+            patched = re.sub(
+                r'<metadata key="weight" value=""\s*/>',
+                f'<metadata key="weight" value="{used_g}"/>',
+                patched,
+            )
+
+    if patched == raw:
+        return
+
+    # Rewrite zip with patched slice_info.config
+    tmp = out_3mf.with_suffix(".tmp.3mf")
+    with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as zout:
+        zout.writestr("Metadata/slice_info.config", patched)
+        for name, data in other.items():
+            zout.writestr(name, data)
+    tmp.replace(out_3mf)
+    print(f"[x2d_slice] patched slice_info.config "
+          f"(printer_model_id=N6, tray_info_idx={sku}, weight=used_g)",
+          file=sys.stderr)
 
 
 if __name__ == "__main__":
