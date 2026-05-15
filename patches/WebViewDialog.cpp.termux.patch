@@ -1,11 +1,22 @@
 diff --git a/src/slic3r/GUI/WebViewDialog.cpp b/src/slic3r/GUI/WebViewDialog.cpp
-index f4d88e7..d58646b 100644
+index b9d5b37..5c8da6c 100644
 --- a/src/slic3r/GUI/WebViewDialog.cpp
 +++ b/src/slic3r/GUI/WebViewDialog.cpp
-@@ -162,6 +162,28 @@ WebViewPanel::WebViewPanel(wxWindow *parent)
+@@ -20,6 +20,10 @@
+ #include <wx/toolbar.h>
+ #include <wx/textdlg.h>
+ #include <wx/url.h>
++#include <wx/filename.h>
++#include <wx/dir.h>
++#include <wx/utils.h>
++#include <wx/process.h>
+ 
+ #include <slic3r/GUI/Widgets/WebView.hpp>
+ #include "slic3r/GUI/Widgets/StateColor.hpp"
+@@ -159,6 +163,27 @@ WebViewPanel::WebViewPanel(wxWindow *parent)
      left_group->Add(m_online_back_btn, 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP(12));
      left_group->Add(m_online_refresh_btn, 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP(12));
-
+ 
 +    // x2d/termux #81 — quick-launch buttons that load Printables (Prusaverse)
 +    // and Thingiverse in the same online webview alongside MakerWorld. Both
 +    // sites have public model browsing; loading them in-app saves a hop to
@@ -29,25 +40,49 @@ index f4d88e7..d58646b 100644
 +
      m_online_open_browser_btn = make_online_toolbar_button("open_in_browser", _L("Open in browser"));
      right_group->Add(m_online_open_browser_btn, 0, wxALIGN_CENTER_VERTICAL);
-
-@@ -194,6 +216,11 @@ WebViewPanel::WebViewPanel(wxWindow *parent)
-         wxLogError("Could not init m_browser");
-         return;
-     }
-+    // BISECT: AddScriptMessageHandler("wx") removed — calling it on
-+    // m_browser before its first navigation triggers a NULL deref in
-+    // OnNavigationRequest under WebKit2GTK 4.1 + wx 3.3 on Termux.
-+    // The home-page Recently-Opened bridge stays dead, but the GUI
-+    // launches.
-
-     // Makerworld webview
-     m_browserMW = WebView::CreateWebView(m_online_container, "about:blank");
-@@ -932,7 +959,7 @@ void WebViewPanel::SendMakerlabList(  )
-             CallAfter([this, body] {
-                 auto body2 = from_u8(body);
  
--                json jLab = json::parse(body2);
-+                json jLab = json::parse(body2.ToStdString());
-                 if (jLab.contains("list"))
-                 {
-                     int nSize = jLab["list"].size();
+@@ -1471,6 +1496,44 @@ void WebViewPanel::OnNavigationRequest(wxWebViewEvent& evt)
+             surl.EndsWith("bbsflmt")
+             )
+         {
++            // x2d/termux #82 — model-site downloads: try in-app import
++            // first via the x2d_bridge `fetch` CLI (handles MakerWorld /
++            // Printables / Thingiverse URL formats and emits the saved
++            // local file paths as JSON to stdout). Falls back to
++            // external browser if the bridge isn't reachable.
++            const wxString surl_lo = surl.Lower();
++            const bool is_model_site =
++                surl_lo.Contains("makerworld.com")  ||
++                surl_lo.Contains("printables.com")  ||
++                surl_lo.Contains("thingiverse.com");
++            if (is_model_site) {
++                const wxString dl_dir = wxFileName::GetTempDir() + "/x2d_dl";
++                wxFileName::Mkdir(dl_dir, 0700, wxPATH_MKDIR_FULL);
++                const wxString cmd = wxString::Format(
++                    "python3.12 %s/x2d_bridge.py fetch %s --out-dir %s --json",
++                    wxGetenv("X2D_REPO") ? wxGetenv("X2D_REPO")
++                                         : wxString(getenv("HOME") ? getenv("HOME") : "")
++                                           + "/git/x2d",
++                    url, dl_dir);
++                wxArrayString out_lines, err_lines;
++                long rc = wxExecute(cmd, out_lines, err_lines, wxEXEC_SYNC);
++                if (rc == 0) {
++                    wxArrayString files;
++                    wxDir::GetAllFiles(dl_dir, &files,
++                        "*.3mf", wxDIR_FILES);
++                    if (files.IsEmpty()) {
++                        wxDir::GetAllFiles(dl_dir, &files,
++                            "*.stl", wxDIR_FILES);
++                    }
++                    if (!files.IsEmpty()) {
++                        wxGetApp().plater()->load_files(files);
++                        evt.Veto();
++                        return;
++                    }
++                }
++                // bridge unavailable or download produced no files → fall
++                // through to external-browser handling, preserving old UX.
++            }
+             wxLaunchDefaultBrowser(url);
+ 
+             evt.Veto();
