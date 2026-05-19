@@ -352,3 +352,46 @@ extern "C" int do_start_print_from_env(void* lib, void* agent)
     const char* route = getenv("BAMBU_PRINT_ROUTE");
     return do_start_print(lib, agent, &in, route);
 }
+
+// ─── get_printer_firmware shim ──────────────────────────────────────────────
+//
+// Calls bambu_network_get_printer_firmware(agent, dev_id, http_code*, http_body*)
+// and writes the returned JSON body to BAMBU_FW_OUT (or stdout if unset).
+//
+//   int get_printer_firmware(void* agent, std::string dev_id,
+//                            unsigned* http_code, std::string* http_body);
+
+typedef int (*func_get_printer_firmware)(
+    void* agent, std::string dev_id,
+    unsigned* http_code, std::string* http_body);
+
+extern "C" int do_get_printer_firmware(void* lib, void* agent, const char* dev_id_c)
+{
+    auto fn = (func_get_printer_firmware)
+        dlsym(lib, "bambu_network_get_printer_firmware");
+    if (!fn) {
+        fprintf(stderr, "[fw] bambu_network_get_printer_firmware symbol missing\n");
+        return -1;
+    }
+    std::string dev_id = dev_id_c ? dev_id_c : "";
+    unsigned http_code = 0;
+    std::string http_body;
+    int rc = fn(agent, dev_id, &http_code, &http_body);
+    fprintf(stderr, "[fw] get_printer_firmware rc=%d http=%u body_len=%zu\n",
+            rc, http_code, http_body.size());
+
+    const char* out_path = getenv("BAMBU_FW_OUT");
+    if (out_path && *out_path) {
+        FILE* f = fopen(out_path, "wb");
+        if (f) {
+            fwrite(http_body.data(), 1, http_body.size(), f);
+            fclose(f);
+            fprintf(stderr, "[fw] wrote %zu bytes to %s\n", http_body.size(), out_path);
+        } else {
+            fprintf(stderr, "[fw] open(%s) failed\n", out_path);
+        }
+    } else {
+        fprintf(stderr, "[fw] body:\n%s\n", http_body.c_str());
+    }
+    return rc;
+}

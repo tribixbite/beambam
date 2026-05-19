@@ -86,6 +86,8 @@ typedef int   (*connect_printer_fn)(void*, const stdstring_t*, const stdstring_t
 typedef int   (*set_user_selected_machine_fn)(void*, const stdstring_t*);
 typedef int   (*start_subscribe_fn)(void*, const stdstring_t*);
 typedef int   (*send_message_fn)(void*, const stdstring_t*, const stdstring_t*, int, int);
+typedef int   (*get_printer_firmware_fn)(void*, const stdstring_t*, unsigned*, stdstring_t*);
+typedef int   (*get_oss_config_fn)(void*, stdstring_t*, const stdstring_t*, unsigned*, stdstring_t*);
 
 int main(int argc, char** argv) {
     setvbuf(stdout, NULL, _IONBF, 0);
@@ -241,6 +243,80 @@ int main(int argc, char** argv) {
         install_device_cert(agent, &s, false);
     }
     fprintf(stderr, "[driver] install_device_cert RETURNED\n");
+
+    // Optional: query the cloud for this printer's firmware manifest.
+    // bambu_network_get_printer_firmware(agent, dev_id, &http_code, &http_body)
+    // returns JSON enumerating each module's available firmware bundles + URLs.
+    if (getenv("BAMBU_GET_FIRMWARE")) {
+        get_printer_firmware_fn get_fw =
+            (get_printer_firmware_fn)dlsym(h, "bambu_network_get_printer_firmware");
+        if (!get_fw) {
+            fprintf(stderr, "[driver] get_printer_firmware symbol missing\n");
+        } else {
+            stdstring_t did = mkstr(dev_id);
+            // Initialize an empty libstdc++ std::string. SSO form: _M_p points
+            // into _M_local_buf, length 0, null-terminated. The callee will
+            // mutate to whatever response we get (may heap-allocate for large
+            // body — we don't care; we leak on exit).
+            stdstring_t body;
+            body._M_p = body.u._M_local_buf;
+            body._M_length = 0;
+            body.u._M_local_buf[0] = '\0';
+            unsigned http_code = 0;
+            fprintf(stderr, "[driver] get_printer_firmware(dev_id='%s') ...\n", dev_id);
+            int rc = get_fw(agent, &did, &http_code, &body);
+            fprintf(stderr, "[driver] get_printer_firmware rc=%d http=%u len=%zu\n",
+                    rc, http_code, body._M_length);
+            const char* out = getenv("BAMBU_FW_OUT");
+            if (out && *out) {
+                FILE* f = fopen(out, "wb");
+                if (f) {
+                    fwrite(body._M_p, 1, body._M_length, f);
+                    fclose(f);
+                    fprintf(stderr, "[driver] wrote firmware manifest to %s\n", out);
+                }
+            } else {
+                fprintf(stderr, "[driver] body:\n%.*s\n",
+                        (int)body._M_length, body._M_p);
+            }
+        }
+    }
+
+    // Optional: query OSS config (cloud-storage credentials).
+    if (getenv("BAMBU_GET_OSS")) {
+        get_oss_config_fn get_oss =
+            (get_oss_config_fn)dlsym(h, "bambu_network_get_oss_config");
+        if (!get_oss) {
+            fprintf(stderr, "[driver] get_oss_config symbol missing\n");
+        } else {
+            stdstring_t config, http_error, country;
+            // Init all three as empty SSO strings
+            config.u._M_local_buf[0] = 0; config._M_p = config.u._M_local_buf; config._M_length = 0;
+            http_error.u._M_local_buf[0] = 0; http_error._M_p = http_error.u._M_local_buf; http_error._M_length = 0;
+            country = mkstr("us");
+            unsigned http_code = 0;
+            fprintf(stderr, "[driver] get_oss_config(country='us') ...\n");
+            int rc = get_oss(agent, &config, &country, &http_code, &http_error);
+            fprintf(stderr, "[driver] get_oss_config rc=%d http=%u config_len=%zu err_len=%zu\n",
+                    rc, http_code, config._M_length, http_error._M_length);
+            const char* out = getenv("BAMBU_OSS_OUT");
+            if (out && *out) {
+                FILE* f = fopen(out, "wb");
+                if (f) {
+                    fwrite(config._M_p, 1, config._M_length, f);
+                    fclose(f);
+                    fprintf(stderr, "[driver] wrote oss config to %s\n", out);
+                }
+            } else {
+                fprintf(stderr, "[driver] oss config:\n%.*s\n",
+                        (int)config._M_length, config._M_p);
+            }
+            if (http_error._M_length > 0) {
+                fprintf(stderr, "[driver] http_error: %.*s\n",
+                        (int)http_error._M_length, http_error._M_p);
+            }
+        }
+    }
 
     // Optional publish mode: when BAMBU_PUBLISH_MSG is set, call
     // bambu_network_send_message_to_printer(agent, dev_id, json_str, qos, flag).
