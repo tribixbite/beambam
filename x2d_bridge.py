@@ -3332,6 +3332,38 @@ def _camera_cmd(command: str, **extra) -> dict:
     return {"camera": body}
 
 
+def _xcam_cmd(module_name: str, on_off: bool, halt_print_sensitivity: str | None = None) -> dict:
+    """Build an `{"xcam": {"command": "xcam_control_set", ...}}` payload.
+    Used to toggle camera-driven detectors that the X2D / H2D / N7 firmware
+    runs during a print. Modules supported in firmware include:
+      * fod_check                  — Foreign Object Detection on the build
+                                     plate (firmware stage 74). When on,
+                                     pre-print stage 73/74 runs; if junk is
+                                     detected on the plate the firmware
+                                     halts the print start (print_halt=true).
+      * buildplate_marker_detector — verify plate is properly seated
+      * first_layer_inspector      — AI-driven first-layer fault scan
+      * printing_monitor           — general AI monitoring (spaghetti etc.)
+      * spaghetti_detector         — alias of printing_monitor on older fw
+      * pileup_detector            — purge-chute pile-up detection
+      * clump_detector             — nozzle clumping detection
+      * airprint_detector          — air-printing (extruder skip) detection
+      * plate_offset_switch        — toggle plate-offset bed-leveling shortcut
+    See DevPrintOptions.cpp:451 for the canonical payload shape.
+    """
+    body = {
+        "command":     "xcam_control_set",
+        "sequence_id": _next_seq(),
+        "module_name": module_name,
+        "control":     bool(on_off),
+        "enable":      bool(on_off),    # older firmware spelling
+        "print_halt":  True,            # always honour halt-on-detect
+    }
+    if halt_print_sensitivity:
+        body["halt_print_sensitivity"] = halt_print_sensitivity
+    return {"xcam": body}
+
+
 def cmd_pause(args: argparse.Namespace) -> int:
     # MachineObject::command_task_pause — DeviceManager.cpp:1337
     return _publish_one(args, _print_cmd("pause", param=""))
@@ -3397,6 +3429,28 @@ def cmd_chamber_light(args: argparse.Namespace) -> int:
         loop_times=int(args.loops),
         interval_time=int(args.interval),
     )
+    return _publish_one(args, payload)
+
+
+def cmd_fod_check(args: argparse.Namespace) -> int:
+    """Toggle the X2D's Foreign Object Detection on the build plate.
+
+    Mechanism: BambuStudio's xcam_control_set MQTT publish with
+    module_name=fod_check (DeviceCore/DevPrintOptions.cpp:544). When on, the
+    firmware runs Stage 73 (build-plate alignment) → Stage 74 (heatbed
+    surface foreign object detection) → Stage 75 (heatbed underside
+    detection) before every print start. If junk is detected on the plate
+    the firmware halts the print start (no leftover from the previous job
+    is allowed onto the new run).
+
+    The full stage table is in `BambuStudio/src/slic3r/GUI/DeviceManager.cpp:86`.
+    Print-options feature flag: support_build_plate_marker_detect=true with
+    type 2 on X2D / N7 / H2D (resources/printers/N7.json:44).
+    """
+    state = args.state.lower()
+    if state not in ("on", "off"):
+        sys.exit(f"fod-check state must be on/off, got: {state}")
+    payload = _xcam_cmd("fod_check", state == "on")
     return _publish_one(args, payload)
 
 
@@ -5886,6 +5940,19 @@ def main() -> int:
     cl.add_argument("--loops",     type=int, default=0)
     cl.add_argument("--interval",  type=int, default=0)
     cl.set_defaults(fn=cmd_chamber_light)
+
+    fod = sub.add_parser(
+        "fod-check",
+        help="Toggle X2D / N7 / H2D firmware Foreign-Object-Detection "
+             "(verifies build plate is clear before each print start)",
+        description="Turns on the firmware's pre-print build-plate check. "
+                    "With this on, the printer scans the heatbed via its "
+                    "camera (Stage 74) before starting a job; if a part or "
+                    "debris from the previous run is still on the plate the "
+                    "firmware refuses to start. No physical part pushoff — "
+                    "this is a check + halt, not a sweep.")
+    fod.add_argument("state", choices=["on", "off"])
+    fod.set_defaults(fn=cmd_fod_check)
 
     au = sub.add_parser("ams-unload", help="Unload filament from an AMS bay")
     au.add_argument("ams", type=int, help="AMS index (0..N)")
