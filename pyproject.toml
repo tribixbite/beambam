@@ -1,0 +1,186 @@
+[build-system]
+requires = ["hatchling>=1.18"]
+build-backend = "hatchling.build"
+
+[project]
+name = "beambam"
+version = "1.1.0"
+description = "Signed-MQTT bridge + daemon for Bambu Lab printers (X1/P1/A1/H2/X2D, Jan-2025+ firmware). Includes Home Assistant publisher, MCP server, web UI, slicing helpers, and a print-plan analyzer."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+authors = [
+    { name = "Will Stone", email = "willstone@gmail.com" },
+]
+keywords = [
+    "bambu",
+    "bambulab",
+    "3d-printing",
+    "x2d",
+    "x1c",
+    "p1s",
+    "a1",
+    "h2d",
+    "mqtt",
+    "ftps",
+    "home-assistant",
+    "mcp",
+    "model-context-protocol",
+    "slicer",
+    "ams",
+]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Intended Audience :: End Users/Desktop",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS",
+    "Operating System :: Microsoft :: Windows",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Home Automation",
+    "Topic :: System :: Networking",
+    "Topic :: Printing",
+]
+
+dependencies = [
+    "paho-mqtt>=2.0",
+    "cryptography>=41",
+]
+
+[project.optional-dependencies]
+slicing = [
+    "numpy-stl",
+    "Pillow",
+]
+mcp = [
+    "mcp>=1.0",
+]
+webui = [
+    "aiohttp>=3.9",
+]
+assistant = [
+    "anthropic>=0.30",
+    "openai>=1.30",
+]
+all = [
+    "beambam[slicing,mcp,webui,assistant]",
+]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio",
+    "ruff>=0.6",
+    "mypy>=1.10",
+    "hatchling>=1.18",
+]
+
+[project.urls]
+Homepage = "https://beambam.boo"
+Documentation = "https://github.com/tribixbite/x2d/tree/main/docs"
+Repository = "https://github.com/tribixbite/x2d"
+Issues = "https://github.com/tribixbite/x2d/issues"
+Changelog = "https://github.com/tribixbite/x2d/blob/main/CHANGELOG.md"
+
+[project.scripts]
+beambam = "x2d_bridge:main"
+bb = "x2d_bridge:main"
+beambam-mcp = "runtime.mcp.server:main"
+beambam-slice = "x2d_slice:main"
+beambam-upload = "lan_upload:main"
+beambam-print = "lan_print:main"
+
+# --- Build configuration ---------------------------------------------------
+# Transitional v1.1.0 layout: package `beambam/` wraps the existing top-level
+# modules (x2d_bridge.py, cloud_client.py, runtime/, etc.) as re-exports.
+# A future refactor (task #3) will move the implementations under
+# src/beambam/ proper; for now we force-include them so the wheel ships a
+# functional CLI without breaking the existing internal call sites.
+
+[tool.hatch.build.targets.wheel]
+packages = ["beambam", "runtime"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"x2d_bridge.py" = "x2d_bridge.py"
+"cloud_client.py" = "cloud_client.py"
+"lan_print.py" = "lan_print.py"
+"lan_upload.py" = "lan_upload.py"
+"x2d_slice.py" = "x2d_slice.py"
+"inject_thumbnails.py" = "inject_thumbnails.py"
+"remix_3mf.py" = "remix_3mf.py"
+"preflight_3mf.py" = "preflight_3mf.py"
+"resolve_profile.py" = "resolve_profile.py"
+"mcp_x2d.py" = "mcp_x2d.py"
+"bambu_cert.py" = "bambu_cert.py"
+"web" = "web"
+
+[tool.hatch.build]
+exclude = [
+    "runtime/bambu_extract/**",
+    "runtime/network_shim/**",
+    "runtime/**/test_*.py",
+    "runtime/**/__pycache__/**",
+    "**/*.pyc",
+]
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "/beambam",
+    "/x2d_bridge.py",
+    "/cloud_client.py",
+    "/lan_print.py",
+    "/lan_upload.py",
+    "/x2d_slice.py",
+    "/inject_thumbnails.py",
+    "/remix_3mf.py",
+    "/preflight_3mf.py",
+    "/resolve_profile.py",
+    "/mcp_x2d.py",
+    "/bambu_cert.py",
+    "/runtime",
+    "/web",
+    "/tests",
+    "/docs",
+    "/samples",
+    "/README.md",
+    "/LICENSE",
+    "/CHANGELOG.md",
+    "/pyproject.toml",
+]
+exclude = [
+    "/runtime/bambu_extract/out/**",
+    "/runtime/network_shim/build/**",
+    "**/__pycache__",
+    "**/*.pyc",
+]
+
+# --- Tooling ---------------------------------------------------------------
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "RUF"]
+ignore = [
+    "E501",   # line length — long URLs and gcode templates
+    "B008",   # function calls in argument defaults — argparse pattern
+]
+
+[tool.mypy]
+python_version = "3.10"
+warn_unused_ignores = true
+warn_redundant_casts = true
+ignore_missing_imports = true
+files = ["beambam"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests", "runtime"]
+addopts = "-ra --strict-markers"
+markers = [
+    "live: requires a real printer reachable at BEAMBAM_TEST_IP (default skip in CI)",
+    "slow: takes > 10 seconds",
+]
