@@ -5803,6 +5803,12 @@ def cmd_cloud_publish(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_analyze(args: argparse.Namespace) -> int:
+    """`beambam analyze <file.3mf>` — wraps beambam.analyze.cli_main()."""
+    from beambam.analyze import cli_main
+    return cli_main(args.file, json_out=getattr(args, "json_out", False))
+
+
 def _package_version() -> str:
     """Return the installed `beambam` version, or a source-checkout
     fallback if the package isn't installed (e.g. running from a clone).
@@ -6356,6 +6362,16 @@ def main() -> int:
     ha.add_argument("--discovery-prefix", default="homeassistant",
                     help="HA discovery topic prefix (default homeassistant)")
     ha.set_defaults(fn=cmd_ha_publish)
+
+    an = sub.add_parser(
+        "analyze",
+        help="Dissect a .gcode.3mf — filament/nozzle assignment, per-phase "
+             "toolchanges, real flush volume, AMS-tray requirements, hints.",
+    )
+    an.add_argument("file", help="Path to a .gcode.3mf file")
+    an.add_argument("--json", dest="json_out", action="store_true",
+                    help="Machine-readable JSON instead of human summary")
+    an.set_defaults(fn=cmd_analyze)
 
     wr = sub.add_parser(
         "webrtc",
