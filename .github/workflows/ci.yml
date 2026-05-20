@@ -1,21 +1,16 @@
 name: ci
 
 # Validates the things we can validate without a real Bambu printer:
-#   * Python lint (ruff) + type-check (mypy --strict where reasonable)
-#   * Crypto self-test: sign + verify a payload through the same code
-#     path the bridge uses, so a bad cert / paho version surfaces here
-#     instead of silently broken in production.
-#   * Bridge `serve` smoke test: spawn it, hit it via Unix socket with
-#     the wire format from runtime/network_shim/PROTOCOL.md, assert the
-#     hello/get_version/unknown-op responses are well-formed.
-#   * Tarball SHA verifier: when a release exists, fetch the
-#     released .sha256 file and assert it matches the file we just
-#     attached (catches "uploaded but didn't refresh sha" race).
+#   * pyproject.toml builds a wheel + sdist that install cleanly
+#   * ruff lint of the package + helper modules
+#   * mypy on the beambam shim (catches re-export drift)
+#   * pytest -m "not live" across Python 3.10–3.13 on Linux + macOS
+#   * Tarball SHA verifier for the aarch64 Termux release
 #
-# We can't dlopen the .so on the GitHub runner (it's x86_64 Linux,
-# the .so is aarch64 Android-bionic) — that's covered by
-# runtime/network_shim/tests/test_shim_e2e.py which a maintainer runs
-# locally on a Termux device with a printer.
+# Live tests (real printer required) are NOT run here — they're marked
+# @pytest.mark.live via conftest's live_printer fixture and are skipped
+# whenever BEAMBAM_TEST_IP isn't set. A maintainer runs them locally on
+# a Termux device with a printer attached.
 
 on:
   push:
@@ -28,51 +23,87 @@ permissions:
   contents: read
 
 jobs:
-  python:
+  lint:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Install runtime + dev deps
+      - run: pip install --upgrade pip
+      - run: pip install ruff mypy paho-mqtt cryptography
+      - name: ruff check
+        run: ruff check beambam x2d_bridge.py cloud_client.py lan_print.py lan_upload.py x2d_slice.py inject_thumbnails.py remix_3mf.py preflight_3mf.py resolve_profile.py mcp_x2d.py bambu_cert.py
+      - name: mypy (beambam shim)
+        run: mypy beambam
+
+  test:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-latest]
+        python: ["3.10", "3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - run: pip install --upgrade pip
+      - name: Install package (editable) + dev deps
+        run: pip install -e .[dev]
+      - name: pytest (offline)
+        run: pytest -m "not live"
+
+  build:
+    runs-on: ubuntu-24.04
+    needs: [lint, test]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install --upgrade pip build
+      - name: Build wheel + sdist
+        run: python -m build
+      - name: Verify wheel installs + entry points present
         run: |
-          python -m pip install --upgrade pip
-          pip install paho-mqtt cryptography ruff mypy
-      - name: Lint
-        run: |
-          ruff check x2d_bridge.py bambu_cert.py \
-            runtime/network_shim/tests/test_shim_e2e.py \
-            inject_thumbnails.py resolve_profile.py make_frame.py \
-            test_signed_mqtt.py lan_print.py lan_upload.py
-      - name: Type-check the bridge core
-        run: |
-          mypy --ignore-missing-imports --no-strict-optional \
-               --warn-redundant-casts --warn-unused-ignores \
-               x2d_bridge.py bambu_cert.py
-      - name: Crypto roundtrip
-        run: python tests/test_signing_roundtrip.py
-      - name: Bridge serve smoke
-        run: python tests/test_serve_smoke.py
+          pip install dist/beambam-*.whl
+          beambam --version
+          bb --version
+          which beambam-mcp beambam-slice beambam-upload beambam-print
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/*
+          if-no-files-found: error
 
   release-sha:
     runs-on: ubuntu-24.04
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     steps:
       - uses: actions/checkout@v4
-      - name: Verify release tarball SHA matches the .sha256 asset
+      - name: Verify Termux aarch64 release tarball SHA matches its .sha256
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -e
-          if ! gh release view v0.1.0 >/dev/null 2>&1; then
-            echo "no v0.1.0 release yet; skipping"
+          # Latest tag that has a tarball; v1.0.0 today.
+          tag=$(gh release list --limit 5 --json tagName -q '.[].tagName' | head -1)
+          if [ -z "$tag" ]; then
+            echo "no releases yet; skipping"
             exit 0
           fi
-          gh release download v0.1.0 -p '*.tar.xz' -p '*.sha256' -D /tmp/release
+          if ! gh release view "$tag" --json assets -q '.assets[].name' | grep -q '\.tar\.xz$'; then
+            echo "no .tar.xz asset on $tag; skipping"
+            exit 0
+          fi
+          gh release download "$tag" -p '*.tar.xz' -p '*.sha256' -D /tmp/release
           cd /tmp/release
-          recorded=$(awk '{print $1}' bambustudio-x2d-termux-aarch64.tar.xz.sha256)
-          actual=$(sha256sum bambustudio-x2d-termux-aarch64.tar.xz | awk '{print $1}')
-          echo "recorded: $recorded"
-          echo "actual:   $actual"
-          [ "$recorded" = "$actual" ]
+          for tarball in *.tar.xz; do
+            recorded=$(awk '{print $1}' "${tarball}.sha256")
+            actual=$(sha256sum "$tarball" | awk '{print $1}')
+            echo "$tarball  recorded=$recorded  actual=$actual"
+            [ "$recorded" = "$actual" ]
+          done

@@ -1,0 +1,84 @@
+name: release
+
+# Publishes beambam to PyPI via OIDC trusted publishing.
+#
+# Triggers ONLY on `release: published` (fired by `gh release create`) +
+# manual workflow_dispatch. Tag-push alone does NOT trigger this — that's
+# a documented GitHub behaviour: tag pushes do not fire `release` events.
+#
+# Setup checklist (one-time, owner):
+#   1. Visit https://pypi.org/manage/account/publishing/ and add a
+#      trusted publisher for project `beambam`:
+#        Owner:        tribixbite
+#        Repository:   x2d
+#        Workflow:     release.yml
+#        Environment:  pypi  (matches the `environment:` block below)
+#   2. (For first publish only) The PyPI project name must be claimed —
+#      manual upload of v1.1.0a0 with a token works, or pre-create the
+#      project page via the legacy upload form.
+#
+# Critical: NO PYPI_TOKEN / TWINE_PASSWORD env vars anywhere. With OIDC
+# trusted publishing the token has to be absent — pypa/gh-action-pypi-publish
+# detects OIDC by the lack of password and the presence of id-token.
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Skip the upload step (test the build only)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install --upgrade pip build
+      - run: python -m build
+      - name: Sanity-check wheel installs + version reports
+        run: |
+          pip install dist/beambam-*.whl
+          installed=$(beambam --version)
+          echo "$installed"
+          # Compare against the release tag (strip leading 'v').
+          tag="${{ github.event.release.tag_name }}"
+          if [ -n "$tag" ]; then
+            expected="beambam ${tag#v}"
+            [ "$installed" = "$expected" ] || {
+              echo "::error::version mismatch — installed=$installed tag=$expected"
+              exit 1
+            }
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/*
+          if-no-files-found: error
+
+  publish:
+    needs: [build]
+    runs-on: ubuntu-24.04
+    if: github.event_name == 'release' || inputs.dry_run == false
+    environment:
+      name: pypi
+      url: https://pypi.org/project/beambam/
+    permissions:
+      id-token: write   # MANDATORY for OIDC trusted publishing
+      contents: read
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        # NO `with: password:` — OIDC is auto-detected by the absence
+        # of a password and presence of id-token write.
