@@ -494,6 +494,10 @@ def main() -> int:
     # shape of an official BS Desktop export (see docs/SLICE_COMPARISON_*).
     if args.out.exists():
         patch_slice_info(args.out, color=color_hex if color_hex else None)
+        # Inject placeholder thumbnail PNGs — without them the X2D
+        # touchscreen file browser filters the file out entirely
+        # (only files with Metadata/plate_*.png show up).
+        inject_thumbnails(args.out, tint=color_hex)
 
     # Print summary
     if args.out.exists():
@@ -508,6 +512,145 @@ def main() -> int:
                     print(f"  {line.strip()}", file=sys.stderr)
                     break
     return 0
+
+
+def inject_thumbnails(out_3mf: Path, tint: str | None = None) -> None:
+    """Render isometric + top views of the geometry already inside `out_3mf`
+    and inject them as Metadata/plate_1.png + plate_1_small.png +
+    plate_no_light_1.png + top_1.png + pick_1.png.
+
+    Without thumbnails the X2D touchscreen file browser silently filters
+    the file out of its listing.
+
+    Geometry source: 3D/Objects/object_<n>.model (preferred) or
+    3D/3dmodel.model. We do a tiny depth-sorted painter's render with
+    Pillow — no external deps beyond PIL + numpy (both already required
+    elsewhere in this repo).
+    """
+    try:
+        import numpy as np
+        from PIL import Image, ImageDraw
+    except ImportError as e:
+        print(f"[x2d_slice] thumbnail skipped — missing PIL/numpy: {e}",
+              file=sys.stderr)
+        return
+
+    # 1) extract verts + triangles from the 3MF
+    with zipfile.ZipFile(out_3mf, "r") as zin:
+        names = zin.namelist()
+        members = {n: zin.read(n) for n in names}
+    model_xml = None
+    for cand in (n for n in names if n.startswith("3D/Objects/") and n.endswith(".model")):
+        model_xml = members[cand]; break
+    if model_xml is None and "3D/3dmodel.model" in members:
+        model_xml = members["3D/3dmodel.model"]
+    if not model_xml:
+        return
+    try:
+        root = ET.fromstring(model_xml)
+    except ET.ParseError:
+        return
+    ns = "{http://schemas.microsoft.com/3dmanufacturing/core/2015/02}"
+    verts = []
+    tris = []
+    for v in root.iter(f"{ns}vertex"):
+        verts.append((float(v.get("x")), float(v.get("y")), float(v.get("z"))))
+    for t in root.iter(f"{ns}triangle"):
+        tris.append((int(t.get("v1")), int(t.get("v2")), int(t.get("v3"))))
+    if not verts or not tris:
+        return
+    pts = np.array(verts, dtype=np.float32)
+    tri = np.array(tris, dtype=np.int32)
+
+    # Centre + scale to unit cube
+    center = pts.mean(axis=0)
+    pts -= center
+    span = max(np.abs(pts).max(), 1e-3)
+    pts /= span
+
+    # Parse tint hex (#RRGGBB[AA]) → RGB int
+    base = (228, 189, 104)  # default amber-gold
+    if tint:
+        h = tint.lstrip("#")
+        if len(h) >= 6:
+            try:
+                base = (int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16))
+            except ValueError:
+                pass
+
+    def render(rot_x_deg: float, rot_y_deg: float, size: int,
+               bg=(255, 255, 255), with_light: bool = True) -> "Image.Image":
+        rx = np.radians(rot_x_deg); ry = np.radians(rot_y_deg)
+        cx, sx = np.cos(rx), np.sin(rx)
+        cy, sy = np.cos(ry), np.sin(ry)
+        Rx = np.array([[1,0,0],[0,cx,-sx],[0,sx,cx]], dtype=np.float32)
+        Ry = np.array([[cy,0,sy],[0,1,0],[-sy,0,cy]], dtype=np.float32)
+        R = Rx @ Ry
+        v = pts @ R.T
+        # Orthographic project to XY; scale to image
+        margin = 0.10
+        s = (size * (1 - 2 * margin)) / 2.0
+        px = (v[:, 0] * s + size / 2.0)
+        py = (-v[:, 1] * s + size / 2.0)
+        depth = v[:, 2]
+
+        img = Image.new("RGB", (size, size), bg)
+        draw = ImageDraw.Draw(img)
+
+        # Painter's algorithm: sort by mean Z descending (farther first)
+        tri_z = depth[tri].mean(axis=1)
+        order = np.argsort(-tri_z)
+
+        # Per-triangle Lambertian-ish shading
+        # Normal = cross(b-a, c-a); light from camera + above
+        for idx in order:
+            a, b, c = tri[idx]
+            poly = [(float(px[a]), float(py[a])),
+                    (float(px[b]), float(py[b])),
+                    (float(px[c]), float(py[c]))]
+            # Skip backfaces (CCW in image space → positive area)
+            area2 = ((poly[1][0]-poly[0][0])*(poly[2][1]-poly[0][1])
+                   - (poly[2][0]-poly[0][0])*(poly[1][1]-poly[0][1]))
+            if area2 <= 0:
+                continue
+            if with_light:
+                # screen-space normal proxy via vertex Z spread
+                z_mean = (depth[a]+depth[b]+depth[c])/3.0
+                # higher Z (closer to camera) = brighter
+                t = max(0.35, min(1.0, 0.55 + 0.45 * z_mean))
+            else:
+                t = 0.85
+            col = (int(base[0]*t), int(base[1]*t), int(base[2]*t))
+            draw.polygon(poly, fill=col, outline=(int(col[0]*0.7),
+                                                  int(col[1]*0.7),
+                                                  int(col[2]*0.7)))
+        return img
+
+    # Isometric view (BS uses ~25° X, ~45° Y for plate previews)
+    iso_big   = render( 25,  45, 256)
+    iso_small = render( 25,  45,  96)
+    iso_flat  = render( 25,  45, 256, with_light=False)
+    top       = render(  0,   0, 256)
+    pick      = render( 25,  45,  64)
+
+    def to_bytes(img):
+        from io import BytesIO
+        b = BytesIO(); img.save(b, format="PNG", optimize=True)
+        return b.getvalue()
+
+    members["Metadata/plate_1.png"]          = to_bytes(iso_big)
+    members["Metadata/plate_1_small.png"]    = to_bytes(iso_small)
+    members["Metadata/plate_no_light_1.png"] = to_bytes(iso_flat)
+    members["Metadata/top_1.png"]            = to_bytes(top)
+    members["Metadata/pick_1.png"]           = to_bytes(pick)
+
+    tmp = out_3mf.with_suffix(".tmp.3mf")
+    with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as zout:
+        for n, d in members.items():
+            zout.writestr(n, d)
+    tmp.replace(out_3mf)
+    print(f"[x2d_slice] injected 5 rendered thumbnails ({len(verts)} verts)",
+          file=sys.stderr)
 
 
 def patch_slice_info(out_3mf: Path, color: str | None = None) -> None:
