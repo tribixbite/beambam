@@ -112,3 +112,4 @@ runtime/handy_extract/captures/
 # Built classes.dex + intermediate .class files for the keystore dumper.
 runtime/handy_extract/keystore_dumper/build/
 runtime/handy_extract/sign_helper/build/
+scratch/

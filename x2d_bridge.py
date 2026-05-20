@@ -590,22 +590,75 @@ class _ImplicitFTPTLS(FTP_TLS):
 
 def download_file(creds: Creds, remote_name: str, local_path: Path) -> int:
     """Download a single file from the X2D's SD card via implicit FTPS.
-    Returns the number of bytes written. Same session-reuse + TLS 1.2
-    pattern as upload_file."""
-    ssl_ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    Returns the number of bytes written.
+
+    Uses the same manually-driven FTP_TLS pattern as upload_file (see the
+    long comment there): bare SSLContext(PROTOCOL_TLS_CLIENT) trips
+    vsFTPd's hello with INVALID_ALERT on the data channel, especially
+    while the printer is actively printing. create_default_context() +
+    forced TLSv1.2 + one-shot wrap_socket + session-reuse on PASV is the
+    combination that survives.
+    """
+    import socket
+    from ftplib import FTP_TLS, FTP
+
+    ssl_ctx = ssl.create_default_context()
     ssl_ctx.check_hostname = False
     ssl_ctx.verify_mode = ssl.CERT_NONE
-    ftp = _ImplicitFTPTLS(context=ssl_ctx)
-    ftp.connect(creds.ip, 990, timeout=15)
+    try:
+        ssl_ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+    except (AttributeError, ValueError):
+        pass
+
+    class _FTP_TLS_Reuse(FTP_TLS):
+        """Force the data channel to reuse the control channel's TLS
+        session — vsFTPd 3.0.5 rejects fresh sessions on PASV."""
+        def ntransfercmd(self, cmd, rest=None):
+            conn, size = FTP.ntransfercmd(self, cmd, rest)
+            if self._prot_p:
+                conn = self.context.wrap_socket(
+                    conn,
+                    server_hostname=self.host,
+                    session=self.sock.session,
+                )
+            return conn, size
+
+    ftp = _FTP_TLS_Reuse(context=ssl_ctx)
+    ftp.set_pasv(True)
+    raw = socket.create_connection((creds.ip, 990), timeout=20)
+    ftp.sock = ssl_ctx.wrap_socket(raw, server_hostname=creds.ip)
+    ftp.sock.settimeout(30)
+    ftp.file = ftp.sock.makefile("r", encoding="utf-8")
+    ftp.host = creds.ip
+    ftp.port = 990
+    ftp.af = socket.AF_INET
+    ftp.timeout = 30
+    ftp.passiveserver = True
+    ftp.encoding = "utf-8"
+    ftp._prot_p = False
+    ftp.welcome = ftp.getresp()
     ftp.login(user="bblp", passwd=creds.code)
     ftp.prot_p()
+
     written = 0
-    with local_path.open("wb") as f:
-        def cb(chunk: bytes) -> None:
-            nonlocal written
-            f.write(chunk)
-            written += len(chunk)
-        ftp.retrbinary(f"RETR {remote_name}", cb)
+    ftp.voidcmd("TYPE I")
+    conn = ftp.transfercmd(f"RETR {remote_name}")
+    try:
+        with local_path.open("wb") as f:
+            while True:
+                chunk = conn.recv(32768)
+                if not chunk:
+                    break
+                f.write(chunk)
+                written += len(chunk)
+        if isinstance(conn, ssl.SSLSocket):
+            try:
+                conn.unwrap()
+            except (OSError, ssl.SSLError):
+                pass
+    finally:
+        conn.close()
+    ftp.voidresp()
     try:
         ftp.quit()
     except (OSError, ssl.SSLError, ftplib.error_perm):
