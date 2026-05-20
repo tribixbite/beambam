@@ -303,6 +303,75 @@ extern "C" int do_start_print(void* lib, void* agent,
     }
 }
 
+// ─── bind() wrapper — full automatic pair flow ────────────────────────────
+//
+//   int bambu_network_bind(void* agent,
+//                          std::string dev_ip,
+//                          std::string dev_id,
+//                          std::string sec_link,        // "secure"
+//                          std::string timezone,        // e.g. "+00:00"
+//                          bool        improved,        // true for non-X1
+//                          OnUpdateStatusFn update_fn); // std::function<void(int,int,std::string)>
+//
+// Issues a fresh per-install cert under our cloud account by reaching the
+// printer's pair endpoint over LAN (auth = access_code via TLS-PSK).
+// Result: BambuNetworkEngine.conf gets enlarged with the new cert+key, and
+// subsequent signed publishes pass firmware verification.
+
+typedef int (*func_bind)(void* agent,
+                         std::string dev_ip,
+                         std::string dev_id,
+                         std::string sec_link,
+                         std::string timezone,
+                         bool        improved,
+                         std::function<void(int, int, std::string)> update_fn);
+
+extern "C" int do_bind(void* lib, void* agent,
+                       const char* dev_ip,
+                       const char* dev_id,
+                       const char* sec_link,    // typically "secure"
+                       const char* timezone,    // "+00:00" or local
+                       int         improved)
+{
+    auto fn = (func_bind)dlsym(lib, "bambu_network_bind");
+    if (!fn) {
+        fprintf(stderr, "[bind] bambu_network_bind symbol missing\n");
+        return -1;
+    }
+    auto cb = [](int stage, int code, std::string info) {
+        fprintf(stderr, "[bind] stage=%d code=%d info=%.180s\n",
+                stage, code, info.c_str());
+    };
+    fprintf(stderr, "[bind] dev_ip=%s dev_id=%s sec_link=%s tz=%s improved=%d\n",
+            dev_ip, dev_id, sec_link, timezone, improved);
+    int rc = fn(agent,
+                std::string(dev_ip ? dev_ip : ""),
+                std::string(dev_id ? dev_id : ""),
+                std::string(sec_link ? sec_link : "secure"),
+                std::string(timezone ? timezone : "+00:00"),
+                improved != 0,
+                cb);
+    fprintf(stderr, "[bind] returned rc=%d\n", rc);
+    return rc;
+}
+
+extern "C" int do_bind_from_env(void* lib, void* agent)
+{
+    const char* dev_ip   = getenv("BAMBU_BIND_DEV_IP");
+    const char* dev_id   = getenv("BAMBU_BIND_DEV_ID");
+    const char* sec_link = getenv("BAMBU_BIND_SEC_LINK");
+    const char* timezone = getenv("BAMBU_BIND_TIMEZONE");
+    int improved = 1;
+    const char* imp = getenv("BAMBU_BIND_IMPROVED");
+    if (imp && (*imp == '0' || *imp == 'f' || *imp == 'F')) improved = 0;
+    return do_bind(lib, agent,
+                   dev_ip   ? dev_ip   : "",
+                   dev_id   ? dev_id   : "",
+                   sec_link ? sec_link : "secure",
+                   timezone ? timezone : "+00:00",
+                   improved);
+}
+
 // Convenience entrypoint: populate from env-vars so dump_driver_c.c can
 // call this without constructing StartPrintInputs itself.
 extern "C" int do_start_print_from_env(void* lib, void* agent)

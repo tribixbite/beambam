@@ -1,0 +1,9 @@
+# Per-user secrets, never commit
+postlogin/
+cache/
+captures/
+screenshots/
+logs/
+keystore_dumper/build/
+saga_firmware/
+zygisk/gadget-zygisk.zip

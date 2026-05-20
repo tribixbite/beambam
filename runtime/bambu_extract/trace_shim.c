@@ -236,3 +236,64 @@ ssize_t send(int s, const void* buf, size_t len, int flags) {
     }
     return real(s, buf, len, flags);
 }
+
+// ─── OpenSSL plaintext interception ────────────────────────────────────────
+// SSL_write is called with the *plaintext* HTTPS request body before TLS
+// encryption — perfect place to capture the actual URLs / JSON bodies the
+// plugin sends.
+
+int SSL_write(void* ssl, const void* buf, int num) {
+    static int (*real)(void*, const void*, int) = NULL;
+    if (!real) real = (int(*)(void*, const void*, int))dlsym(RTLD_NEXT, "SSL_write");
+    if (num > 0 && buf && g_trace) {
+        const unsigned char* p = (const unsigned char*)buf;
+        // Detect HTTP/JSON/MQTT
+        int looks_http = (num > 4 && (p[0] == 'G' || p[0] == 'P' || p[0] == 'H' || p[0] == 'D'));
+        int looks_json = (p[0] == '{' || p[0] == '[');
+        if (looks_http || looks_json || num <= 256) {
+            log_fmt("[SSL_write] ssl=%p len=%d %s\n", ssl, num,
+                    looks_http ? "(HTTP)" : (looks_json ? "(JSON)" : ""));
+            size_t cap = (size_t)num > 2048 ? 2048 : (size_t)num;
+            for (size_t i = 0; i < cap; ++i) {
+                unsigned char c = p[i];
+                fputc((c >= 32 && c < 127) || c == '\n' || c == '\r' || c == '\t' ? c : '.', g_trace);
+            }
+            fputc('\n', g_trace);
+        }
+    }
+    return real ? real(ssl, buf, num) : 0;
+}
+
+// curl_easy_setopt(handle, CURLOPT_URL, "...") — even simpler URL capture
+// CURLOPT_URL is 10002 (CURLOPTTYPE_STRING + 2).
+typedef int curl_setopt_t(void* curl, int option, ...);
+int curl_easy_setopt(void* curl, int option, ...) {
+    static curl_setopt_t* real = NULL;
+    if (!real) real = (curl_setopt_t*)dlsym(RTLD_NEXT, "curl_easy_setopt");
+    if (!real) return -1;
+    // Read varargs as void* (worst case — works for string + long; double would
+    // be wrong, but we only care about a few options).
+    va_list ap;
+    va_start(ap, option);
+    void* arg = va_arg(ap, void*);
+    va_end(ap);
+    if (g_trace) {
+        if (option == 10002 /* CURLOPT_URL */ && arg) {
+            log_fmt("[curl  ] URL = %s\n", (const char*)arg);
+        } else if (option == 10015 /* CURLOPT_POSTFIELDS */ && arg) {
+            log_fmt("[curl  ] POST body = %.500s\n", (const char*)arg);
+        } else if (option == 10023 /* CURLOPT_HTTPHEADER (curl_slist*) */ && arg) {
+            // arg is a curl_slist; the first byte is a char* (data)
+            // struct curl_slist { char* data; struct curl_slist* next; };
+            void** slist = (void**)arg;
+            int i = 0;
+            while (slist && i < 30) {
+                const char* hdr = (const char*)slist[0];
+                if (hdr) log_fmt("[curl  ] header[%d]: %.300s\n", i, hdr);
+                slist = (void**)slist[1];
+                i++;
+            }
+        }
+    }
+    return real(curl, option, arg);
+}

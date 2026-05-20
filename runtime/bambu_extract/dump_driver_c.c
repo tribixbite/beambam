@@ -88,6 +88,28 @@ typedef int   (*start_subscribe_fn)(void*, const stdstring_t*);
 typedef int   (*send_message_fn)(void*, const stdstring_t*, const stdstring_t*, int, int);
 typedef int   (*get_printer_firmware_fn)(void*, const stdstring_t*, unsigned*, stdstring_t*);
 typedef int   (*get_oss_config_fn)(void*, stdstring_t*, const stdstring_t*, unsigned*, stdstring_t*);
+typedef int   (*ping_bind_fn)(void*, const stdstring_t*);
+
+// std::function<void(int,int,std::string)> ABI in libstdc++: 32 bytes
+//   off+0:  _M_functor[16] (target storage)
+//   off+16: _M_manager (function pointer)
+//   off+24: _M_invoker (function pointer)
+// All zero = empty std::function (callee skips invocation if !_M_manager).
+typedef struct {
+    unsigned char _M_functor[16];
+    void* _M_manager;
+    void* _M_invoker;
+} stdfunc_t;
+
+// bambu_network_bind signature (Itanium ABI: every non-trivial-dtor arg passed
+// by hidden pointer to a heap/stack copy the callee will destruct):
+typedef int (*bind_fn)(void* agent,
+                       const stdstring_t* dev_ip,
+                       const stdstring_t* dev_id,
+                       const stdstring_t* sec_link,
+                       const stdstring_t* timezone,
+                       bool   improved,
+                       const stdfunc_t*   update_fn);
 
 int main(int argc, char** argv) {
     setvbuf(stdout, NULL, _IONBF, 0);
@@ -237,12 +259,18 @@ int main(int argc, char** argv) {
         fprintf(stderr, "[driver] update_cert=%d\n", rc);
     }
 
-    fprintf(stderr, "[driver] install_device_cert(dev_id='%s', lan_only=0) ...\n", dev_id);
-    {
-        stdstring_t s = mkstr(dev_id);
-        install_device_cert(agent, &s, false);
+    // If BAMBU_SKIP_INSTALL_CERT=1, jump past the (currently sometimes-hanging)
+    // install_device_cert call so we can reach the bind/publish blocks.
+    if (!getenv("BAMBU_SKIP_INSTALL_CERT")) {
+        fprintf(stderr, "[driver] install_device_cert(dev_id='%s', lan_only=0) ...\n", dev_id);
+        {
+            stdstring_t s = mkstr(dev_id);
+            install_device_cert(agent, &s, false);
+        }
+        fprintf(stderr, "[driver] install_device_cert RETURNED\n");
+    } else {
+        fprintf(stderr, "[driver] SKIPPING install_device_cert per BAMBU_SKIP_INSTALL_CERT\n");
     }
-    fprintf(stderr, "[driver] install_device_cert RETURNED\n");
 
     // Optional: query the cloud for this printer's firmware manifest.
     // bambu_network_get_printer_firmware(agent, dev_id, &http_code, &http_body)
@@ -279,6 +307,47 @@ int main(int argc, char** argv) {
                 fprintf(stderr, "[driver] body:\n%.*s\n",
                         (int)body._M_length, body._M_p);
             }
+        }
+    }
+
+    // Optional: full automatic bind via printer's LAN pair endpoint.
+    // Uses cb_register.so:do_bind_from_env which constructs a proper
+    // libstdc++ std::function for the status callback (avoids the
+    // empty-function bad_function_call we hit when calling directly from C).
+    const char* do_bind_env = getenv("BAMBU_BIND");
+    if (do_bind_env && *do_bind_env && cb_so && *cb_so) {
+        void* cbh3 = dlopen(cb_so, RTLD_NOW | RTLD_GLOBAL);
+        if (cbh3) {
+            int (*bind_fn)(void*, void*) =
+                (int (*)(void*, void*))dlsym(cbh3, "do_bind_from_env");
+            if (bind_fn) {
+                fprintf(stderr, "[driver] calling do_bind_from_env ...\n");
+                int brc = bind_fn(h, agent);
+                fprintf(stderr, "[driver] do_bind_from_env rc=%d\n", brc);
+                fprintf(stderr, "[driver] sleeping 10s for conf write...\n");
+                sleep(10);
+            } else {
+                fprintf(stderr, "[driver] do_bind_from_env symbol missing in cb_register\n");
+            }
+        }
+    }
+
+    // Optional: pin-pair this client (one-time, gets a fresh per-install cert).
+    // BAMBU_PIN_CODE = the 6-digit code shown on printer touchscreen during pairing.
+    const char* pin = getenv("BAMBU_PIN_CODE");
+    if (pin && *pin) {
+        ping_bind_fn ping_bind =
+            (ping_bind_fn)dlsym(h, "bambu_network_ping_bind");
+        if (!ping_bind) {
+            fprintf(stderr, "[driver] ping_bind symbol missing\n");
+        } else {
+            stdstring_t p = mkstr(pin);
+            fprintf(stderr, "[driver] ping_bind(pin='%s') ...\n", pin);
+            int rc = ping_bind(agent, &p);
+            fprintf(stderr, "[driver] ping_bind rc=%d  (0 = OK; cert issued + saved to conf)\n", rc);
+            // Give the cert-issuance HTTPS roundtrip + conf write time
+            fprintf(stderr, "[driver] sleeping 10s for cert issuance ...\n");
+            sleep(10);
         }
     }
 

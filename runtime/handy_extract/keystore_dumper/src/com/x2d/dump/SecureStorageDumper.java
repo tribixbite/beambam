@@ -40,18 +40,19 @@ import org.w3c.dom.NodeList;
  */
 public class SecureStorageDumper {
 
-    private static final String XML_PATH =
+    private static final String DEFAULT_XML_PATH =
         "/data/data/bbl.intl.bambulab.com/shared_prefs/FlutterSecureStorage.xml";
     private static final String MASTER_ALIAS = "_androidx_security_master_key_";
     private static final String KEY_KEYSET_NAME =
         "__androidx_security_crypto_encrypted_prefs_key_keyset__";
     private static final String VALUE_KEYSET_NAME =
         "__androidx_security_crypto_encrypted_prefs_value_keyset__";
-    /** Tink AesSivKey proto field 1 = bytes key_value (the K1||K2 raw SIV key). */
-    private static final int AES_SIV_KEY_FIELD = 1;
 
     public static void main(String[] args) throws Exception {
         installKeystoreProvider();
+        // args[0] = optional XML path; defaults to Bambu Handy for legacy callers.
+        final String XML_PATH = (args.length > 0 && args[0] != null && !args[0].isEmpty())
+                                  ? args[0] : DEFAULT_XML_PATH;
 
         // 1. Pull master key from AndroidKeyStore (HW-backed but Cipher
         //    operations work via binder to keystore2).
@@ -114,6 +115,18 @@ public class SecureStorageDumper {
             StringBuilder vhex = new StringBuilder();
             for (byte b : aesGcmKey) vhex.append(String.format("%02x", b));
             System.out.println("[+] value AesGcm key hex=" + vhex);
+            // Machine-parseable marker lines for host-side tooling. The
+            // android-secure-prefs-dump script in termux-tools parses these
+            // out and uses them to decrypt entry names (AES-SIV) and entry
+            // values (AES-GCM) offline. Prefs file name (used as the AES-SIV
+            // AAD per androidx.security.crypto.EncryptedSharedPreferences) is
+            // the basename of XML_PATH with `.xml` stripped.
+            String prefsName = new java.io.File(XML_PATH).getName();
+            if (prefsName.endsWith(".xml")) prefsName = prefsName.substring(0, prefsName.length() - 4);
+            System.out.println(">>> aes_siv_hex=" + hex);
+            System.out.println(">>> aes_gcm_hex=" + vhex);
+            System.out.println(">>> prefs_name=" + prefsName);
+            System.out.println(">>> xml_path="  + XML_PATH);
         }
 
         // 4. Walk every entry value, decrypt, dump.
