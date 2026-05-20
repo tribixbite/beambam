@@ -1,12 +1,21 @@
-# x2d — feature-complete LAN-first stack for Bambu X2D / H2D / signed-MQTT printers
+# beambam — LAN-first stack for Bambu Lab printers (any model, any firmware)
 
 [![ci](https://github.com/tribixbite/x2d/actions/workflows/ci.yml/badge.svg)](https://github.com/tribixbite/x2d/actions/workflows/ci.yml)
+[![pypi](https://img.shields.io/pypi/v/beambam.svg)](https://pypi.org/project/beambam/)
+[![python](https://img.shields.io/pypi/pyversions/beambam.svg)](https://pypi.org/project/beambam/)
+[![license](https://img.shields.io/pypi/l/beambam.svg)](LICENSE)
+
+> *beam* (send) + *bam* (fast). Homepage: [beambam.boo](https://beambam.boo).
 
 A drop-in replacement for the Bambu Network Plugin + Bambu Cloud, built
 for the printers Bambu's first-party stack doesn't reach: **X2D, H2D,
-and refreshed P1+X1 firmware (Jan-2025+) that requires RSA-SHA256
-signed MQTT** — and for the platforms Bambu doesn't ship to (aarch64
-Linux / Termux / Android phones).
+H2S, H2C, P2S, X1E, and refreshed P1+X1 firmware (Jan-2025+) that
+requires RSA-SHA256 signed MQTT** — and for the platforms Bambu
+doesn't ship to (aarch64 Linux / Termux / Android phones / macOS / WSL).
+
+> The repository was originally `x2d` (the printer that motivated the
+> work); the package was renamed to `beambam` in v1.1.0 to reflect that
+> the bridge supports every Bambu model, not just the X2D.
 
 ## What is this
 
@@ -66,14 +75,47 @@ Linux / Termux / Android phones).
 Full per-entity comparison vs ha-bambulab in
 [`docs/HA_VS_BAMBULAB.md`](docs/HA_VS_BAMBULAB.md).
 
+## Printer compatibility
+
+The bridge talks to every Bambu Lab printer that exposes the standard
+LAN MQTT + FTPS endpoints. The signed-MQTT requirement (Jan-2025+ firmware
+on most models, always-on for X2D/H2D-family) is handled transparently
+using the publicly-leaked Bambu Connect cert — no cloud account or token
+needed.
+
+| Model       | Bambu code | Signed MQTT | Status | Upload | Print | AMS | Camera | Notes |
+|-------------|:----------:|:-----------:|:------:|:------:|:-----:|:---:|:------:|-------|
+| X1 / X1C    | BL-P002 / BL-P001 | optional¹ | ✅ | ✅ | ✅ | ✅ | RTSPS | original H2 family |
+| X1E         | C13        | required    | ✅ | ✅ | ✅ | ✅ | RTSPS | enterprise variant |
+| P1P / P1S   | C11 / C12  | required²   | ✅ | ✅ | ✅ | ✅ | HTTP/MJPEG | P-series |
+| P2S         | N7         | required    | ✅ | ✅ | ✅ | ✅ | HTTP/MJPEG | newer P-series |
+| A1 / A1 mini| N2S / N1   | required²   | ✅ | ✅ | ✅ | ✅ (AMS lite) | HTTP/MJPEG | direct drive |
+| H2D / H2D Pro | O1D / O1E | required (dual nozzle) | ✅ | ✅ | ✅ | ✅ (multi-AMS) | RTSPS | |
+| H2S / H2C   | O1S / O1C2 | required    | ✅ | ✅ | ✅ | ✅ | RTSPS | |
+| **X2D**     | N6         | required    | ✅ | ✅ | ✅ | ✅ (multi-AMS, dynamic map) | RTSPS | primary target — `beambam analyze` was developed against X2D 3-color prints |
+
+¹ X1/X1C with pre-2025 firmware accept unsigned MQTT; bridge signs anyway
+(zero overhead, forward-compat).
+² P1S/P1P/A1 enforcement varies by firmware; bridge signs regardless.
+
+If your model isn't listed and it has the LAN MQTT switch in
+Settings → Network, it almost certainly works — open an issue with the
+`X-BBL-Device-Model` header from `status`.
+
 ## Quick install + start
 
-```bash
-# One-line install (Termux / Linux). Pulls the latest release tarball
-# + builds the bridge runtime; idempotent.
-bash <(curl -fsSL https://raw.githubusercontent.com/tribixbite/x2d/main/install.sh)
+### `pip install beambam` (any Linux, macOS, Windows-WSL — recommended)
 
-# Configure the printer
+```bash
+pip install beambam            # core bridge + CLI
+pip install beambam[all]       # + HA publisher, MCP, web UI, AI assistant
+
+beambam --version
+```
+
+### Configure the printer
+
+```bash
 cat >~/.x2d/credentials <<'EOF'
 [printer]
 ip     = 192.168.1.42
@@ -81,16 +123,34 @@ code   = 12345678
 serial = 03ABC0001234567
 EOF
 
-# Pull live state
-x2d_bridge.py status
+beambam status                 # pull live state
+beambam analyze model.3mf      # NEW v1.1.0 — preview the print plan
+beambam print model.3mf        # FTPS upload + signed MQTT start
+```
 
-# Spin up the daemon (web UI, REST, SSE, /metrics, /healthz)
-x2d_bridge.py daemon --http 0.0.0.0:8765 \
+### Web UI / daemon
+
+```bash
+beambam daemon --http 0.0.0.0:8765 \
     --queue --timelapse \
     --auth-token "$(openssl rand -hex 32)"
-# Open the web UI:
 xdg-open http://localhost:8765/
 ```
+
+### aarch64 Termux + BambuStudio GUI (Android phones / tablets)
+
+```bash
+# One-line install. Pulls latest release tarball + builds bridge runtime;
+# idempotent. Required for the BambuStudio GUI + libbambu_networking.so
+# shim — the pip package alone covers everything except the GUI.
+bash <(curl -fsSL https://raw.githubusercontent.com/tribixbite/x2d/main/install.sh)
+```
+
+### Requirements
+- Python **3.10+** (3.10–3.13 tested in CI on Ubuntu + macOS)
+- `paho-mqtt >= 2.0` + `cryptography >= 41` (auto-installed)
+- For Termux GUI: aarch64-Termux + termux-x11 + the release tarball
+- For HA integration: any MQTT broker reachable from the daemon
 
 ## Demo media
 
