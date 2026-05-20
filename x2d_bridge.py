@@ -3634,26 +3634,35 @@ def cmd_fetch(args: argparse.Namespace) -> int:
         saved.append(save(name, http_get(url, accept="application/octet-stream")))
 
     elif "makerworld" in host:
-        # MakerWorld: extract the model ID, hit the public API for download
+        # MakerWorld: extract the design ID; the 2026 backend rewrote the
+        # API surface. The old /api/v1/design/design-detail endpoint is
+        # gone (404). Use /api/v1/design-service/design/<id> for metadata.
+        # NOTE: MakerWorld's public API does NOT expose a 3mf download URL
+        # for arbitrary designs — the bbsl bucket needs MakerWorld web
+        # cookies. We fetch metadata + cover and surface a clear "manual
+        # download required" message for the 3mf itself. For richer
+        # access use `beambam cloud-fetch --info <id>` / `--instances <id>`.
         m = re.search(r"/models/(\d+)", path)
         if not m:
-            sys.exit(f"can't extract MakerWorld model ID from {url!r}")
+            sys.exit(f"can't extract MakerWorld design ID from {url!r}")
         mid = m.group(1)
-        # MakerWorld's public design endpoint
-        api = f"https://makerworld.com/api/v1/design/design-detail?designId={mid}"
+        api = f"https://makerworld.com/api/v1/design-service/design/{mid}"
         meta = _json.loads(http_get(api, accept="application/json"))
-        # The download URL lives in design.fileUrl or design.gltfUrl etc.
-        cand = (meta.get("design", {}).get("fileUrl")
-                or meta.get("design", {}).get("modelUrl")
-                or meta.get("data", {}).get("fileUrl"))
-        if not cand:
-            sys.exit(f"MakerWorld API returned no download URL for {mid} — "
-                     f"keys: {list(meta.keys())} → "
-                     f"{list(meta.get('design', {}).keys())}")
-        name = Path(urllib.parse.unquote(urllib.parse.urlparse(cand).path)).name
-        if not name.endswith((".3mf", ".stl")):
-            name = f"makerworld-{mid}.3mf"
-        saved.append(save(name, http_get(cand, accept="application/octet-stream")))
+        title = meta.get("title") or f"makerworld-{mid}"
+        cover = meta.get("coverUrl") or meta.get("coverPortrait")
+        if cover:
+            cover_name = f"{title.replace('/', '_').strip()}.cover.png"
+            saved.append(save(cover_name,
+                              http_get(cover, accept="image/*")))
+        instance_count = len(meta.get("instances") or [])
+        print(f"[fetch] MakerWorld design {mid} \"{title}\" — {instance_count} "
+              f"sliced instances. The 3mf itself can't be downloaded via "
+              f"public API (CDN requires MakerWorld web cookies). Open\n"
+              f"  https://makerworld.com/en/models/{mid}\n"
+              f"in a browser and click \"Download\" to get the .gcode.3mf.\n"
+              f"Run `beambam cloud-fetch --instances {mid}` to see all\n"
+              f"slicer profiles before deciding which to download.",
+              file=sys.stderr)
 
     elif "printables" in host:
         m = re.search(r"/model/(\d+)", path)
@@ -6368,6 +6377,9 @@ def main() -> int:
 
     from beambam.simulate import add_subparser as _simulate_subparser
     _simulate_subparser(sub)
+
+    from beambam.cloud_fetch import add_subparser as _cloud_fetch_subparser
+    _cloud_fetch_subparser(sub)
 
     an = sub.add_parser(
         "analyze",
