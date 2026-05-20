@@ -6363,6 +6363,9 @@ def main() -> int:
                     help="HA discovery topic prefix (default homeassistant)")
     ha.set_defaults(fn=cmd_ha_publish)
 
+    from beambam.frame import add_subparser as _frame_subparser
+    _frame_subparser(sub)
+
     an = sub.add_parser(
         "analyze",
         help="Dissect a .gcode.3mf — filament/nozzle assignment, per-phase "
