@@ -53,9 +53,11 @@ from x2d_bridge import (  # noqa: E402
     main as cli,
 )
 from cloud_client import CloudClient, CloudError  # noqa: E402
+from beambam.printer import Printer  # noqa: E402
 
 __all__ = [
     "__version__",
+    "Printer",
     "Creds",
     "CloudClient",
     "CloudError",
