@@ -139,10 +139,8 @@ class Printer(AbstractContextManager):
                     local_path: str | Path | None = None,
                     timelapse: bool = False,
                     flow_cali: bool = False,
-                    bed_leveling: bool = True,
-                    layer_inspect: bool = True,
-                    nozzle_check: bool = True,
-                    plate_idx: int = 1) -> dict[str, Any]:
+                    bed_levelling: bool = True,
+                    vibration_cali: bool = False) -> dict[str, Any]:
         """Send the signed start_print MQTT. `ams` accepts an int (single
         slot 0..15) or a list of ints (multi-filament). `use_ams=False`
         with `ams=None` switches to external spool. `local_path`
@@ -162,8 +160,7 @@ class Printer(AbstractContextManager):
             bed_type=bed_type, bed_temp=bed_temp,
             local_path=Path(local_path) if local_path else None,
             timelapse=timelapse, flow_cali=flow_cali,
-            bed_leveling=bed_leveling, layer_inspect=layer_inspect,
-            nozzle_check=nozzle_check, plate_idx=plate_idx,
+            bed_levelling=bed_levelling, vibration_cali=vibration_cali,
         )
         return getattr(self.mqtt, "published", {}) or {}
 
