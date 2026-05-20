@@ -1586,7 +1586,7 @@ The Stop hook drives execution; commit + push between every checkbox.
     - [x] Tag, build, upload tarball + sha + per-platform notes.
       `git tag -a v1.0.0` annotated with the highlight summary +
       `git push origin v1.0.0`. Refreshed
-      `dist/bambustudio-x2d-termux-aarch64.tar.xz` (150.6 MB; SHA-256
+      `bs-runtime/aarch64-termux.tar.xz` (150.6 MB; SHA-256
       `b1b8f37bdaf89254ceec0ce29698e61ec71e7416a192cf4d561d084256f034b1`)
       with every Phase 1-4 runtime/ subdir + web/ + mcp_x2d.py +
       refreshed docs/. Tarball + .sha256 attached to the GitHub

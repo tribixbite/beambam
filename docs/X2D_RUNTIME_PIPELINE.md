@@ -208,7 +208,7 @@ x2d_bridge health
 ## Reference impls
 
 * `run_gui.sh` — top-level launcher
-* `dist/bambustudio-x2d-termux-aarch64/run_gui.sh` — distributable copy
+* `bs-runtime/aarch64-termux/run_gui.sh` — distributable copy
 * `runtime/preload_gtkinit.c` — gtk-init + locale-shim source
 * `runtime/libEGL_x2dadreno.c` + `runtime/build_egl_vendor.sh` — opt-in vendor
 * `patches/*.patch` — durable BS source patches (re-applied on rebuild)
