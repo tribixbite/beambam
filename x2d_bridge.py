@@ -3620,7 +3620,7 @@ def cmd_fetch(args: argparse.Namespace) -> int:
                 "https://api.printables.com/graphql/",
                 data=body,
                 headers={"Content-Type": "application/json",
-                         "User-Agent": "x2d-bridge/1.0"})
+                         "User-Agent": f"beambam/{PACKAGE_VERSION}"})
             with urllib.request.urlopen(req, timeout=30) as resp:
                 gql = _json.loads(resp.read())
             prt = (gql.get("data") or {}).get("print") or {}
@@ -5749,9 +5749,26 @@ def cmd_cloud_publish(args: argparse.Namespace) -> int:
     return 0
 
 
+def _package_version() -> str:
+    """Return the installed `beambam` version, or a source-checkout
+    fallback if the package isn't installed (e.g. running from a clone).
+    Centralised so --version, User-Agent strings, and bridge_version all
+    agree."""
+    try:
+        from importlib.metadata import version, PackageNotFoundError
+        return version("beambam")
+    except Exception:
+        return "1.1.0+source"
+
+
+PACKAGE_VERSION = _package_version()
+
+
 def main() -> int:
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument("--version", action="version",
+                   version=f"beambam {PACKAGE_VERSION}")
     p.add_argument("--ip", help="Printer LAN IP (overrides env / file)")
     p.add_argument("--code", help="Printer 8-char access code (overrides env / file)")
     p.add_argument("--serial", help="Printer serial (overrides env / file)")
