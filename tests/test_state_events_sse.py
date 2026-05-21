@@ -35,15 +35,20 @@ def _free_port() -> int:
         return s.getsockname()[1]
 
 
-def _wait_for_port(port: int, timeout: float = 3.0) -> None:
+def _wait_for_port(port: int, timeout: float = 15.0) -> None:
+    """Poll the daemon's bind point. Default 15 s (not 3 s) because
+    macOS GitHub Actions runners take ~5-10 s to bring up
+    ThreadingHTTPServer under load — empirically observed via the
+    `feat(daemon)` CI run."""
     deadline = time.time() + timeout
     while time.time() < deadline:
         try:
-            with socket.create_connection(("127.0.0.1", port), timeout=0.2):
+            with socket.create_connection(("127.0.0.1", port), timeout=0.5):
                 return
         except OSError:
-            time.sleep(0.02)
-    raise RuntimeError(f"server on :{port} never came up")
+            time.sleep(0.05)
+    raise RuntimeError(f"server on :{port} never came up "
+                       f"(timeout={timeout}s)")
 
 
 def _start_server(hub: StateHub) -> tuple[int, threading.Thread]:

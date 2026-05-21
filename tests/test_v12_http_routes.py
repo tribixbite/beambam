@@ -35,15 +35,23 @@ def _free_port() -> int:
         return s.getsockname()[1]
 
 
-def _wait_for_port(port: int, timeout: float = 3.0) -> None:
+def _wait_for_port(port: int, timeout: float = 15.0) -> None:
+    """Poll the daemon's bind point until it accepts a TCP connection.
+
+    Default timeout is 15 s (not the more obvious 3 s) because GitHub
+    Actions macOS runners take noticeably longer to boot a ThreadingHTTPServer
+    + Handler closure than Linux runners — empirically ~5-10 s during
+    heavy CI load. 3 s was tight enough to spuriously time out on macOS
+    even after the server was about to bind."""
     deadline = time.time() + timeout
     while time.time() < deadline:
         try:
-            with socket.create_connection(("127.0.0.1", port), timeout=0.2):
+            with socket.create_connection(("127.0.0.1", port), timeout=0.5):
                 return
         except OSError:
-            time.sleep(0.02)
-    raise RuntimeError(f"server on :{port} never came up")
+            time.sleep(0.05)
+    raise RuntimeError(f"server on :{port} never came up "
+                       f"(timeout={timeout}s)")
 
 
 def _start_server(states: dict[str, dict | None]):
