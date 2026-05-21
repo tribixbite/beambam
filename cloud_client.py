@@ -735,6 +735,26 @@ class CloudClient:
             f"/v1/search-service/select/design?query={urllib.parse.quote(query)}"
             f"&limit={int(limit)}&offset={int(offset)}")
 
+    def toggle_design_like(self, design_id: int | str) -> dict:
+        """Toggle the like state on a MakerWorld design. The endpoint is
+        idempotent-toggle: first POST likes, second POST un-likes.
+        Returns empty 200 on success (body is empty)."""
+        self._ensure_fresh()
+        url = REGIONS[self.session.region]["iot"] + \
+              f"/v1/design-service/design/{design_id}/like"
+        return _request("POST", url, body={}, headers={
+            "Authorization": f"Bearer {self.session.access_token}",
+        })
+
+    def get_design_comments(self, design_id: int | str,
+                            limit: int = 20, offset: int = 0) -> dict:
+        """Comments + ratings for a MakerWorld design. Returns
+        `{total, hits}` with each hit containing id, content,
+        starRating, createTime, user info, and reply count."""
+        return self._authed_get(
+            f"/v1/comment-service/commentandrating?designId={design_id}"
+            f"&limit={int(limit)}&offset={int(offset)}")
+
     def get_instance_download_url(self, instance_id: int | str,
                                    kind: str = "download") -> dict:
         """Resolve the signed download URL for a MakerWorld design instance.

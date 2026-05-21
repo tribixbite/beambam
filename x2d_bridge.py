@@ -5542,6 +5542,130 @@ def cmd_cloud_presets(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_print_search(args: argparse.Namespace) -> int:
+    """Interactive: MakerWorld search → user picks → slice → upload → print.
+
+    `beambam print-search "pokeball" --copies 4 --scale-pct 75 --color Gold`
+
+    Steps:
+      1. cloud-search the query
+      2. show numbered table of top N hits
+      3. prompt user for selection (1..N, blank = cancel)
+      4. chain into cloud-print-design with the user's slice options
+    """
+    import cloud_client, subprocess
+    cli = cloud_client.CloudClient.load_or_anonymous()
+    if cli.session.empty:
+        print("not logged in — run `cloud-login` first", file=sys.stderr); return 1
+    try:
+        r = cli.search_designs(args.query, limit=int(args.limit))
+    except cloud_client.CloudError as e:
+        print(f"search failed: {e}", file=sys.stderr); return 1
+    hits = r.get("hits") or []
+    if not hits:
+        print(f"no results for {args.query!r}"); return 1
+    print(f"\n{r.get('total', 0)} match(es) for {args.query!r}, top {len(hits)}:\n")
+    for i, h in enumerate(hits, 1):
+        d = h.get("design") or h
+        did = d.get("id") or d.get("designId")
+        title = str(d.get("title") or "")
+        creator = (d.get("designCreator") or {}).get("name", "")
+        likes = d.get("likeCount") or 0
+        downloads = d.get("downloadCount") or 0
+        print(f"  {i:>2}. id={did:<8}  likes={likes:<6} dls={downloads:<6}  by {creator[:18]:<18}  {title[:50]}")
+
+    if args.pick:
+        idx = int(args.pick) - 1
+    else:
+        try:
+            line = input(f"\nPick a number 1..{len(hits)} (blank to cancel): ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print("\naborted"); return 1
+        if not line:
+            print("cancelled"); return 0
+        try:
+            idx = int(line) - 1
+        except ValueError:
+            print(f"invalid pick: {line!r}"); return 2
+    if idx < 0 or idx >= len(hits):
+        print(f"out of range: {idx+1}"); return 2
+    chosen = hits[idx].get("design") or hits[idx]
+    design_id = chosen.get("id") or chosen.get("designId")
+    title = chosen.get("title", "")
+    print(f"\n→ Picked design {design_id}: {title}")
+    if args.dry_run_pick:
+        print("(--dry-run-pick: stopped before download/slice/print)")
+        return 0
+
+    # Chain into cloud-print-design
+    bridge = X2D_ROOT_PATH / "x2d_bridge.py"
+    cmd = [sys.executable, str(bridge), "cloud-print-design", str(design_id)]
+    if args.printer: cmd.extend(["--printer", args.printer])
+    if args.ip:      cmd.extend(["--ip", args.ip])
+    if args.code:    cmd.extend(["--code", args.code])
+    if args.serial:  cmd.extend(["--serial", args.serial])
+    if args.scale != 1.0: cmd.extend(["--scale", str(args.scale)])
+    if args.scale_pct is not None: cmd.extend(["--scale-pct", str(args.scale_pct)])
+    if args.mm is not None: cmd.extend(["--mm", str(args.mm)])
+    if int(args.copies) != 1: cmd.extend(["--copies", str(args.copies)])
+    if args.color:   cmd.extend(["--color", args.color])
+    if args.slot:    cmd.extend(["--slot", str(args.slot)])
+    if args.no_ams:  cmd.append("--no-ams")
+    if args.dry_run: cmd.append("--dry-run")
+    return subprocess.call(cmd)
+
+
+def cmd_cloud_like(args: argparse.Namespace) -> int:
+    """Toggle the like-state on a MakerWorld design.
+
+    Endpoint is idempotent-toggle: first POST likes, second un-likes.
+    Bambu returns empty 200 on success. The /design/{id}.hasLike field
+    is cached server-side so doesn't reflect the toggle in real time —
+    we just report that the toggle was accepted."""
+    import cloud_client
+    cli = cloud_client.CloudClient.load_or_anonymous()
+    if cli.session.empty:
+        print("not logged in", file=sys.stderr); return 1
+    try:
+        cli.toggle_design_like(args.design_id)
+    except cloud_client.CloudError as e:
+        print(f"cloud API failed: {e}", file=sys.stderr); return 1
+    print(f"design {args.design_id}: like toggle accepted by server "
+          f"(toggle is idempotent — call again to reverse)")
+    return 0
+
+
+def cmd_cloud_comments(args: argparse.Namespace) -> int:
+    """Pull MakerWorld comments + ratings for a design.
+
+    Each hit is wrapped: type=1 comment / type=2 rating-item. We surface
+    just the inner `comment` block."""
+    import cloud_client
+    cli = cloud_client.CloudClient.load_or_anonymous()
+    if cli.session.empty:
+        print("not logged in", file=sys.stderr); return 1
+    try:
+        r = cli.get_design_comments(args.design_id,
+                                    limit=int(args.limit), offset=int(args.offset))
+    except cloud_client.CloudError as e:
+        print(f"cloud API failed: {e}", file=sys.stderr); return 1
+    if args.json:
+        print(json.dumps(r, indent=2, default=str)); return 0
+    hits = r.get("hits") or []
+    # type=1 is a comment; type=2 is a rating-only entry (no content text).
+    comments = [h for h in hits if h.get("type") == 1 and h.get("comment")]
+    print(f"{r.get('total', 0)} interaction(s); showing {len(comments)} comment(s):\n")
+    for h in comments:
+        c = h["comment"]
+        user = (c.get("user") or {}).get("name", "?")
+        when = (c.get("createTime") or "")[:10]
+        likes = c.get("likeCount", 0)
+        replies = c.get("replyCount", 0)
+        content = (c.get("content") or "").replace("\n", " ")
+        print(f"  {when}  likes={likes:<3} replies={replies:<3}  {user[:18]:<18}: {content[:80]}")
+    return 0
+
+
 def cmd_cloud_pull_design(args: argparse.Namespace) -> int:
     """Download a MakerWorld design's .3mf bundle to a local directory.
 
@@ -6560,6 +6684,48 @@ def main() -> int:
         help="Global app feature-flag manifest — exposes pre-release feature flags.")
     cli_cfg.add_argument("--json", action="store_true")
     cli_cfg.set_defaults(fn=cmd_cloud_app_config)
+
+    cli_ps = sub.add_parser(
+        "print-search",
+        help="Interactive: MakerWorld search → user picks → slice → upload → print. "
+             "The whole-pipeline FRE win. Pass --copies/--scale-pct/--color/--slot "
+             "the same way as slice-print.")
+    cli_ps.add_argument("query", help="Search query string")
+    cli_ps.add_argument("--limit", type=int, default=10, help="How many hits to show")
+    cli_ps.add_argument("--pick", type=int, default=None,
+                        help="Skip the interactive prompt; pick this index (1..N)")
+    cli_ps.add_argument("--dry-run-pick", action="store_true",
+                        help="Show results + picked design but stop before download")
+    # Mirror slice-print's slice + print options
+    cli_ps.add_argument("--scale", type=float, default=1.0)
+    cli_ps.add_argument("--scale-pct", type=float, default=None)
+    cli_ps.add_argument("--mm", type=float, default=None)
+    cli_ps.add_argument("--copies", "--quantity", "-n", type=int, default=1)
+    cli_ps.add_argument("--color")
+    cli_ps.add_argument("--slot", type=int, default=0)
+    cli_ps.add_argument("--no-ams", action="store_true")
+    cli_ps.add_argument("--dry-run", action="store_true",
+                        help="Download + slice but don't upload/print")
+    cli_ps.add_argument("--printer")
+    cli_ps.add_argument("--ip")
+    cli_ps.add_argument("--code")
+    cli_ps.add_argument("--serial")
+    cli_ps.set_defaults(fn=cmd_print_search)
+
+    cli_like = sub.add_parser(
+        "cloud-like",
+        help="Toggle like-state on a MakerWorld design.")
+    cli_like.add_argument("design_id", type=int)
+    cli_like.set_defaults(fn=cmd_cloud_like)
+
+    cli_com = sub.add_parser(
+        "cloud-comments",
+        help="MakerWorld comments + ratings for a design.")
+    cli_com.add_argument("design_id", type=int)
+    cli_com.add_argument("--limit",  type=int, default=20)
+    cli_com.add_argument("--offset", type=int, default=0)
+    cli_com.add_argument("--json", action="store_true")
+    cli_com.set_defaults(fn=cmd_cloud_comments)
 
     cli_pull = sub.add_parser(
         "cloud-pull-design",
