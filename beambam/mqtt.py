@@ -38,7 +38,11 @@ import sys
 from typing import Any
 
 
-__all__ = ["BAMBU_CERT_ID", "X2DClient", "sign_payload"]
+# X2DClient is reachable as `beambam.mqtt.X2DClient` via __getattr__ but
+# excluded from __all__ (ruff F822: undefined name in __all__) — it's
+# not a module-level binding until first access. Use the attribute access
+# directly for typing too.
+__all__ = ["BAMBU_CERT_ID", "sign_payload"]
 
 
 # Cert ID — public-leak constant. Falls back to the literal if the user's
