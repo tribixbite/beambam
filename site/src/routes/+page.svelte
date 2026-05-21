@@ -1,8 +1,12 @@
 <script lang="ts">
     import CodeBlock from '$lib/CodeBlock.svelte';
 
+    // Labels kept short so the mono uppercase tracking-widest setting
+    // doesn't blow out the 2-col mobile cells. "CLI subcommands" was
+    // the original offender — drop the "CLI" since the page context
+    // makes it obvious.
     const stats = [
-        { n: '28', label: 'CLI subcommands' },
+        { n: '28', label: 'subcommands' },
         { n: '12', label: 'printer models' },
         { n: '300', label: 'tests passing' },
         { n: '~69', label: 'HA entities' },
@@ -116,18 +120,20 @@ Summary: 6 pass, 2 warn, 0 fail`;
 </section>
 
 <!-- ====================================================================
-     STATS RIBBON — 3 cols mobile, 6 cols desktop. Numbers carry brand.
+     STATS RIBBON — 2 cols mobile, 3 sm, 6 md. Numbers carry brand.
+     Label uses tracking-wider (not widest) on mobile so it fits, plus
+     overflow-wrap so any rogue long label still breaks gracefully.
      ==================================================================== -->
 <section style="border-bottom: 1px solid var(--color-hair);">
     <div class="frame py-[var(--space-2xl)]">
         <div class="label mb-[var(--space-xl)]">02 · By the numbers</div>
-        <dl class="grid grid-cols-3 sm:grid-cols-3 md:grid-cols-6 gap-y-[var(--space-xl)] gap-x-[var(--space-md)] sm:gap-x-[var(--space-xl)]">
+        <dl class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-6 gap-y-[var(--space-xl)] gap-x-[var(--space-md)] sm:gap-x-[var(--space-xl)]">
             {#each stats as { n, label }}
-                <div class="pl-[var(--space-md)]" style="border-left: 1px solid var(--color-hair);">
+                <div class="pl-[var(--space-md)] min-w-0" style="border-left: 1px solid var(--color-hair);">
                     <dt class="font-[var(--font-display)] leading-none tabular-nums"
                         style="color: var(--color-ink); font-size: clamp(1.75rem, 1.2rem + 2vw, 2.75rem);">{n}</dt>
-                    <dd class="mt-[var(--space-sm)] font-[var(--font-mono)] text-[var(--text-xs)] uppercase tracking-widest leading-tight"
-                        style="color: var(--color-mute);">{label}</dd>
+                    <dd class="mt-[var(--space-sm)] font-[var(--font-mono)] text-[var(--text-xs)] uppercase leading-tight tracking-wider sm:tracking-widest"
+                        style="color: var(--color-mute); overflow-wrap: anywhere; word-break: break-word;">{label}</dd>
                 </div>
             {/each}
         </dl>
