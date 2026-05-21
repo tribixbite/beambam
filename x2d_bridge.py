@@ -1120,6 +1120,48 @@ def _serve_http(bind: str,
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
                 self.wfile.write(body)
+            elif path == "/history":
+                # List every print-history snapshot harvested into
+                # ~/.x2d/snapshots/ (populated by `beambam fcm-harvest`).
+                # Each entry has print_id + jpg_size + sidecar metadata.
+                snap_dir = Path.home() / ".x2d" / "snapshots"
+                hits = []
+                if snap_dir.is_dir():
+                    for js in sorted(snap_dir.glob("*.json"),
+                                     key=lambda p: p.stat().st_mtime, reverse=True):
+                        try:
+                            meta = json.loads(js.read_text())
+                        except json.JSONDecodeError:
+                            continue
+                        pid = meta.get("print_id") or js.stem
+                        jpg = snap_dir / f"{pid}.jpg"
+                        if jpg.is_file():
+                            meta["jpg_size"] = jpg.stat().st_size
+                            meta["jpg_url"] = f"/history/{pid}.jpg"
+                            hits.append(meta)
+                body = json.dumps({"total": len(hits), "hits": hits}, indent=2).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+            elif path.startswith("/history/") and path.endswith(".jpg"):
+                # Serve a single harvested finish-snapshot JPG by print_id.
+                # Path format: /history/<print_id>.jpg.
+                pid = path[len("/history/"):-len(".jpg")]
+                if not pid.isdigit():
+                    self.send_response(400); self.end_headers(); return
+                snap_dir = Path.home() / ".x2d" / "snapshots"
+                jpg = snap_dir / f"{pid}.jpg"
+                if not jpg.is_file():
+                    self.send_response(404); self.end_headers(); return
+                body = jpg.read_bytes()
+                self.send_response(200)
+                self.send_header("Content-Type", "image/jpeg")
+                self.send_header("Content-Length", str(len(body)))
+                self.send_header("Cache-Control", "public, max-age=31536000, immutable")
+                self.end_headers()
+                self.wfile.write(body)
             elif path.startswith("/slice-print/jobs/"):
                 # GET status of a spawned slice-print job.
                 # Looks at the upload dir's <stem>.log file + the PID's
@@ -5542,6 +5584,45 @@ def cmd_cloud_presets(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_printables_search(args: argparse.Namespace) -> int:
+    """Printables (printables.com) full-text search via the public GraphQL.
+
+    Anonymous — no API key needed. Uses `searchPrints2(query, limit)` →
+    items with id / name / slug / likesCount / downloadCount / user.
+    Each hit's design page is `https://www.printables.com/model/<id>-<slug>`,
+    which `beambam fetch <url>` already handles for download."""
+    import urllib.request as _ur
+    import urllib.error as _ue
+    body = json.dumps({
+        "query": "query($q:String!,$l:Int,$o:Int){searchPrints2(query:$q,limit:$l,offset:$o)"
+                 "{items{id name slug likesCount downloadCount user{publicUsername}}}}",
+        "variables": {"q": args.query, "l": int(args.limit), "o": int(args.offset)},
+    }).encode("utf-8")
+    req = _ur.Request("https://api.printables.com/graphql/", data=body, headers={
+        "Content-Type": "application/json",
+        "User-Agent": "beambam-cli/1.x",
+    }, method="POST")
+    try:
+        with _ur.urlopen(req, timeout=15) as r:
+            resp = json.loads(r.read())
+    except _ue.HTTPError as e:
+        print(f"Printables API failed HTTP {e.code}: {e.read().decode('utf-8','replace')[:200]}",
+              file=sys.stderr); return 1
+    except Exception as e:                                  # noqa: BLE001
+        print(f"Printables API failed: {e}", file=sys.stderr); return 1
+    items = (resp.get("data") or {}).get("searchPrints2", {}).get("items") or []
+    if args.json:
+        print(json.dumps({"hits": items}, indent=2, default=str)); return 0
+    print(f"{len(items)} match(es) for {args.query!r} on Printables:\n")
+    for it in items:
+        u = (it.get("user") or {}).get("publicUsername", "?")
+        slug = it.get("slug", "")
+        print(f"  https://www.printables.com/model/{it['id']}-{slug}")
+        print(f"     likes={it.get('likesCount',0):<5} dls={it.get('downloadCount',0):<6}  "
+              f"by {u[:20]:<20}  {it.get('name','')[:50]}")
+    return 0
+
+
 def cmd_print_search(args: argparse.Namespace) -> int:
     """Interactive: MakerWorld search → user picks → slice → upload → print.
 
@@ -6084,9 +6165,130 @@ def _package_version() -> str:
 PACKAGE_VERSION = _package_version()
 
 
+_COMMAND_GROUPS: list[tuple[str, list[tuple[str, str]]]] = [
+    ("LAN control", [
+        ("status",         "One-shot pushall — current bed/nozzle/print state"),
+        ("print",          "Upload .gcode.3mf + start print over LAN"),
+        ("pause",          "Pause the active print"),
+        ("resume",         "Resume a paused print"),
+        ("stop",           "Stop the active print"),
+        ("gcode",          "Send a raw gcode line to the printer"),
+        ("home",           "Home the toolhead (G28)"),
+        ("level",          "Run auto bed leveling"),
+        ("set-temp",       "Set bed / nozzle / chamber temp"),
+        ("chamber-light",  "Set chamber LED (on/off/flashing)"),
+        ("fod-check",      "Toggle firmware foreign-object detection"),
+        ("ams-load",       "Load a filament from an AMS slot"),
+        ("ams-unload",     "Unload the current filament"),
+        ("jog",            "Manual X/Y/Z jog moves"),
+    ]),
+    ("Slicing", [
+        ("slice-print",    "STL → slice → upload + print (one shot)"),
+        ("upload",         "FTPS-implicit-TLS upload .gcode.3mf"),
+        ("frame",          "Generate a frame STL (parametric)"),
+        ("simulate",       "Estimate print time + filament from a sliced 3mf"),
+    ]),
+    ("Cloud read", [
+        ("cloud-login",    "Authenticate to Bambu cloud (+ --code-only)"),
+        ("cloud-status",   "Show current session state"),
+        ("cloud-logout",   "Drop the saved session"),
+        ("cloud-printers", "List bound printers on this account"),
+        ("cloud-state",    "Cloud-MQTT pushall on a printer"),
+        ("cloud-history",  "Full server-side print task history"),
+        ("cloud-task",     "Full task record incl. signed S3 URLs"),
+        ("cloud-messages", "Notification inbox counts + list"),
+        ("cloud-tickets",  "Customer-support ticket history"),
+        ("cloud-firmware", "FW versions + available updates"),
+        ("cloud-filaments","Spool inventory (AMS RFID + manual)"),
+        ("cloud-presets",  "Cloud-synced slicer presets"),
+        ("cloud-app-config","Global app feature-flag manifest"),
+    ]),
+    ("Cloud control", [
+        ("cloud-print",    "Cloud-route start-print"),
+        ("cloud-pause",    "Cloud-route pause"),
+        ("cloud-resume",   "Cloud-route resume"),
+        ("cloud-stop",     "Cloud-route stop"),
+        ("cloud-gcode",    "Cloud-route raw gcode"),
+        ("cloud-chamber-light", "Cloud-route LED control"),
+        ("cloud-publish",  "Cloud-route raw JSON publish"),
+        ("cloud-get-access-code", "Resolve LAN access code over cloud MQTT"),
+    ]),
+    ("MakerWorld", [
+        ("cloud-search",   "Full-text search MakerWorld designs"),
+        ("cloud-browse",   "Browse by nav (Trending / Foryou / ...)"),
+        ("cloud-design",   "Show design details by id"),
+        ("cloud-design-remixes", "Remix tree of a design"),
+        ("cloud-favorites","List user's favorites lists"),
+        ("cloud-liked",    "Designs the user has liked"),
+        ("cloud-comments", "Comments + ratings on a design"),
+        ("cloud-like",     "Toggle like on a design"),
+        ("cloud-feed",     "For-You recommendation feed"),
+        ("cloud-search-suggest", "Personalised search-bar terms"),
+        ("cloud-pull-design",  "Download a design's .3mf bundle"),
+        ("cloud-print-design", "Design id → download → slice → print"),
+        ("print-search",   "Interactive: search → pick → slice → print"),
+        ("printables-search", "Search Printables.com (anonymous GraphQL)"),
+        ("fetch",          "Download from MW/Printables/Thingiverse URL"),
+    ]),
+    ("Daemon", [
+        ("serve",          "HTTP daemon — per-printer multi-tenant"),
+        ("daemon",         "Single-printer state daemon"),
+        ("ha-publish",     "Home Assistant MQTT publisher"),
+        ("webrtc",         "WebRTC signaling helper"),
+    ]),
+    ("Diagnostics", [
+        ("doctor",         "Check prerequisites + suggest fixes"),
+        ("init",           "First-run wizard (LAN discovery)"),
+        ("config",         "Edit ~/.x2d/credentials"),
+        ("health",         "Latency + reachability probes"),
+        ("watch",          "Live-stream state changes"),
+        ("notify",         "Test push-notification path"),
+        ("find",           "Discover printers via SSDP"),
+        ("whoami",         "Show current user / region"),
+        ("mqtt",           "MQTT broker probe"),
+        ("history",        "Local print-history dir"),
+        ("queue",          "Print queue management"),
+        ("analyze",        "Pre-print 3mf safety check"),
+        ("fcm-harvest",    "Pull finish snapshots from rooted Handy"),
+    ]),
+    ("Media", [
+        ("camera",         "Camera snapshot / stream"),
+        ("record",         "Record/snapshot from printer cam"),
+        ("timelapse",      "Toggle timelapse capture"),
+        ("resolution",     "Get/set camera resolution"),
+        ("files",          "List SD-card files"),
+        ("download",       "Pull a file off the printer SD"),
+        ("ams",            "AMS-specific commands"),
+        ("cam",            "Camera-specific commands"),
+        ("slice",          "Slicer-specific commands"),
+        ("cloud-fetch",    "Cloud-side file fetch"),
+    ]),
+]
+
+
+def _build_epilog() -> str:
+    """Format _COMMAND_GROUPS into a `beambam --help` epilog.
+
+    argparse only supports ONE add_subparsers block, so all subcommands
+    appear together in the default help. We append this grouped TOC as
+    the epilog so users can scan by topic. Group entries are advisory:
+    the actual command set comes from add_parser() calls below, so a
+    new command shows up in the auto help even if we forget to list
+    it here."""
+    lines = ["", "Commands by topic:"]
+    for group, cmds in _COMMAND_GROUPS:
+        lines.append(f"\n  {group}")
+        for name, blurb in cmds:
+            lines.append(f"    {name:<24} {blurb}")
+    lines.append("")
+    lines.append("Run `beambam <command> --help` for full per-command flags.")
+    return "\n".join(lines)
+
+
 def main() -> int:
     p = argparse.ArgumentParser(description=__doc__,
-                                formatter_class=argparse.RawDescriptionHelpFormatter)
+                                formatter_class=argparse.RawDescriptionHelpFormatter,
+                                epilog=_build_epilog())
     p.add_argument("--version", action="version",
                    version=f"beambam {PACKAGE_VERSION}")
     p.add_argument("--ip", help="Printer LAN IP (overrides env / file)")
@@ -6380,7 +6582,7 @@ def main() -> int:
     w = sub.add_parser(
         "watch",
         help="Live one-line printer status updated every N seconds. "
-             "Format: [HH:MM:SS] STATE Lx/y P% eta=HHhMMm  N:cur/tgt°C  B:cur/tgt°C. "
+             "Format: [HH:MM:SS] STATE Lx/y P%% eta=HHhMMm  N:cur/tgt°C  B:cur/tgt°C. "
              "Ctrl+C to exit.",
     )
     w.add_argument("--interval", type=int, default=5,
@@ -6684,6 +6886,17 @@ def main() -> int:
         help="Global app feature-flag manifest — exposes pre-release feature flags.")
     cli_cfg.add_argument("--json", action="store_true")
     cli_cfg.set_defaults(fn=cmd_cloud_app_config)
+
+    cli_psr = sub.add_parser(
+        "printables-search",
+        help="Search Printables.com via their public GraphQL. "
+             "No auth needed; results include the model page URL "
+             "that `beambam fetch` can download.")
+    cli_psr.add_argument("query")
+    cli_psr.add_argument("--limit",  type=int, default=10)
+    cli_psr.add_argument("--offset", type=int, default=0)
+    cli_psr.add_argument("--json", action="store_true")
+    cli_psr.set_defaults(fn=cmd_printables_search)
 
     cli_ps = sub.add_parser(
         "print-search",

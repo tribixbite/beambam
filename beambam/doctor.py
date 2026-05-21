@@ -237,47 +237,190 @@ def format_report(checks: list[Check]) -> str:
     return "\n".join(lines)
 
 
+# ----- environment checks (fresh-OS / FRE prerequisites) ------------------
+
+
+def check_environment() -> list[Check]:
+    """Check the host environment for beambam prerequisites.
+
+    Audits things that block first-run usage on a freshly-installed OS:
+      - ~/.x2d/credentials   (LAN access codes; needed for LAN commands)
+      - ~/.x2d/cloud_session.json (cloud token; needed for cloud-*)
+      - bambu-studio binary in PATH (needed for slicing)
+      - adb in PATH (needed for fcm-harvest)
+      - python-cryptography importable (needed for cloud + signed-MQTT)
+
+    Each missing prereq surfaces a `Check` with a `detail` that includes
+    the suggested fix command. Pair with --fix to walk the user through
+    resolving them interactively."""
+    import shutil
+    import importlib.util
+    from pathlib import Path
+
+    out: list[Check] = []
+    home = Path.home()
+
+    creds = home / ".x2d" / "credentials"
+    if creds.is_file():
+        out.append(Check("Environment", "LAN credentials", "pass",
+                         f"{creds} present"))
+    else:
+        out.append(Check("Environment", "LAN credentials", "warn",
+                         f"{creds} missing — run `beambam init` for the "
+                         "first-run wizard (LAN discovery + access-code prompt)"))
+
+    session = home / ".x2d" / "cloud_session.json"
+    if session.is_file():
+        try:
+            import json as _json
+            j = _json.loads(session.read_text())
+            if j.get("access_token"):
+                out.append(Check("Environment", "Cloud session", "pass",
+                                 f"logged in as {j.get('user_id','?')} "
+                                 f"(region={j.get('region','us')})"))
+            else:
+                out.append(Check("Environment", "Cloud session", "warn",
+                                 f"{session} has no access_token — re-run "
+                                 "`beambam cloud-login --code-only`"))
+        except Exception as e:                              # noqa: BLE001
+            out.append(Check("Environment", "Cloud session", "warn",
+                             f"{session} unparseable ({e}) — re-run "
+                             "`beambam cloud-login --code-only`"))
+    else:
+        out.append(Check("Environment", "Cloud session", "warn",
+                         "no cloud_session.json — run `beambam cloud-login "
+                         "--code-only` for the passwordless device-code flow"))
+
+    bs = shutil.which("bambu-studio") or shutil.which("BambuStudio")
+    if not bs:
+        local = Path(__file__).resolve().parent.parent / "bs-bionic" / "build" / "src" / "bambu-studio"
+        if local.is_file():
+            bs = str(local)
+    if bs:
+        out.append(Check("Environment", "Bambu Studio CLI", "pass",
+                         f"found at {bs}"))
+    else:
+        out.append(Check("Environment", "Bambu Studio CLI", "warn",
+                         "no `bambu-studio` in PATH — slicing commands "
+                         "(slice / slice-print / cloud-print-design) will "
+                         "fail. Install from https://bambulab.com/en/download "
+                         "or build under bs-bionic/."))
+
+    adb = shutil.which("adb")
+    if adb:
+        out.append(Check("Environment", "adb (FCM harvester)", "pass",
+                         f"found at {adb}"))
+    else:
+        out.append(Check("Environment", "adb (FCM harvester)", "info",
+                         "no `adb` in PATH — only matters for `fcm-harvest`. "
+                         "Termux: `pkg install android-tools`."))
+
+    if importlib.util.find_spec("cryptography"):
+        out.append(Check("Environment", "python-cryptography", "pass", "importable"))
+    else:
+        out.append(Check("Environment", "python-cryptography", "fail",
+                         "not installed — cloud + signed-MQTT will not work. "
+                         "Install: `pip install cryptography`"))
+    return out
+
+
+def _interactive_fix(checks: list[Check]) -> int:
+    """Walk the user through resolving each warn/fail environment check.
+
+    For each actionable check, prompts [y/N/q]. Returns 0 when every
+    actionable check is either fixed or skipped, 1 if the user quit."""
+    actionable = [c for c in checks
+                  if c.category == "Environment" and c.severity in ("warn", "fail")]
+    if not actionable:
+        print("\nNothing to fix — every environment check passed.")
+        return 0
+    print(f"\n{len(actionable)} item(s) actionable:")
+    import subprocess
+    import sys as _sys
+    for c in actionable:
+        print(f"\n  {c.name}: {c.detail}")
+        try:
+            choice = input("    Fix this now? [y/N/q] ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            print("\nquit"); return 1
+        if choice == "q":
+            print("quit early"); return 1
+        if choice != "y":
+            continue
+        if c.name == "LAN credentials":
+            subprocess.call([_sys.executable, "-m", "beambam", "init"])
+        elif c.name == "Cloud session":
+            subprocess.call([_sys.executable, "-m", "beambam", "cloud-login", "--code-only"])
+        elif c.name == "Bambu Studio CLI":
+            print("    Install instructions:")
+            print("      Linux:  https://github.com/bambulab/BambuStudio/releases")
+            print("      Termux: build under bs-bionic/ via cmake (see docs)")
+            print("    No automated fix; install manually + re-run `beambam doctor --fix`.")
+        elif c.name == "adb (FCM harvester)":
+            print("    Termux:  `pkg install android-tools`")
+            print("    Linux:   `apt install android-tools-adb` (or distro equivalent)")
+        elif c.name == "python-cryptography":
+            print("    → pip install cryptography")
+            subprocess.call([_sys.executable, "-m", "pip", "install", "cryptography"])
+    return 0
+
+
 # ----- CLI ----------------------------------------------------------------
 
 
 def add_subparser(sub: "argparse._SubParsersAction") -> argparse.ArgumentParser:
     p = sub.add_parser(
         "doctor",
-        help="Comprehensive printer health diagnostic — AMS humidity, "
-             "HMS errors, sensor sanity, wifi signal, camera, print "
-             "state. Returns exit 0/1/2 for pass/warn/fail.",
+        help="Comprehensive printer + environment diagnostic. Default mode "
+             "checks both host prereqs (credentials, cloud session, "
+             "bambu-studio) and printer state (AMS humidity, HMS errors, "
+             "sensor sanity, wifi, camera). --env-only skips the printer "
+             "checks; --fix walks the user through resolving each "
+             "actionable warn/fail interactively. Returns exit 0/1/2 "
+             "for pass/warn/fail.",
     )
     p.add_argument("--no-color", action="store_true",
                    help="Disable ANSI color in output")
     p.add_argument("--json", dest="json_out", action="store_true",
                    help="Machine output: list of check dicts")
+    p.add_argument("--env-only", action="store_true",
+                   help="Only check host environment / fresh-OS prereqs.")
+    p.add_argument("--fix", action="store_true",
+                   help="After the report, walk the user through resolving "
+                        "each actionable warn/fail (interactive). Implies "
+                        "--env-only.")
     p.set_defaults(fn=cmd_doctor)
     return p
 
 
 def cmd_doctor(args: argparse.Namespace) -> int:
-    from beambam import Printer
+    env_only = getattr(args, "env_only", False) or getattr(args, "fix", False)
 
-    try:
-        with Printer() as printer:
-            state = printer.state(timeout=10.0)
-    except Exception as e:                                  # noqa: BLE001
-        print(f"can't reach printer: {e}", file=sys.stderr)
-        return 2
-
-    checks = run_all_checks(state)
+    checks: list[Check] = check_environment()
+    if not env_only:
+        from beambam import Printer
+        try:
+            with Printer() as printer:
+                state = printer.state(timeout=10.0)
+            checks.extend(run_all_checks(state))
+        except Exception as e:                              # noqa: BLE001
+            checks.append(Check("Connectivity", "Reach printer", "fail",
+                                f"can't reach printer: {e} — pass --env-only "
+                                "to skip printer checks"))
 
     if args.json_out:
         import dataclasses
-        import json
-        print(json.dumps([dataclasses.asdict(c) for c in checks], indent=2))
+        import json as _json
+        print(_json.dumps([dataclasses.asdict(c) for c in checks], indent=2))
     else:
         text = format_report(checks)
         if args.no_color:
-            # Strip ANSI escapes
             import re
             text = re.sub(r"\033\[[0-9;]*m", "", text)
         print(text)
+
+    if getattr(args, "fix", False):
+        _interactive_fix(checks)
 
     if any(c.severity == "fail" for c in checks):
         return 2

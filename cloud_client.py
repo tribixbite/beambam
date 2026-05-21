@@ -728,11 +728,17 @@ class CloudClient:
             f"&limit={int(limit)}&offset={int(offset)}")
 
     def search_designs(self, query: str, limit: int = 20, offset: int = 0) -> dict:
-        """MakerWorld full-text search. Returns `{total, hits}` where
-        each hit has id, title, cover, designCreator, likeCount,
-        downloadCount, etc. Same shape as browse_designs_by_nav()."""
+        """MakerWorld full-text search.
+
+        Endpoint: `/v1/search-service/search/design?keyword=<q>`. (Note:
+        the obvious-looking `/v1/search-service/select/design?query=` is
+        a different endpoint that returns trending-feed-style results and
+        IGNORES the query string — every query gets the same response.)
+
+        Returns `{total, hits, suggest}` where each hit has id, title,
+        cover, designCreator, likeCount, downloadCount, etc."""
         return self._authed_get(
-            f"/v1/search-service/select/design?query={urllib.parse.quote(query)}"
+            f"/v1/search-service/search/design?keyword={urllib.parse.quote(query)}"
             f"&limit={int(limit)}&offset={int(offset)}")
 
     def toggle_design_like(self, design_id: int | str) -> dict:
@@ -774,7 +780,17 @@ class CloudClient:
         download URL, and `urlretrieve` the .3mf to `dest_dir/<title>.3mf`.
 
         Returns the Path of the downloaded file. Raises CloudError on
-        any HTTP failure."""
+        any HTTP failure.
+
+        Note on rate-limiting: Bambu's f3mf endpoint triggers an
+        anti-bot captcha challenge (HTTP 418 with `captchaId` in the
+        body) after roughly 10 programmatic downloads from the same
+        IP in a short window. Real BS Studio + Handy don't hit this
+        because they typically only download 1-2 bundles per session
+        and humans solve captchas in the GUI. For now there's no
+        non-interactive workaround — the caller should cache locally
+        and avoid repeated downloads. If you hit 418, wait ~hour or
+        log in via the Bambu Studio GUI which clears the flag."""
         d = self.get_design(design_id)
         instances = d.get("instances") or []
         if not instances:
