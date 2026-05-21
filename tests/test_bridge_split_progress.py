@@ -55,7 +55,9 @@ BRIDGE = REPO / "x2d_bridge.py"
 #   58 — Phase 5b: cloud-search, cloud-browse, cloud-design,
 #        cloud-design-remixes, cloud-favorites, cloud-liked,
 #        cloud-presets moved into beambam.cli.cloud
-_MAX_CMD_HANDLERS_IN_BRIDGE = 58
+#   54 — Phase 5b: cloud-feed, cloud-like, cloud-comments,
+#        cloud-comment-reply moved into beambam.cli.cloud
+_MAX_CMD_HANDLERS_IN_BRIDGE = 54
 
 
 def _count_cmd_handlers() -> int:

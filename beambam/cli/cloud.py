@@ -380,6 +380,99 @@ def cmd_cloud_presets(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_cloud_feed(args: argparse.Namespace) -> int:
+    """MakerWorld 'For You' recommendation feed."""
+    import random
+    import cloud_client
+    cli = cloud_client.CloudClient.load_or_anonymous()
+    if cli.session.empty:
+        print("not logged in", file=sys.stderr); return 1
+    seed = args.seed if args.seed else random.randint(1, 2**31 - 1)
+    try:
+        r = cli.get_for_you(seed=seed, limit=int(args.limit))
+    except cloud_client.CloudError as e:
+        print(f"cloud API failed: {e}", file=sys.stderr); return 1
+    if args.json:
+        print(json.dumps(r, indent=2, default=str)); return 0
+    hits = r.get("hits") or r.get("designs") or []
+    print(f"{len(hits)} recommendation(s) (seed={seed}):")
+    for h in hits:
+        d = h.get("design") or h
+        did = str(d.get("id") or d.get("designId") or "")
+        title = str(d.get("title") or d.get("designTitle") or "")
+        likes = int(d.get("likeCount") or d.get("likes") or 0)
+        downloads = int(d.get("downloadCount") or d.get("downloads") or 0)
+        creator = (d.get("designCreator") or {}).get("name", "")
+        print(f"  {did:<8} likes={likes:<5} dls={downloads:<5}  "
+              f"by {creator[:18]:<18}  {title[:50]}")
+    return 0
+
+
+def cmd_cloud_like(args: argparse.Namespace) -> int:
+    """Toggle the like-state on a MakerWorld design.
+
+    Endpoint is idempotent-toggle: first POST likes, second un-likes.
+    Bambu returns empty 200 on success."""
+    import cloud_client
+    cli = cloud_client.CloudClient.load_or_anonymous()
+    if cli.session.empty:
+        print("not logged in", file=sys.stderr); return 1
+    try:
+        cli.toggle_design_like(args.design_id)
+    except cloud_client.CloudError as e:
+        print(f"cloud API failed: {e}", file=sys.stderr); return 1
+    print(f"design {args.design_id}: like toggle accepted by server "
+          f"(toggle is idempotent — call again to reverse)")
+    return 0
+
+
+def cmd_cloud_comments(args: argparse.Namespace) -> int:
+    """Pull MakerWorld comments + ratings for a design."""
+    import cloud_client
+    cli = cloud_client.CloudClient.load_or_anonymous()
+    if cli.session.empty:
+        print("not logged in", file=sys.stderr); return 1
+    try:
+        r = cli.get_design_comments(args.design_id,
+                                    limit=int(args.limit),
+                                    offset=int(args.offset))
+    except cloud_client.CloudError as e:
+        print(f"cloud API failed: {e}", file=sys.stderr); return 1
+    if args.json:
+        print(json.dumps(r, indent=2, default=str)); return 0
+    hits = r.get("hits") or []
+    comments = [h for h in hits if h.get("type") == 1 and h.get("comment")]
+    print(f"{r.get('total', 0)} interaction(s); showing "
+          f"{len(comments)} comment(s):\n")
+    for h in comments:
+        c = h["comment"]
+        user = (c.get("user") or {}).get("name", "?")
+        when = (c.get("createTime") or "")[:10]
+        likes = c.get("likeCount", 0)
+        replies = c.get("replyCount", 0)
+        content = (c.get("content") or "").replace("\n", " ")
+        print(f"  {when}  likes={likes:<3} replies={replies:<3}  "
+              f"{user[:18]:<18}: {content[:80]}")
+    return 0
+
+
+def cmd_cloud_comment_reply(args: argparse.Namespace) -> int:
+    """Reply to a MakerWorld comment by its numeric ID."""
+    import cloud_client
+    cli = cloud_client.CloudClient.load_or_anonymous()
+    if cli.session.empty:
+        print("not logged in", file=sys.stderr); return 1
+    try:
+        r = cli.reply_to_comment(args.comment_id, args.text)
+    except cloud_client.CloudError as e:
+        print(f"cloud API failed: {e}", file=sys.stderr); return 1
+    if args.json:
+        print(json.dumps(r, indent=2, default=str)); return 0
+    reply_id = r.get("id") or r.get("commentId") or "?"
+    print(f"replied to comment {args.comment_id} (reply id={reply_id})")
+    return 0
+
+
 def cmd_cloud_ttcode(args: argparse.Namespace) -> int:
     """Fetch Throughtek P2P NAT-traversal codes for cloud camera streaming.
 
@@ -554,3 +647,39 @@ def add_subparser(sub: "argparse._SubParsersAction") -> None:
                           help="Include Bambu's shipped public presets too")
     cli_pre.add_argument("--json", action="store_true")
     cli_pre.set_defaults(fn=cmd_cloud_presets)
+
+    cli_feed = sub.add_parser(
+        "cloud-feed",
+        help="MakerWorld 'For You' recommendations for this user.")
+    cli_feed.add_argument("--seed", type=int, default=0,
+                           help="Pagination seed (0 = random new page).")
+    cli_feed.add_argument("--limit", type=int, default=10)
+    cli_feed.add_argument("--json", action="store_true")
+    cli_feed.set_defaults(fn=cmd_cloud_feed)
+
+    cli_like = sub.add_parser(
+        "cloud-like",
+        help="Toggle like-state on a MakerWorld design.")
+    cli_like.add_argument("design_id", type=int)
+    cli_like.set_defaults(fn=cmd_cloud_like)
+
+    cli_com = sub.add_parser(
+        "cloud-comments",
+        help="MakerWorld comments + ratings for a design.")
+    cli_com.add_argument("design_id", type=int)
+    cli_com.add_argument("--limit", type=int, default=20)
+    cli_com.add_argument("--offset", type=int, default=0)
+    cli_com.add_argument("--json", action="store_true")
+    cli_com.set_defaults(fn=cmd_cloud_comments)
+
+    cli_reply = sub.add_parser(
+        "cloud-comment-reply",
+        help="Reply to a MakerWorld comment (POST "
+             "/v1/comment-service/comment/<id>/reply).")
+    cli_reply.add_argument("comment_id", type=int,
+                            help="Numeric ID of the comment to reply to")
+    cli_reply.add_argument("text",
+                            help="Reply body. Pass via shell-quoted string.")
+    cli_reply.add_argument("--json", action="store_true",
+                            help="Emit the new reply record as JSON")
+    cli_reply.set_defaults(fn=cmd_cloud_comment_reply)
