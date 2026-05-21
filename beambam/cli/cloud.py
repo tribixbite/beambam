@@ -53,9 +53,10 @@ def cmd_cloud_app_config(args: argparse.Namespace) -> int:
     for k, v in r.items():
         if isinstance(v, list):
             print(f"  {k} ({len(v)} entries)")
-            for e in v[:5]:
-                if isinstance(e, dict):
-                    label = e.get("name") or e.get("key") or str(e)[:60]
+            for item in v[:5]:
+                if isinstance(item, dict):
+                    label = (item.get("name") or item.get("key")
+                             or str(item)[:60])
                     print(f"    - {label}")
         else:
             print(f"  {k}: {str(v)[:80]}")
