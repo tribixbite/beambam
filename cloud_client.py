@@ -434,6 +434,33 @@ class CloudClient:
             "login response missing accessToken and unknown loginType",
             body=str(r))
 
+    def login_code_only(self, email: str, region: str | None = None,
+                        *, code_resolver: Callable[[str], str] | None = None) -> None:
+        """Email-only "device code" style login — skip the password
+        entirely.
+
+        Flow:
+          1. POST /v1/user-service/user/sendemail/code with type=codeLogin
+             (Bambu sends a 6-digit code to the email address)
+          2. Wait for the user to paste the code (via `code_resolver`)
+          3. POST /v1/user-service/user/login with {account, code} and no
+             password field, which exchanges the code for tokens
+
+        This is the right path for `uvx beambam` fresh-OS users — typing
+        a Bambu password into an arbitrary terminal is hostile UX. The
+        email-code roundtrip proves possession of the inbox instead.
+        """
+        region = self._resolve_region(email, region)
+        self._send_email_code(region, email)
+        if not code_resolver:
+            raise CloudError(
+                "code-only login needs a code_resolver callback to read "
+                "the 6-digit code from the user. Use cmd_cloud_login "
+                "--code-only for interactive entry.",
+                status=200, body="")
+        code = code_resolver(email)
+        self._submit_email_code(region, email, code)
+
     def _send_email_code(self, region: str, email: str) -> None:
         url = REGIONS[region]["api"] + "/v1/user-service/user/sendemail/code"
         _request("POST", url, body={"email": email, "type": "codeLogin"})
@@ -707,6 +734,55 @@ class CloudClient:
         return self._authed_get(
             f"/v1/search-service/select/design?query={urllib.parse.quote(query)}"
             f"&limit={int(limit)}&offset={int(offset)}")
+
+    def get_instance_download_url(self, instance_id: int | str,
+                                   kind: str = "download") -> dict:
+        """Resolve the signed download URL for a MakerWorld design instance.
+        `kind="download"` returns the full .3mf bundle; `kind="preview"`
+        returns a preview-only .3mf (no plate gcode). The signed URL is
+        valid for ~5 minutes (`exp` parameter in the URL).
+
+        Response shape: `{"name": "<title>.3mf", "url": "https://makerworld.bblmw.com/...?exp=...&key=..."}`
+        """
+        return self._authed_get(
+            f"/v1/design-service/instance/{instance_id}/f3mf?type={kind}")
+
+    def pull_design_3mf(self, design_id: int | str, dest_dir: Path | str,
+                        instance_index: int = 0) -> Path:
+        """Convenience: given a MakerWorld designId, locate its default
+        instance (or instance #instance_index), resolve its signed
+        download URL, and `urlretrieve` the .3mf to `dest_dir/<title>.3mf`.
+
+        Returns the Path of the downloaded file. Raises CloudError on
+        any HTTP failure."""
+        d = self.get_design(design_id)
+        instances = d.get("instances") or []
+        if not instances:
+            raise CloudError(f"design {design_id} has no instances")
+        # Honour isDefault if present; otherwise use instance_index.
+        chosen = None
+        for inst in instances:
+            if inst.get("isDefault"):
+                chosen = inst; break
+        if chosen is None:
+            chosen = instances[min(instance_index, len(instances) - 1)]
+        inst_id = chosen.get("id")
+        if not inst_id:
+            raise CloudError(f"instance for design {design_id} missing id field")
+        meta = self.get_instance_download_url(inst_id)
+        url = meta.get("url")
+        name = meta.get("name") or f"design_{design_id}.3mf"
+        if not url:
+            raise CloudError(f"no signed download URL for instance {inst_id}")
+        dest_dir = Path(dest_dir)
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        # Sanitize filename — Bambu's "name" field can contain spaces, slashes etc.
+        safe = "".join(c if c.isalnum() or c in (".", "_", "-") else "_" for c in name)
+        out = dest_dir / safe
+        req = urllib.request.Request(url, headers={"User-Agent": "beambam-cloud/1.x"})
+        with urllib.request.urlopen(req, timeout=30) as r:
+            out.write_bytes(r.read())
+        return out
 
     # ------------------------------------------------------------------
     # Cloud-side MQTT broker — for cloud-mediated print control + state

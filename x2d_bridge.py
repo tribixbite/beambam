@@ -4631,6 +4631,28 @@ def cmd_cloud_login(args: argparse.Namespace) -> int:
         except (EOFError, KeyboardInterrupt):
             print("\naborted", file=sys.stderr)
             return 1
+
+    # --code-only ("device code" style) flow: skip the password entirely.
+    # Bambu emails a 6-digit code that proves possession of the inbox.
+    # Right path for fresh-OS uvx users who don't want to paste a Bambu
+    # password into a terminal they may not fully trust.
+    if getattr(args, "code_only", False):
+        def _prompt_for_code(addr: str) -> str:
+            if getattr(args, "email_code", None):
+                return args.email_code.strip()
+            print(f"\nA verification code was emailed to {addr}. Enter it:")
+            return input("Email code: ").strip()
+        cli = cloud_client.CloudClient.load_or_anonymous()
+        try:
+            cli.login_code_only(email, region=args.region,
+                                 code_resolver=_prompt_for_code)
+        except cloud_client.CloudError as e:
+            print(f"cloud-login (code-only) failed: {e}", file=sys.stderr)
+            return 1
+        print(f"logged in (code-only) as user {cli.session.user_id} "
+              f"(region={cli.session.region}); session saved.")
+        return 0
+
     if not password:
         import getpass
         try:
@@ -4639,7 +4661,7 @@ def cmd_cloud_login(args: argparse.Namespace) -> int:
             print("\naborted", file=sys.stderr)
             return 1
     if not email or not password:
-        print("email and password are required", file=sys.stderr)
+        print("email and password are required (or use --code-only)", file=sys.stderr)
         return 2
 
     def prompt_tfa(_email: str) -> str:
@@ -5520,6 +5542,114 @@ def cmd_cloud_presets(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_cloud_pull_design(args: argparse.Namespace) -> int:
+    """Download a MakerWorld design's .3mf bundle to a local directory.
+
+    Resolves the signed bblmw.com URL via the design-service/instance
+    f3mf endpoint, then `urlretrieve`s into `--out-dir`. The default
+    instance is picked (whichever has `isDefault: true`) unless
+    `--instance-id` is given explicitly.
+
+    Companion `cloud-print-design` chains this into slice-print."""
+    import cloud_client
+    cli = cloud_client.CloudClient.load_or_anonymous()
+    if cli.session.empty:
+        print("not logged in", file=sys.stderr); return 1
+    out_dir = Path(args.out_dir).expanduser()
+    try:
+        out = cli.pull_design_3mf(args.design_id, out_dir,
+                                  instance_index=int(args.instance_index or 0))
+    except cloud_client.CloudError as e:
+        print(f"cloud API failed: {e}", file=sys.stderr); return 1
+    print(f"[cloud-pull] saved {out}  ({out.stat().st_size:,} B)")
+    if args.json:
+        print(json.dumps({"path": str(out), "size": out.stat().st_size}, default=str))
+    return 0
+
+
+def cmd_cloud_print_design(args: argparse.Namespace) -> int:
+    """End-to-end: download a MakerWorld design + slice + upload + print.
+
+    `beambam cloud-print-design 1623016 [--copies 4 --scale-pct 75 --color Gold]`
+
+    Steps:
+      1. Resolve the design's default instance + download the .3mf.
+      2. (Re-)slice via x2d_slice with the user's --copies / --scale / --color.
+      3. Upload + start print on the configured printer.
+
+    This is the FRE win — search the catalogue, pick a design, hit print."""
+    import cloud_client, tempfile, subprocess
+    cli = cloud_client.CloudClient.load_or_anonymous()
+    if cli.session.empty:
+        print("not logged in", file=sys.stderr); return 1
+
+    with tempfile.TemporaryDirectory(prefix="cloud_print_design_") as td:
+        td_p = Path(td)
+        try:
+            three_mf = cli.pull_design_3mf(args.design_id, td_p,
+                                            instance_index=int(args.instance_index or 0))
+        except cloud_client.CloudError as e:
+            print(f"cloud API failed: {e}", file=sys.stderr); return 1
+        print(f"[cloud-print-design] downloaded {three_mf.name}  "
+              f"({three_mf.stat().st_size:,} B)", file=sys.stderr)
+
+        # Build the slice-print invocation. We use the same x2d_bridge but
+        # via subprocess so all the existing arg validation + helpers fire.
+        bridge = X2D_ROOT_PATH / "x2d_bridge.py"
+        cmd = [sys.executable, str(bridge), "slice-print", str(three_mf)]
+        if args.printer: cmd.extend(["--printer", args.printer])
+        if args.ip:      cmd.extend(["--ip", args.ip])
+        if args.code:    cmd.extend(["--code", args.code])
+        if args.serial:  cmd.extend(["--serial", args.serial])
+        if args.scale != 1.0: cmd.extend(["--scale", str(args.scale)])
+        if args.scale_pct is not None: cmd.extend(["--scale-pct", str(args.scale_pct)])
+        if args.mm is not None: cmd.extend(["--mm", str(args.mm)])
+        if int(args.copies) != 1: cmd.extend(["--copies", str(args.copies)])
+        if args.color:   cmd.extend(["--color", args.color])
+        if args.slot:    cmd.extend(["--slot", str(args.slot)])
+        if args.no_ams:  cmd.append("--no-ams")
+        if args.dry_run: cmd.append("--dry-run")
+        return subprocess.call(cmd)
+
+
+def cmd_fcm_harvest(args: argparse.Namespace) -> int:
+    """Pull finish-snapshot JPGs from a rooted Bambu Handy install.
+
+    Bambu pushes a Firebase Cloud Messaging notification on every print
+    completion, and Handy stashes them in
+    `/data/data/bbl.intl.bambulab.com/shared_prefs/io.flutter.plugins.firebase.messaging.xml`.
+    Each notification body contains a pre-signed AWS S3 URL to the
+    finish-snapshot JPG — 1-hour signed-URL TTL. This subcommand pulls
+    the XML over ADB, finds new entries, fetches their JPGs (while still
+    valid), and stores them in ~/.x2d/snapshots/<print_id>.{jpg,json}.
+
+    Modes:
+      --once          (default) single sweep
+      --daemon        loop forever
+      --interval N    daemon poll period seconds (default 60)
+      --backfill      attempt every URL even if it appears expired
+
+    Requires a rooted device with `su` available. See
+    runtime/handy_extract/HANDY_DATA_AUDIT.md for the full data-flow."""
+    import subprocess
+    # Just shell out to the standalone harvester so we keep the code in one
+    # place and don't duplicate the harvester logic into x2d_bridge.
+    script = X2D_ROOT_PATH / "runtime" / "handy_extract" / "fcm_snapshot_harvest.py"
+    if not script.exists():
+        sys.exit(f"harvester missing at {script}")
+    cmd = ["python3", str(script), "--device", args.device]
+    if args.daemon:
+        cmd.append("--daemon")
+        cmd.extend(["--interval", str(args.interval)])
+    else:
+        cmd.append("--once")
+    if args.backfill:
+        cmd.append("--backfill")
+    if args.verbose:
+        cmd.append("--verbose")
+    return subprocess.call(cmd)
+
+
 def cmd_cloud_app_config(args: argparse.Namespace) -> int:
     """Global app feature-flag manifest."""
     import cloud_client
@@ -6181,6 +6311,13 @@ def main() -> int:
                            help="Pre-supply the email-verification code. "
                                 "Skips the interactive prompt — useful for "
                                 "non-interactive shells / piped input.")
+    cli_login.add_argument("--code-only", action="store_true",
+                           help="'Device code' mode: skip the password entirely. "
+                                "Bambu emails you a 6-digit code; you paste it in. "
+                                "Recommended for `uvx beambam` fresh-OS flows where "
+                                "you don't want a Bambu password in your terminal "
+                                "history. Pair with --email-code <code> for "
+                                "non-interactive.")
     cli_login.add_argument("--tfa-code",
                            help="Pre-supply the 6-digit TOTP. "
                                 "Skips the interactive prompt.")
@@ -6423,6 +6560,58 @@ def main() -> int:
         help="Global app feature-flag manifest — exposes pre-release feature flags.")
     cli_cfg.add_argument("--json", action="store_true")
     cli_cfg.set_defaults(fn=cmd_cloud_app_config)
+
+    cli_pull = sub.add_parser(
+        "cloud-pull-design",
+        help="Download a MakerWorld design's .3mf bundle to a local dir.")
+    cli_pull.add_argument("design_id", type=int)
+    cli_pull.add_argument("--instance-id", "--instance", "--inst",
+                          dest="instance_index", type=int, default=0,
+                          help="Which instance to pull (0=default)")
+    cli_pull.add_argument("--out-dir", default="~/Downloads/x2d-models",
+                          help="Where to save the .3mf (default %(default)s)")
+    cli_pull.add_argument("--json", action="store_true")
+    cli_pull.set_defaults(fn=cmd_cloud_pull_design)
+
+    cli_cpd = sub.add_parser(
+        "cloud-print-design",
+        help="End-to-end: MakerWorld design → download → slice → upload → print. "
+             "Pass any of --copies / --scale-pct / --mm / --color / --slot to "
+             "control the slice + print parameters.")
+    cli_cpd.add_argument("design_id", type=int,
+                         help="MakerWorld design ID (from `cloud-search` etc.)")
+    cli_cpd.add_argument("--instance-id", "--instance",
+                         dest="instance_index", type=int, default=0)
+    cli_cpd.add_argument("--scale", type=float, default=1.0)
+    cli_cpd.add_argument("--scale-pct", type=float, default=None)
+    cli_cpd.add_argument("--mm", type=float, default=None)
+    cli_cpd.add_argument("--copies", "--quantity", "-n", type=int, default=1)
+    cli_cpd.add_argument("--color", help="Primary filament colour (hex or name)")
+    cli_cpd.add_argument("--slot", type=int, default=0)
+    cli_cpd.add_argument("--no-ams", action="store_true")
+    cli_cpd.add_argument("--dry-run", action="store_true",
+                         help="Download + slice, but don't upload/print")
+    cli_cpd.add_argument("--printer")
+    cli_cpd.add_argument("--ip")
+    cli_cpd.add_argument("--code")
+    cli_cpd.add_argument("--serial")
+    cli_cpd.set_defaults(fn=cmd_cloud_print_design)
+
+    cli_fcm = sub.add_parser(
+        "fcm-harvest",
+        help="Pull finish-snapshot JPGs from a rooted Bambu Handy install "
+             "before their 1-hour AWS-signed URLs expire. Result: a permanent "
+             "local archive in ~/.x2d/snapshots/ that Handy itself doesn't expose.")
+    cli_fcm.add_argument("--device", required=True,
+                         help="adb serial / ip:port of the rooted Handy host")
+    cli_fcm.add_argument("--daemon", action="store_true",
+                         help="Loop forever (default: single sweep)")
+    cli_fcm.add_argument("--interval", type=int, default=60,
+                         help="Seconds between sweeps in --daemon mode (default 60)")
+    cli_fcm.add_argument("--backfill", action="store_true",
+                         help="Try every URL even if its X-Amz-Date is >1h old")
+    cli_fcm.add_argument("--verbose", action="store_true")
+    cli_fcm.set_defaults(fn=cmd_fcm_harvest)
 
     cli_gac = sub.add_parser(
         "cloud-get-access-code",
