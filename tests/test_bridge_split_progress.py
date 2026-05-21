@@ -83,7 +83,11 @@ BRIDGE = REPO / "x2d_bridge.py"
 #        beambam.cli.info module. Both are pure-read MQTT-only or
 #        local-config readers, so they have zero coupling to the
 #        publish/connect state machine.
-_MAX_CMD_HANDLERS_IN_BRIDGE = 31
+#   29 — Phase 5c batch 2: cmd_health + cmd_watch moved into
+#        beambam.cli.info. cmd_health is a one-shot TCP+MQTT+AMS
+#        diagnostic; cmd_watch is a polling status loop. Both are
+#        zero-coupling reads.
+_MAX_CMD_HANDLERS_IN_BRIDGE = 29
 
 
 def _count_cmd_handlers() -> int:

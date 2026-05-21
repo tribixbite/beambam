@@ -312,10 +312,10 @@ phase staging.
   ~2,000 LoC moved. Target post-phase: ~27 handlers in monolith.
 - [~] **Phase 5c** — read-only commands (`status`, `health`, `watch`,
   `tail`, `notify`, `printers`, `fetch`) → `beambam/cli/info.py`.
-  Batch 1 (this round): `cmd_status` + `cmd_printers` scaffolded the
-  new module; both are pure-read with zero coupling to the publish
-  state machine. Remaining: health / watch / tail / notify / fetch
-  (the larger handlers, ~50–150 LoC each — separate batches).
+  Two batches landed: status + printers (batch 1), health + watch
+  (batch 2). 4 of 7 verbs migrated. Remaining: tail (depends on a
+  separate `_TailDispatcher` class + `decode_hms`), notify, fetch
+  (large URL parsers — separate batches).
 - [ ] **Phase 5d** — daemon cluster (`cmd_daemon`, `cmd_serve`,
   `cmd_camera`, `cmd_webrtc`, `cmd_ha_publish`, `_serve_http`) →
   `beambam/cli/daemon.py`. Largest single sub-phase (~1,500 LoC).

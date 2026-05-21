@@ -1437,8 +1437,13 @@ def _serve_http(bind: str,
 # CLI entry
 # ---------------------------------------------------------------------------
 
-# cmd_status moved to beambam/cli/info.py (Phase 5c). Re-exported below.
-from beambam.cli.info import cmd_status  # noqa: E402, F401
+# cmd_status / cmd_health / cmd_watch moved to beambam/cli/info.py
+# (Phase 5c). Re-exported.
+from beambam.cli.info import (  # noqa: E402, F401
+    cmd_status,
+    cmd_health,
+    cmd_watch,
+)
 
 
 def cmd_upload(args: argparse.Namespace) -> int:
@@ -3375,164 +3380,12 @@ def cmd_slice_print(args: argparse.Namespace) -> int:
 # connect, last printer state, AMS slot summary, camera port. Output
 # is concise (one line per check) so it fits in a phone terminal.
 
-def cmd_health(args: argparse.Namespace) -> int:
-    import socket as _socket
-    import time as _time
-
-    creds = Creds.resolve(args)
-    print(f"x2d health check — printer {creds.serial} @ {creds.ip}")
-    fail_count = 0
-
-    def _ok(label: str, detail: str = "") -> None:
-        print(f"  \033[32m✓\033[0m {label:<28}{(' '+detail) if detail else ''}")
-
-    def _fail(label: str, detail: str) -> None:
-        nonlocal fail_count
-        print(f"  \033[31m✗\033[0m {label:<28} {detail}")
-        fail_count += 1
-
-    def _info(label: str, detail: str) -> None:
-        print(f"  \033[36m·\033[0m {label:<28} {detail}")
-
-    # 1. TCP reachability for each port BS uses
-    for port, label in ((8883, "MQTT-TLS"),
-                         (322,  "RTSPS-camera"),
-                         (6000, "LVL-Local"),
-                         (990,  "FTPS-upload")):
-        try:
-            with _socket.create_connection((creds.ip, port), timeout=3.0) as s:
-                _ok(f"port {port} ({label})", "open")
-        except (OSError, _socket.timeout) as e:
-            _fail(f"port {port} ({label})", str(e))
-
-    # 2. MQTT connect + state
-    try:
-        cli = X2DClient(creds)
-        cli.connect(timeout=8.0)
-        t0 = _time.time()
-        state = cli.request_state(timeout=8.0)
-        elapsed = _time.time() - t0
-        cli.disconnect()
-        _ok("MQTT request_state", f"{int(elapsed*1000)}ms")
-    except Exception as e:
-        _fail("MQTT request_state", str(e))
-        state = None
-
-    # 3. AMS slots summary
-    if state:
-        ams = state.get("print", {}).get("ams", {}).get("ams", [])
-        if ams:
-            for unit in ams:
-                trays = unit.get("tray", [])
-                loaded = sum(1 for t in trays if t.get("type"))
-                _info(f"AMS{unit.get('id', '?')}", f"{loaded}/{len(trays)} slots loaded")
-        else:
-            _info("AMS", "no AMS reported (single-spool / unbound)")
-
-        # 4. Print state
-        print_state = state.get("print", {})
-        gcode_state = print_state.get("gcode_state", "?")
-        layer = print_state.get("layer_num", 0)
-        total_layers = print_state.get("total_layer_num", 0)
-        if gcode_state and gcode_state != "?":
-            _info("print state", f"{gcode_state}, layer {layer}/{total_layers}")
-
-        # 5. Camera state
-        ipcam = print_state.get("ipcam", {})
-        rtsp = ipcam.get("rtsp_url", "?")
-        if rtsp == "disable":
-            _info("camera", "rtsp disabled (toggle on touchscreen → Settings → Network → Liveview)")
-        elif rtsp.startswith("rtsps://"):
-            _ok("camera", "rtsps URL ready")
-        else:
-            _info("camera", f"rtsp_url={rtsp}")
-
-        # 6. SD card state
-        sdcard = print_state.get("sdcard", "?")
-        if sdcard == "0" or sdcard == 0:
-            _info("SD card", "not inserted")
-        elif sdcard:
-            _ok("SD card", f"state={sdcard}")
-
-    # 7. Bridge daemon socket (if running)
-    sock_path = Path.home() / ".x2d" / "bridge.sock"
-    if sock_path.exists():
-        try:
-            with _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM) as us:
-                us.settimeout(2.0)
-                us.connect(str(sock_path))
-                _ok("bridge daemon", f"socket alive at ~/.x2d/bridge.sock")
-        except OSError as e:
-            _fail("bridge daemon", f"socket present but {e}")
-    else:
-        _info("bridge daemon", "not running (no ~/.x2d/bridge.sock)")
-
-    print()
-    if fail_count == 0:
-        print("\033[32mAll checks passed.\033[0m")
-        return 0
-    print(f"\033[31m{fail_count} check(s) failed.\033[0m")
-    return 1
+# cmd_health moved to beambam/cli/info.py (Phase 5c batch 2). Re-exported
+# alongside cmd_status / cmd_printers below.
 
 
-# x2d/termux #88 — `watch` live status. Polls printer state every N seconds
-# and emits one line per poll: gcode_state, layer, eta, nozzle/bed temp.
-# Useful for shell pipelines, status bars, scripts. Ctrl-C to exit.
-def cmd_watch(args: argparse.Namespace) -> int:
-    import time as _time
-
-    creds = Creds.resolve(args)
-    interval = max(1, int(args.interval))
-    cli = X2DClient(creds)
-    cli.connect(timeout=8.0)
-
-    try:
-        while True:
-            try:
-                state = cli.request_state(timeout=8.0)
-            except Exception as e:
-                print(f"[{_time.strftime('%H:%M:%S')}] error: {e}",
-                      file=sys.stderr)
-                _time.sleep(interval)
-                continue
-
-            print_state = state.get("print", {})
-            gcode_state = print_state.get("gcode_state", "?")
-            layer = int(print_state.get("layer_num", 0) or 0)
-            total = int(print_state.get("total_layer_num", 0) or 0)
-            mc_pct = int(print_state.get("mc_percent", 0) or 0)
-            mc_remaining = int(print_state.get("mc_remaining_time", 0) or 0)
-
-            nozzle_l = float(print_state.get("nozzle_temper", 0.0) or 0.0)
-            nozzle_l_t = float(print_state.get("nozzle_target_temper", 0.0) or 0.0)
-            bed = float(print_state.get("bed_temper", 0.0) or 0.0)
-            bed_t = float(print_state.get("bed_target_temper", 0.0) or 0.0)
-
-            eta = ""
-            if mc_remaining > 0:
-                hours = mc_remaining // 60
-                mins  = mc_remaining % 60
-                eta = f"{hours:02d}h{mins:02d}m"
-            else:
-                eta = "--:--"
-
-            ts = _time.strftime("%H:%M:%S")
-            line = (
-                f"[{ts}] {gcode_state:<8} "
-                f"L{layer}/{total} {mc_pct}% eta={eta}  "
-                f"N:{nozzle_l:.0f}/{nozzle_l_t:.0f}°C "
-                f"B:{bed:.0f}/{bed_t:.0f}°C"
-            )
-            print(line, flush=True)
-
-            if args.once:
-                break
-            _time.sleep(interval)
-    except KeyboardInterrupt:
-        print("\n[watch] stopped", file=sys.stderr)
-    finally:
-        cli.disconnect()
-    return 0
+# cmd_watch moved to beambam/cli/info.py (Phase 5c batch 2). Re-exported
+# alongside cmd_health / cmd_status / cmd_printers below.
 
 
 # `tail` streams events derived from the printer's MQTT push stream
