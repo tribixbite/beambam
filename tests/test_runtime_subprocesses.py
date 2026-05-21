@@ -53,6 +53,10 @@ def runtime_env():
     repo = str(REPO_ROOT)
     existing = env.get("PYTHONPATH", "")
     env["PYTHONPATH"] = f"{repo}{os.pathsep}{existing}" if existing else repo
+    # Windows' default stdout codec is cp1252; force UTF-8 so the
+    # runtime scripts' "→ ✓ ✗" status glyphs don't crash on
+    # print(). No-op on Linux/macOS (already UTF-8).
+    env.setdefault("PYTHONIOENCODING", "utf-8")
     return env
 
 
@@ -151,10 +155,18 @@ def _conditional_skip(rel: str) -> str | None:
                     "to enable")
         return None
     if rel == "runtime/webui/test_mobile.py":
-        # The mobile UI test hardcodes the binary name `chromium-browser`
-        # (not chromium / google-chrome — see runtime/webui/test_mobile.py
-        # line ~127). Linux GHA / Windows GHA / macOS GHA don't ship that
-        # exact name. Skip unless it's on PATH.
+        # The mobile UI test invokes `chromium-browser --headless`.
+        # 1. The binary must be on PATH (test hardcodes the name).
+        # 2. Even when present in CI, headless chromium silently fails
+        #    to produce screenshots without proper display setup
+        #    (--disable-dev-shm-usage etc). Skip in CI unconditionally;
+        #    keep the test local-only so the screenshots in docs/
+        #    still get refreshed when a dev runs the suite.
+        if _running_in_ci():
+            return ("CI runners don't have a display + chromium silently "
+                    "fails to render headlessly without Xvfb / DBus. "
+                    "Run locally to refresh the docs/webui-*.png "
+                    "screenshots.")
         if not shutil.which("chromium-browser"):
             return ("`chromium-browser` binary not on PATH (the mobile "
                     "test hardcodes that name).")

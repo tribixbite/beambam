@@ -148,6 +148,8 @@ def test_cmd_add_creates_section(creds_file, capsys):
     assert cp.get("printer:studio", "ip") == "1.2.3.4"
 
 
+@pytest.mark.skipif(sys.platform == "win32",
+                    reason="POSIX chmod 0o600 semantics — Windows uses ACLs")
 def test_cmd_add_chmod_600(creds_file):
     args = argparse.Namespace(name="t", ip="1.2.3.4",
                                code="12345678", serial="A", force=False)

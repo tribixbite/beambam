@@ -135,6 +135,8 @@ def test_cmd_init_full_flow_writes_credentials(creds_file, capsys):
     assert cp.get("printer:studio", "code") == "12345678"
 
 
+@pytest.mark.skipif(sys.platform == "win32",
+                    reason="POSIX chmod 0o600 semantics — Windows uses ACLs")
 def test_cmd_init_chmod_600(creds_file):
     args = _full_args(ip="1.2.3.4", serial="FAKE", code="12345678",
                        name="t", force=True)

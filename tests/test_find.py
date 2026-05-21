@@ -211,6 +211,8 @@ def test_write_credentials_section_refuses_overwrite_with_different_ip(tmp_path)
     assert "9.9.9.9" in text
 
 
+@pytest.mark.skipif(sys.platform == "win32",
+                    reason="POSIX chmod 0o600 semantics — Windows uses ACLs")
 def test_write_credentials_section_chmod_600(tmp_path):
     """Access code is sensitive — file must be 0600."""
     creds = tmp_path / "credentials"
