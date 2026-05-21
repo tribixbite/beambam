@@ -94,9 +94,14 @@ Remaining endpoints from the catalog worth wiring:
 - [x] **`--mm <height>`** absolute-size scaling (commit 678a0df).
 - [ ] **`--orient {auto|flat|tall|original}`** auto-orient the model so the
   flattest face is on the build plate (or tallest dimension is Z).
-- [ ] **`--color-by-region <map.json>`** — per-AMS-slot colour assignment
-  driven by a JSON map of mesh region → filament index. Extends today's
-  `--color` (single global colour) for multi-colour prints.
+- [x] **`--colors c1,c2,c3,c4` / `--color-by-region map.json`** (commit
+  41deb0f) — multi-AMS-slot provisioning. Expands every parallel
+  `filament_*` list + `flush_volumes_matrix` (N²) +
+  `flush_volumes_vector` (2N). Real-slice-verified at 4 copies × 4
+  colours: 8.14g, clean BS CLI exit. Per-copy slot binding (so each
+  copy actually picks a different slot) still needs BS GUI paint maps
+  — out of scope today because the slicer's `<metadata key="extruder"
+  value="N"/>` is the nozzle index (X2D has 2 nozzles), not the AMS slot.
 
 ### Search → slice → upload pipelines
 - [x] **`beambam cloud-search <query>`** (commit cb84385) — MakerWorld
