@@ -85,7 +85,10 @@ def _load_catalog() -> list[_CatalogEntry]:
     if not _CATALOG_PATH.exists():
         LOG.warning("colorsync catalog missing at %s", _CATALOG_PATH)
         return []
-    raw = json.loads(_CATALOG_PATH.read_text())
+    # `encoding="utf-8"` is the Bambu source file's actual encoding;
+    # Windows' default codec (cp1252) chokes on the smart-quotes /
+    # filament-name accents the JSON contains.
+    raw = json.loads(_CATALOG_PATH.read_text(encoding="utf-8"))
     out: list[_CatalogEntry] = []
     for ent in raw.get("data", []):
         for color_hex in ent.get("fila_color", []) or []:

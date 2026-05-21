@@ -97,8 +97,10 @@ def compatible_printer(*, model: str, nozzle_mm: float) -> str:
 
 # ---------- profile mutators ------------------------------------------
 
-DD_BOWDEN_4 = lambda v: [str(v)] * 4
-DD_BOWDEN_4V = lambda dds, ddh, bs, bh: [str(dds), str(ddh), str(bs), str(bh)]
+# Small constructor helpers — named lambdas because they're used as
+# value-builders for the 4-tray AMS arrays in the profile templates.
+DD_BOWDEN_4 = lambda v: [str(v)] * 4  # noqa: E731
+DD_BOWDEN_4V = lambda dds, ddh, bs, bh: [str(dds), str(ddh), str(bs), str(bh)]  # noqa: E731
 
 
 def apply_material(profile: dict[str, Any], material: str) -> None:
