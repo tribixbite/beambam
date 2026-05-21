@@ -163,7 +163,13 @@ BRIDGE = REPO / "x2d_bridge.py"
 #        --dry-run analyzer + bed/temp/filament safety derivation +
 #        AMS-slot live-state validation) moved into beambam.cli.lan.
 #        Sibling of cmd_slice_print — same dependency surface.
-_MAX_CMD_HANDLERS_IN_BRIDGE = 3
+#    2 — Phase 5d batch 6: cmd_camera (~455 LoC RTSPS→MJPEG/HLS proxy
+#        daemon — on-demand pump + supervisor + HTTP server) moved
+#        into beambam.cli.daemon. Lazy-imports `_check_bearer` and
+#        `_x2d_search_roots` from x2d_bridge. Remaining handlers
+#        (cmd_serve + cmd_daemon) both use the ~1080-LoC ServeServer
+#        class still in monolith — that's a Phase 5d batch 7 target.
+_MAX_CMD_HANDLERS_IN_BRIDGE = 2
 
 
 def _count_cmd_handlers() -> int:
