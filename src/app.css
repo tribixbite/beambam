@@ -1,0 +1,59 @@
+@import 'tailwindcss';
+
+@theme {
+    /* beambam brand palette — warm amber filament + cool steel printer */
+    --color-flame-300: #fda53b;
+    --color-flame-400: #f78421;
+    --color-flame-500: #ea6a0a;
+    --color-flame-600: #c95306;
+    --color-steel-900: #0a0a0a;
+    --color-steel-800: #18181b;
+    --color-steel-700: #27272a;
+    --color-steel-600: #3f3f46;
+    --font-display: 'Inter Variable', system-ui, sans-serif;
+    --font-mono: 'JetBrains Mono', 'SF Mono', Menlo, Consolas, monospace;
+}
+
+/* Base global styles */
+html {
+    color-scheme: dark;
+}
+
+body {
+    font-family: var(--font-display);
+    text-rendering: optimizeLegibility;
+}
+
+code,
+pre {
+    font-family: var(--font-mono);
+}
+
+/* Anchor links: soft amber */
+a {
+    color: var(--color-flame-400);
+    text-decoration: none;
+    transition: color 0.15s ease;
+}
+a:hover {
+    color: var(--color-flame-300);
+    text-decoration: underline;
+}
+
+/* Code-block defaults */
+pre {
+    background: var(--color-steel-800);
+    border: 1px solid var(--color-steel-700);
+    border-radius: 0.5rem;
+    padding: 1rem 1.25rem;
+    overflow-x: auto;
+    font-size: 0.875rem;
+    line-height: 1.6;
+}
+:not(pre) > code {
+    background: var(--color-steel-800);
+    padding: 0.1rem 0.4rem;
+    border-radius: 0.25rem;
+    font-size: 0.875em;
+    color: var(--color-flame-300);
+}
