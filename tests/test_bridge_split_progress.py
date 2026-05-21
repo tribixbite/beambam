@@ -79,7 +79,11 @@ BRIDGE = REPO / "x2d_bridge.py"
 #        beambam.cli._helpers (re-exported from x2d_bridge for back-
 #        compat). Only cmd_files remains from the original Phase 5a
 #        list — its FTPS/Creds wiring is too entangled to move cleanly.
-_MAX_CMD_HANDLERS_IN_BRIDGE = 33
+#   31 — Phase 5c batch 1: cmd_status + cmd_printers moved into a new
+#        beambam.cli.info module. Both are pure-read MQTT-only or
+#        local-config readers, so they have zero coupling to the
+#        publish/connect state machine.
+_MAX_CMD_HANDLERS_IN_BRIDGE = 31
 
 
 def _count_cmd_handlers() -> int:

@@ -1437,14 +1437,8 @@ def _serve_http(bind: str,
 # CLI entry
 # ---------------------------------------------------------------------------
 
-def cmd_status(args: argparse.Namespace) -> int:
-    creds = Creds.resolve(args)
-    cli = X2DClient(creds)
-    cli.connect()
-    state = cli.request_state(timeout=args.timeout)
-    cli.disconnect()
-    print(json.dumps(state, indent=2))
-    return 0
+# cmd_status moved to beambam/cli/info.py (Phase 5c). Re-exported below.
+from beambam.cli.info import cmd_status  # noqa: E402, F401
 
 
 def cmd_upload(args: argparse.Namespace) -> int:
@@ -4578,29 +4572,8 @@ import logging  # used by cmd_ha_publish above
 LOG_QUEUE = logging.getLogger("x2d.queue")
 
 
-def cmd_printers(_args: argparse.Namespace) -> int:
-    """List every [printer] / [printer:NAME] section in ~/.x2d/credentials.
-    Output is JSON: `{"printers": [{"name": "", "ip": "...", "serial": "..."}, …]}`
-    so MCP / scripts can consume it without re-parsing INI."""
-    ini_path = Path.home() / ".x2d" / "credentials"
-    out: list[dict] = []
-    if ini_path.exists():
-        cp = configparser.ConfigParser()
-        cp.read(ini_path)
-        for section in cp.sections():
-            if section == "printer":
-                name = ""
-            elif section.startswith("printer:"):
-                name = section.split(":", 1)[1]
-            else:
-                continue
-            out.append({
-                "name":   name,
-                "ip":     cp.get(section, "ip", fallback=""),
-                "serial": cp.get(section, "serial", fallback=""),
-            })
-    print(json.dumps({"printers": out}, indent=2))
-    return 0
+# cmd_printers moved to beambam/cli/info.py (Phase 5c). Re-exported below.
+from beambam.cli.info import cmd_printers  # noqa: E402, F401
 
 
 def cmd_cloud_login(args: argparse.Namespace) -> int:

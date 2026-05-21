@@ -310,9 +310,12 @@ phase staging.
   ahead of schedule by the parallel Phase 5b cloud-handler migration.
 - [ ] **Phase 5b** — all `cmd_cloud_*` → `beambam/cli/cloud.py`.
   ~2,000 LoC moved. Target post-phase: ~27 handlers in monolith.
-- [ ] **Phase 5c** — read-only commands (`status`, `health`, `watch`,
+- [~] **Phase 5c** — read-only commands (`status`, `health`, `watch`,
   `tail`, `notify`, `printers`, `fetch`) → `beambam/cli/info.py`.
-  ~400 LoC moved.
+  Batch 1 (this round): `cmd_status` + `cmd_printers` scaffolded the
+  new module; both are pure-read with zero coupling to the publish
+  state machine. Remaining: health / watch / tail / notify / fetch
+  (the larger handlers, ~50–150 LoC each — separate batches).
 - [ ] **Phase 5d** — daemon cluster (`cmd_daemon`, `cmd_serve`,
   `cmd_camera`, `cmd_webrtc`, `cmd_ha_publish`, `_serve_http`) →
   `beambam/cli/daemon.py`. Largest single sub-phase (~1,500 LoC).
