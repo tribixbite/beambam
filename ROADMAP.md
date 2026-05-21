@@ -42,8 +42,22 @@ are tracked in their own deep-dive plan files.
 Ordered by user-visible impact. Pick any 3-5 for the next release cut.
 
 ### Surface wiring (high-value, low-risk)
-- [ ] **Wire `StateHub` consumers** — HA / MCP / WebUI / timelapse subscribe via the v1.2.0
-  primitive instead of polling. Touches 4 modules; biggest latency win we can ship.
+- [x] **Wire `StateHub` consumers — bridge daemon SSE** (this round).
+  `cmd_daemon` now owns a `StateHub` per printer; `make_on_state`
+  fans every MQTT push into the hub. `/state.events` (consumed by
+  Home Assistant + web UI) switched from a 1 Hz `time.sleep(1.0)`
+  poll over `states[printer]` to `hub.subscribe()` + a blocking
+  `sub.get(timeout=15.0)` loop with a `: keepalive` comment on idle.
+  Live-tested against real X2D `00M09A000000000 @ 192.168.1.42`:
+  first event arrived **+2 ms** after the GET (replayed last_state)
+  vs up to 1000 ms with the legacy path; two consecutive printer
+  pushes 22 ms apart were both delivered immediately, proving the
+  removal of 1 Hz buffering. Three new unit tests around
+  `_Subscription.get(timeout=)` + two end-to-end tests opening a
+  real socket against `_serve_http` (`tests/test_state_events_sse.py`).
+  MCP server stays on point-in-time `GET /state` (per-request latency
+  dominated by LLM tool-call round-trip, not state freshness) — out
+  of scope here.
 - [ ] **Daemon HTTP routes for v1.2.0 commands** — `/ams`, `/doctor`, `/analyze` (POST
   with file upload). `/queue/*` already exists. Lets the web UI surface them.
 - [ ] **Web UI updates for v1.2.0** — `web/index.js` doesn't show AMS humidity warnings,

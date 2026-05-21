@@ -176,3 +176,42 @@ def test_subscribe_async_yields_states():
     asyncio.run(both())
     layers = [r.get("layer") for r in received]
     assert 1 in layers and 2 in layers
+
+
+def test_subscription_get_returns_state_on_publish():
+    """`get(timeout)` returns the dict when a publish arrives within
+    the timeout. Used by the bridge's SSE handler so it can wake on
+    pushes and emit keepalives on timeout without polling."""
+    hub = StateHub()
+    sub = hub.subscribe()
+    hub.publish({"layer": 7})
+    state = sub.get(timeout=1.0)
+    assert state == {"layer": 7}
+    sub.close()
+
+
+def test_subscription_get_returns_none_on_timeout():
+    """No publishes arrive within the timeout → `get()` returns None
+    instead of raising. SSE handler uses this signal to emit a
+    `: keepalive` comment so intermediate proxies don't drop idle
+    connections."""
+    hub = StateHub()
+    sub = hub.subscribe()
+    state = sub.get(timeout=0.1)
+    assert state is None
+    sub.close()
+
+
+def test_subscription_get_returns_none_after_close():
+    """After unsubscribe(), pending `get(timeout)` returns None so the
+    consumer loop can exit cleanly instead of blocking forever."""
+    hub = StateHub()
+    sub = hub.subscribe()
+
+    def closer():
+        time.sleep(0.05)
+        hub.unsubscribe(sub)
+
+    threading.Thread(target=closer, daemon=True).start()
+    state = sub.get(timeout=1.0)
+    assert state is None

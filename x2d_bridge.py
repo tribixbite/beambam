@@ -4400,6 +4400,12 @@ def cmd_daemon(args: argparse.Namespace) -> int:
         names_to_run = names if names else [""]
     # Per-printer state cache + clients.
     states: dict[str, dict | None] = {n: None for n in names_to_run}
+    # Per-printer pub/sub hub. Drop-oldest-on-full so a slow SSE/HA
+    # consumer can't backpressure the MQTT thread. Wired into the SSE
+    # handler so /state.events pushes are immediate (no 1 Hz polling)
+    # and a fresh client replays last_state on connect.
+    from beambam.state_hub import StateHub
+    hubs: dict[str, StateHub] = {n: StateHub(maxqueue=8) for n in names_to_run}
 
     # Item #55: optional queue manager. Hooks into per-printer state
     # callbacks so it can dispatch the next pending job when a printer
@@ -4469,6 +4475,15 @@ def cmd_daemon(args: argparse.Namespace) -> int:
     def make_on_state(name: str):
         def on_state(state: dict) -> None:
             states[name] = state
+            # Fan out to every subscriber of the per-printer hub. Slow
+            # consumers drop oldest entries; the MQTT thread never blocks.
+            hub = hubs.get(name)
+            if hub is not None:
+                try:
+                    hub.publish(state)
+                except Exception as e:
+                    print(f"[x2d-bridge] hub.publish({name}) failed: {e}",
+                          file=sys.stderr)
             if queue_mgr is not None:
                 try:
                     queue_mgr.on_state(name, state)
@@ -4528,6 +4543,9 @@ def cmd_daemon(args: argparse.Namespace) -> int:
             cli = clients.get(printer)
             return cli.last_message_ts if cli else 0.0
 
+        def get_hub(printer: str):
+            return hubs.get(printer)
+
         Thread(target=_serve_http,
                kwargs={"bind": args.http, "get_state": get_state,
                        "get_last_ts": get_last_ts,
@@ -4537,7 +4555,8 @@ def cmd_daemon(args: argparse.Namespace) -> int:
                        "clients": clients,
                        "web_dir": _WEB_DIR_DEFAULT,
                        "queue_mgr": queue_mgr,
-                       "timelapse_rec": timelapse_rec},
+                       "timelapse_rec": timelapse_rec,
+                       "get_hub": get_hub},
                daemon=True).start()
 
     period = max(1, int(args.interval))

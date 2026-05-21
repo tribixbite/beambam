@@ -84,6 +84,20 @@ class _Subscription:
                 return
             yield state
 
+    def get(self, timeout: float | None = None) -> dict[str, Any] | None:
+        """Block up to `timeout` seconds for the next state push.
+
+        Returns the dict on success, or `None` on timeout or if the
+        subscription was closed. Use this when you need timeout-aware
+        receive (e.g. SSE keepalive every N seconds without polling)."""
+        try:
+            state = self._q.get(timeout=timeout)
+        except queue.Empty:
+            return None
+        if self._closed.is_set():
+            return None
+        return state
+
 
 class StateHub:
     """Sync pub/sub for printer state dicts.
