@@ -299,11 +299,14 @@ phase staging.
   removed ~260 LoC from `x2d_bridge.py`. `x2d_bridge.X2DClient`
   remains a valid alias via a `from beambam.mqtt import ...`
   re-export. Suite: 934 passed, 7 skipped (live-printer gated).
-- [ ] **Phase 5a** — `cmd_*` control verbs (pause / resume / stop /
-  reboot / gcode / home / level / set-temp / chamber-light / jog /
-  fod-check / ams-load / ams-unload / record / timelapse / resolution
-  / files) → `beambam/cli/control.py` + `beambam/cli/_helpers.py`.
-  ~600 LoC moved. Target post-phase: ~57 handlers in monolith.
+- [~] **Phase 5a** — `cmd_*` control verbs → `beambam/cli/control.py` +
+  `beambam/cli/_helpers.py`. Partially done over two batches: pause,
+  resume, stop, gcode, home, level, set-temp, chamber-light, reboot,
+  jog, record, timelapse, resolution moved (13 of 17 listed). Still
+  in monolith: fod-check, ams-load, ams-unload (need `_xcam_cmd`
+  refactor) + files (uses ftps + Creds machinery — separate pass).
+  Bridge cmd_* count down 74 → 36; the original ~57-handler target
+  has been beaten by the parallel Phase 5b cloud-handler migration.
 - [ ] **Phase 5b** — all `cmd_cloud_*` → `beambam/cli/cloud.py`.
   ~2,000 LoC moved. Target post-phase: ~27 handlers in monolith.
 - [ ] **Phase 5c** — read-only commands (`status`, `health`, `watch`,

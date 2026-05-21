@@ -2934,32 +2934,14 @@ def _reboot_payload() -> dict:
     return _print_cmd("gcode_line", param=f"{_REBOOT_GCODE}\n")
 
 
-def cmd_reboot(args: argparse.Namespace) -> int:
-    """Send `M999` to the printer (gcode error-clear).
-
-    Defaults to dry-run because the wording "reboot" is broader than
-    what the firmware actually exposes: M999 clears the halt/error
-    flag set, but it does NOT power-cycle the SoC, restart MQTT, or
-    flush the network plugin. Pass --confirm to actually send."""
-    payload = _reboot_payload()
-    if not args.confirm:
-        print("[reboot] DRY-RUN — pass --confirm to actually send.",
-              file=sys.stderr)
-        print(f"[reboot] would publish: {json.dumps(payload)}",
-              file=sys.stderr)
-        print("[reboot] note: M999 clears the printer's "
-              "emergency-stop / error flags. It does NOT power-cycle "
-              "the printer; the MQTT broker, network stack, AMS state, "
-              "and chamber heater all keep their current values. For "
-              "a real power-cycle, use the physical power button on "
-              "the back of the printer or wait for the next OTA "
-              "firmware update.", file=sys.stderr)
-        return 0
-    return _publish_one(args, payload)
+# cmd_reboot moved to beambam/cli/control.py (Phase 5a batch 2). The
+# `_reboot_payload` helper + `_REBOOT_GCODE` constant stay here so
+# `from x2d_bridge import _reboot_payload` keeps working for tests.
 
 
-# cmd_gcode / cmd_home / cmd_level / cmd_set_temp / cmd_chamber_light
-# moved to beambam/cli/control.py (Phase 5a). Re-exported below.
+# LAN control verbs live in beambam/cli/control.py (Phase 5a). The
+# bridge re-exports each one so external callers + tests that
+# `from x2d_bridge import cmd_*` keep working without modification.
 from beambam.cli.control import (  # noqa: E402, F401
     cmd_pause,
     cmd_resume,
@@ -2969,6 +2951,11 @@ from beambam.cli.control import (  # noqa: E402, F401
     cmd_level,
     cmd_set_temp,
     cmd_chamber_light,
+    cmd_reboot,
+    cmd_jog,
+    cmd_record,
+    cmd_timelapse,
+    cmd_resolution,
 )
 
 
@@ -3024,20 +3011,7 @@ def cmd_ams_load(args: argparse.Namespace) -> int:
     return _publish_one(args, payload)
 
 
-def cmd_jog(args: argparse.Namespace) -> int:
-    # Relative move via standard G91/G1/G90 sequence — works on every
-    # firmware that accepts arbitrary gcode.
-    axis = args.axis.upper()
-    if axis not in ("X", "Y", "Z", "E"):
-        sys.exit(f"jog axis must be one of X/Y/Z/E, got: {args.axis}")
-    feed = int(args.feed)
-    distance = float(args.distance)
-    gcode = (
-        "G91\n"
-        f"G1 {axis}{distance:g} F{feed}\n"
-        "G90\n"
-    )
-    return _publish_one(args, _print_cmd("gcode_line", param=gcode))
+# cmd_jog moved to beambam/cli/control.py (Phase 5a batch 2).
 
 
 # ---------------------------------------------------------------------------
@@ -3065,22 +3039,8 @@ def cmd_jog(args: argparse.Namespace) -> int:
 #   device/<sn>/request, no Bambu Connect signing. Sub-commands match
 #   the printer's bambu IPCAM service which controls the chamber camera
 #   (recording to SD, timelapse capture, resolution).
-def cmd_record(args: argparse.Namespace) -> int:
-    state = args.state.lower()
-    if state not in ("on", "off"):
-        sys.exit(f"record state must be on/off, got: {state}")
-    payload = _camera_cmd("ipcam_record_set",
-                          control="enable" if state == "on" else "disable")
-    return _publish_one(args, payload)
-
-
-def cmd_timelapse(args: argparse.Namespace) -> int:
-    state = args.state.lower()
-    if state not in ("on", "off"):
-        sys.exit(f"timelapse state must be on/off, got: {state}")
-    payload = _camera_cmd("ipcam_timelapse",
-                          control="enable" if state == "on" else "disable")
-    return _publish_one(args, payload)
+# cmd_record / cmd_timelapse moved to beambam/cli/control.py
+# (Phase 5a batch 2).
 
 
 def cmd_files(args: argparse.Namespace) -> int:
@@ -3484,12 +3444,7 @@ def cmd_slice_print(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_resolution(args: argparse.Namespace) -> int:
-    res = args.resolution.lower()
-    if res not in ("low", "medium", "high", "full"):
-        sys.exit(f"resolution must be low/medium/high/full, got: {res}")
-    payload = _camera_cmd("ipcam_resolution_set", resolution=res)
-    return _publish_one(args, payload)
+# cmd_resolution moved to beambam/cli/control.py (Phase 5a batch 2).
 
 
 # ---------------------------------------------------------------------------

@@ -70,7 +70,11 @@ BRIDGE = REPO / "x2d_bridge.py"
 #        siblings of the cloud-control verbs migrated at 49). Lazy
 #        thunk back into x2d_bridge._publish_one keeps the LAN
 #        connect/sign/ack-wait state machine in the monolith for now.
-_MAX_CMD_HANDLERS_IN_BRIDGE = 41
+#   36 — Phase 5a batch 2: reboot, jog, record, timelapse, resolution
+#        moved into beambam.cli.control. `_reboot_payload` helper +
+#        `_REBOOT_GCODE` constant stay in x2d_bridge so existing test
+#        imports keep working — cmd_reboot lazy-thunks into them.
+_MAX_CMD_HANDLERS_IN_BRIDGE = 36
 
 
 def _count_cmd_handlers() -> int:

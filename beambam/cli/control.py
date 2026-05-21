@@ -111,3 +111,87 @@ def cmd_chamber_light(args: argparse.Namespace) -> int:
         interval_time=int(args.interval),
     )
     return _publish(args, payload)
+
+
+def cmd_reboot(args: argparse.Namespace) -> int:
+    """Send `M999` to the printer (gcode error-clear).
+
+    Defaults to dry-run because the wording "reboot" is broader than
+    what the firmware actually exposes: M999 clears the halt/error
+    flag set, but it does NOT power-cycle the SoC, restart MQTT, or
+    flush the network plugin. Pass --confirm to actually send. The
+    `_reboot_payload` helper + `_REBOOT_GCODE` constant stay in
+    x2d_bridge.py so existing test imports keep working."""
+    import json
+    from x2d_bridge import _reboot_payload
+    payload = _reboot_payload()
+    if not args.confirm:
+        print("[reboot] DRY-RUN — pass --confirm to actually send.",
+              file=sys.stderr)
+        print(f"[reboot] would publish: {json.dumps(payload)}",
+              file=sys.stderr)
+        print("[reboot] note: M999 clears the printer's "
+              "emergency-stop / error flags. It does NOT power-cycle "
+              "the printer; the MQTT broker, network stack, AMS state, "
+              "and chamber heater all keep their current values. For "
+              "a real power-cycle, use the physical power button on "
+              "the back of the printer or wait for the next OTA "
+              "firmware update.", file=sys.stderr)
+        return 0
+    return _publish(args, payload)
+
+
+def cmd_jog(args: argparse.Namespace) -> int:
+    """Relative move via standard G91/G1/G90 sequence — works on every
+    firmware that accepts arbitrary gcode."""
+    from beambam.cli._helpers import _print_cmd
+    axis = args.axis.upper()
+    if axis not in ("X", "Y", "Z", "E"):
+        sys.exit(f"jog axis must be one of X/Y/Z/E, got: {args.axis}")
+    feed = int(args.feed)
+    distance = float(args.distance)
+    gcode = (
+        "G91\n"
+        f"G1 {axis}{distance:g} F{feed}\n"
+        "G90\n"
+    )
+    return _publish(args, _print_cmd("gcode_line", param=gcode))
+
+
+# IPCAM verbs (BambuStudio DeviceManager.cpp:2027–2080). Plain MQTT
+# publish to device/<sn>/request, no Bambu Connect signing.
+
+
+def cmd_record(args: argparse.Namespace) -> int:
+    """Toggle the chamber camera's SD-card recording. Mirrors BS
+    DeviceManager::command_ipcam_record (DeviceManager.cpp:2027)."""
+    from beambam.cli._helpers import _camera_cmd
+    state = args.state.lower()
+    if state not in ("on", "off"):
+        sys.exit(f"record state must be on/off, got: {state}")
+    payload = _camera_cmd("ipcam_record_set",
+                          control="enable" if state == "on" else "disable")
+    return _publish(args, payload)
+
+
+def cmd_timelapse(args: argparse.Namespace) -> int:
+    """Toggle chamber-camera timelapse capture. BS DeviceManager
+    ::command_ipcam_timelapse (DeviceManager.cpp:2038)."""
+    from beambam.cli._helpers import _camera_cmd
+    state = args.state.lower()
+    if state not in ("on", "off"):
+        sys.exit(f"timelapse state must be on/off, got: {state}")
+    payload = _camera_cmd("ipcam_timelapse",
+                          control="enable" if state == "on" else "disable")
+    return _publish(args, payload)
+
+
+def cmd_resolution(args: argparse.Namespace) -> int:
+    """Set chamber-camera resolution. BS DeviceManager
+    ::command_ipcam_resolution_set (DeviceManager.cpp:2049)."""
+    from beambam.cli._helpers import _camera_cmd
+    res = args.resolution.lower()
+    if res not in ("low", "medium", "high", "full"):
+        sys.exit(f"resolution must be low/medium/high/full, got: {res}")
+    payload = _camera_cmd("ipcam_resolution_set", resolution=res)
+    return _publish(args, payload)
