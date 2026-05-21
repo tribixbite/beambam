@@ -1,59 +1,234 @@
 @import 'tailwindcss';
 
-@theme {
-    /* beambam brand palette — warm amber filament + cool steel printer */
-    --color-flame-300: #fda53b;
-    --color-flame-400: #f78421;
-    --color-flame-500: #ea6a0a;
-    --color-flame-600: #c95306;
-    --color-steel-900: #0a0a0a;
-    --color-steel-800: #18181b;
-    --color-steel-700: #27272a;
-    --color-steel-600: #3f3f46;
-    --font-display: 'Inter Variable', system-ui, sans-serif;
-    --font-mono: 'JetBrains Mono', 'SF Mono', Menlo, Consolas, monospace;
+/* ====================================================================
+   beambam.boo — machine-shop blueprint aesthetic
+
+   Type stack (committed, no monoculture):
+     Display:  "Big Shoulders Display" (Google) — industrial, bold,
+               carries the wordmark + section headers
+     Body:     "Atkinson Hyperlegible" (Google) — designed for low-vision
+               utility, distinctive humanist sans, runs body + UI
+     Mono:     "Departure Mono" (free CC license) — workshop-grade
+               monospace with bitmap heritage, carries all code/CLI/data
+
+   Color (OKLCH, neutrals tinted toward filament amber for cohesion):
+     Surface:  oklch(15% 0.005 65)    near-black graphite, faint warm tint
+     Ink:      oklch(96% 0.01 65)     paper, faint warm tint
+     Mute:     oklch(60% 0.012 65)    captions/labels
+     Hair:     oklch(28% 0.005 65)    borders, dashed dividers, rules
+     Accent:   oklch(72% 0.18 65)     molten-filament amber — earned, rare
+   ==================================================================== */
+
+@font-face {
+    font-family: 'Departure Mono';
+    src: url('https://cdn.jsdelivr.net/gh/null-2/DepartureMono@1.500/fonts/webfont/DepartureMono-Regular.woff2') format('woff2');
+    font-weight: 400;
+    font-style: normal;
+    font-display: swap;
 }
 
-/* Base global styles */
+@theme {
+    /* Type */
+    --font-display: 'Big Shoulders Display', 'Arial Black', sans-serif;
+    --font-sans: 'Atkinson Hyperlegible', system-ui, sans-serif;
+    --font-mono: 'Departure Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+
+    /* Type scale — perfect-fourth (1.333), 5 sizes, fluid on hero */
+    --text-xs: 0.75rem;
+    --text-sm: 0.875rem;
+    --text-base: 1rem;
+    --text-lg: 1.333rem;
+    --text-xl: clamp(1.75rem, 1.2rem + 2.5vw, 2.5rem);
+    --text-2xl: clamp(2.5rem, 1.5rem + 5vw, 4.5rem);
+    --text-hero: clamp(4rem, 2rem + 12vw, 9rem);
+
+    /* Space — 4pt scale, semantic names */
+    --space-xs: 0.25rem;
+    --space-sm: 0.5rem;
+    --space-md: 0.75rem;
+    --space-lg: 1rem;
+    --space-xl: 1.5rem;
+    --space-2xl: 2rem;
+    --space-3xl: 3rem;
+    --space-4xl: 4.5rem;
+    --space-5xl: 6rem;
+    --space-6xl: 9rem;
+
+    /* Color */
+    --color-surface: oklch(15% 0.005 65);
+    --color-surface-2: oklch(18% 0.005 65);
+    --color-ink: oklch(96% 0.01 65);
+    --color-mute: oklch(60% 0.012 65);
+    --color-mute-2: oklch(45% 0.01 65);
+    --color-hair: oklch(28% 0.005 65);
+    --color-accent: oklch(72% 0.18 65);
+    --color-accent-dim: oklch(60% 0.14 65);
+}
+
+/* ----- Base reset ---------------------------------------------------- */
+
 html {
     color-scheme: dark;
+    background: var(--color-surface);
+    color: var(--color-ink);
+    line-height: 1.5;
 }
 
 body {
-    font-family: var(--font-display);
+    font-family: var(--font-sans);
+    font-size: var(--text-base);
     text-rendering: optimizeLegibility;
-}
-
-code,
-pre {
-    font-family: var(--font-mono);
-}
-
-/* Anchor links: soft amber */
-a {
-    color: var(--color-flame-400);
-    text-decoration: none;
-    transition: color 0.15s ease;
-}
-a:hover {
-    color: var(--color-flame-300);
-    text-decoration: underline;
-}
-
-/* Code-block defaults */
-pre {
-    background: var(--color-steel-800);
-    border: 1px solid var(--color-steel-700);
-    border-radius: 0.5rem;
-    padding: 1rem 1.25rem;
-    overflow-x: auto;
-    font-size: 0.875rem;
+    -webkit-font-smoothing: antialiased;
+    /* increase leading for light-on-dark per typography rules */
     line-height: 1.6;
 }
+
+::selection {
+    background: var(--color-accent);
+    color: var(--color-surface);
+}
+
+/* ----- Typography defaults ------------------------------------------ */
+
+h1, h2, h3, h4 {
+    font-family: var(--font-display);
+    font-weight: 700;
+    line-height: 1.05;
+    letter-spacing: -0.01em;
+    text-transform: uppercase;
+}
+
+h1 { font-size: var(--text-hero); letter-spacing: -0.03em; }
+h2 { font-size: var(--text-2xl); }
+h3 { font-size: var(--text-xl); }
+h4 { font-size: var(--text-lg); }
+
+code, pre, kbd, samp {
+    font-family: var(--font-mono);
+    font-feature-settings: 'liga' 0, 'calt' 0;
+}
+
+/* Anchor links: hairline underline default, amber on hover */
+a {
+    color: var(--color-ink);
+    text-decoration: underline;
+    text-decoration-color: var(--color-hair);
+    text-decoration-thickness: 1px;
+    text-underline-offset: 3px;
+    transition: text-decoration-color 0.15s ease, color 0.15s ease;
+}
+
+a:hover {
+    color: var(--color-accent);
+    text-decoration-color: var(--color-accent);
+}
+
+/* Inline code */
 :not(pre) > code {
-    background: var(--color-steel-800);
-    padding: 0.1rem 0.4rem;
-    border-radius: 0.25rem;
     font-size: 0.875em;
-    color: var(--color-flame-300);
+    color: var(--color-accent);
+    background: oklch(20% 0.005 65);
+    padding: 0.05em 0.35em;
+    border-radius: 2px;
+    line-height: 1;
+}
+
+pre {
+    font-size: var(--text-sm);
+    line-height: 1.6;
+    overflow-x: auto;
+    color: var(--color-ink);
+    background: oklch(11% 0.005 65);
+    border: 1px solid var(--color-hair);
+    padding: var(--space-lg) var(--space-xl);
+}
+
+pre code {
+    color: inherit;
+    background: none;
+    padding: 0;
+    font-size: inherit;
+}
+
+/* ----- Reusable workshop primitives ---------------------------------
+   Not cards — page-element building blocks borrowed from engineering
+   drawings: dashed hairlines, label-and-value rows, ID badges,
+   footnote markers. */
+
+.hr-dashed {
+    border: 0;
+    border-top: 1px dashed var(--color-hair);
+    height: 0;
+    margin: var(--space-3xl) 0;
+}
+
+.label {
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
+    color: var(--color-mute);
+}
+
+.badge {
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    color: var(--color-mute);
+    border: 1px solid var(--color-hair);
+    padding: 0.1em 0.5em;
+    white-space: nowrap;
+}
+
+.fn {
+    font-family: var(--font-mono);
+    font-size: 0.7em;
+    color: var(--color-accent);
+    vertical-align: super;
+    margin-left: 0.1em;
+}
+
+.frame {
+    max-width: 78rem;
+    margin: 0 auto;
+    padding-inline: var(--space-xl);
+}
+
+@media (min-width: 768px) {
+    .frame {
+        padding-inline: var(--space-3xl);
+    }
+}
+
+/* Workshop-style data table */
+table.spec {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: var(--text-sm);
+    font-variant-numeric: tabular-nums;
+}
+
+table.spec thead th {
+    font-family: var(--font-mono);
+    font-weight: 400;
+    font-size: var(--text-xs);
+    text-transform: uppercase;
+    letter-spacing: 0.12em;
+    color: var(--color-mute);
+    text-align: left;
+    padding: var(--space-md) var(--space-lg);
+    border-bottom: 1px solid var(--color-hair);
+}
+
+table.spec tbody td {
+    padding: var(--space-md) var(--space-lg);
+    border-bottom: 1px solid var(--color-hair);
+    vertical-align: top;
+}
+
+table.spec tbody tr:last-child td {
+    border-bottom: 0;
+}
+
+table.spec tbody tr:hover td {
+    background: oklch(17% 0.005 65);
 }

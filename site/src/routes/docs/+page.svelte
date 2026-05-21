@@ -1,76 +1,112 @@
 <script lang="ts">
-    const sections = [
+    type Doc = { id: string; name: string; desc: string };
+
+    const groups: { title: string; intro: string; docs: Doc[] }[] = [
         {
             title: 'Quickstart',
-            items: [
-                ['Install', '`pip install beambam` (any Linux / macOS / WSL)'],
-                ['First run', '`beambam init` — discover + write credentials + verify'],
-                ['Verify', '`beambam status` and `beambam doctor`'],
-                ['Print', '`beambam print model.gcode.3mf --slot 5`']
+            intro: 'Get from a fresh `pip install` to your first network-attached print in under 90 seconds.',
+            docs: [
+                { id: 'QUICKSTART', name: 'QUICKSTART.md', desc: 'Install, configure, first print.' },
+                { id: 'init',       name: 'CLI: beambam init', desc: 'The interactive first-run wizard \u2014 discover, prompt for code, test, write credentials.' }
             ]
         },
         {
             title: 'Library API',
-            items: [
-                ['Printer facade', '`from beambam import Printer, Creds`'],
-                ['One-shot state', '`Printer().state()`'],
-                ['Lazy MQTT', 'context manager — `with Printer(creds) as p: …`'],
-                ['Schemas', '`from beambam.schemas import PrintState, AmsBus`'],
-                ['Print analyzer', '`from beambam.analyze import analyze_3mf`']
+            intro: 'beambam is importable from Python. The high-level Printer class wraps the signed-MQTT + FTPS surfaces.',
+            docs: [
+                { id: 'lib-printer',  name: 'beambam.Printer',       desc: 'High-level facade. Lazy MQTT + Cloud. Context-manager protocol. 18 methods (state, start_print, pause, gcode, set_temp, ams_*, jog, home, upload, download, ...).' },
+                { id: 'lib-config',   name: 'beambam.config.Creds',  desc: 'Printer credentials. resolve(args) honours $X2D_IP/$X2D_CODE/$X2D_SERIAL/$X2D_PRINTER + ~/.x2d/credentials [printer:NAME] sections.' },
+                { id: 'lib-mqtt',     name: 'beambam.mqtt',          desc: 'sign_payload + BAMBU_CERT_ID + X2DClient. Bambu Connect cert is loaded lazily on first sign.' },
+                { id: 'lib-ftps',     name: 'beambam.ftps',          desc: 'upload_file / download_file / list_files. Implicit TLS, session-reuse on PASV, INVALID_ALERT workaround for mid-print downloads.' },
+                { id: 'lib-schemas',  name: 'beambam.schemas',       desc: 'TypedDicts for PushAllReport / PrintState / AmsBus / AmsUnit / AmsTray / StartPrintCommand. Mypy-friendly.' },
+                { id: 'lib-analyze',  name: 'beambam.analyze',       desc: 'Print-plan dissector. Parse a .gcode.3mf into phases, count real flushes, project AMS-tray requirements.' }
             ]
         },
         {
             title: 'Integrations',
-            items: [
-                ['Home Assistant', '~69 entities via MQTT discovery — sensors for temps, AMS slots + humidity warnings, buttons for pause/resume/stop'],
-                ['MCP server', '25 tools — runs as `beambam-mcp` stdio for Claude/Cursor/Continue'],
-                ['Web UI', '`beambam daemon --http :8765` — mobile-friendly, multi-printer queue, timelapse browser'],
-                ['Prometheus', 'daemon exposes /metrics with mqtt_connects_total etc.'],
-                ['WebRTC', 'chamber camera at <100ms latency via /cam.webrtc.html']
+            intro: 'beambam ships one daemon that publishes to every common downstream surface.',
+            docs: [
+                { id: 'HA',          name: 'docs/HA.md',           desc: 'Home Assistant MQTT auto-discovery. ~69 entities including per-tray AMS color, humidity warnings, queue depth, HMS active count.' },
+                { id: 'HA_SETUP',    name: 'docs/HA_SETUP.md',     desc: 'Step-by-step HA install + dashboard YAML.' },
+                { id: 'MCP',         name: 'docs/MCP.md',          desc: 'Model Context Protocol stdio server. 25 tools for Claude Desktop, Cursor, Continue.' },
+                { id: 'WEBRTC',      name: 'docs/WEBRTC.md',       desc: 'Chamber-camera streaming under 100ms latency.' },
+                { id: 'WEB_UI',      name: 'docs/WEB_UI.md',       desc: 'Mobile-friendly multi-printer web UI.' },
+                { id: 'QUEUE',       name: 'docs/QUEUE.md',        desc: 'Persistent print queue with auto-dispatch and AMS validation.' },
+                { id: 'TIMELAPSE',   name: 'docs/TIMELAPSE.md',    desc: 'Auto-recorded timelapses, ffmpeg stitched.' }
+            ]
+        },
+        {
+            title: 'Protocol notes',
+            intro: 'Wire-level reverse-engineering notes. Read these if you\u2019re extending beambam or building something compatible.',
+            docs: [
+                { id: 'LOCAL_CONTROL_PATHS',   name: 'docs/LOCAL_CONTROL_PATHS.md',    desc: 'LAN MQTT, FTPS, RTSPS, LVL-Local \u2014 every protocol the printer speaks on the local network.' },
+                { id: 'SIGNED_VS_UNSIGNED',    name: 'docs/SIGNED_VS_UNSIGNED.md',     desc: 'Signed vs unsigned MQTT truth table per firmware version. Includes the leaked-cert background.' },
+                { id: 'X2D_RUNTIME_PIPELINE',  name: 'docs/X2D_RUNTIME_PIPELINE.md',   desc: 'How a print command flows from CLI through the bridge to the printer\u2019s firmware.' },
+                { id: 'CLOUD_BRIDGE',          name: 'docs/CLOUD_BRIDGE.md',           desc: 'Optional Bambu Cloud bridge \u2014 cloud-print, cloud-state, cloud-pause.' }
             ]
         },
         {
             title: 'Concepts',
-            items: [
-                ['Signed MQTT', 'Jan-2025+ firmware requires RSA-SHA256 on every command. beambam signs transparently using the publicly-leaked Bambu Connect cert.'],
-                ['Credentials', '~/.x2d/credentials — INI with `[printer]` (default) or `[printer:NAME]` sections. Multi-printer setups via `--printer NAME` flag or `X2D_PRINTER` env.'],
-                ['Print analyzer phases', '`beambam analyze` groups the print into contiguous layer ranges by which filaments are active, then counts real flushes (not nozzle-only swaps) and per-phase purge volume in mm + grams.'],
-                ['AMS humidity', 'Levels 0–4 (4 = wet). Sensors fire HA `binary_sensor.ams_unit{N}_humidity_warn` at level ≥3.']
+            intro: 'The things you\u2019ll learn while operating beambam in the field.',
+            docs: [
+                { id: 'c-signed',        name: 'Signed MQTT',
+                  desc: 'Jan-2025+ firmware rejects every MQTT command lacking a header.sign_string that verifies against a recognised RSA cert. beambam signs every publish using the publicly-leaked Bambu Connect cert. Your access code stays on your LAN.' },
+                { id: 'c-credentials',   name: 'Credentials INI',
+                  desc: '~/.x2d/credentials is an INI file with [printer] (default) or [printer:NAME] sections. Multi-printer setups select via --printer NAME or X2D_PRINTER env var.' },
+                { id: 'c-analyzer',      name: 'Phases + flush analysis',
+                  desc: 'beambam analyze groups the print into contiguous layer ranges by which filaments are active. A tri-color phase against two nozzles forces flushes; the report flags it before you commit to printing.' },
+                { id: 'c-humidity',      name: 'AMS humidity scale',
+                  desc: 'Bambu firmware reports humidity as a 0\u20134 level. beambam doctor warns at \u22653 and HA fires binary_sensor.ams_unit{N}_humidity_warn at the same threshold.' }
             ]
         }
     ];
 </script>
 
 <svelte:head>
-    <title>Docs — beambam</title>
+    <title>Reference — beambam</title>
 </svelte:head>
 
-<section class="py-12 px-6">
-    <div class="max-w-4xl mx-auto">
-        <h1 class="text-4xl font-bold mb-2">Documentation</h1>
-        <p class="text-stone-400 mb-12">
-            The full deep-dives live in <a href="https://github.com/tribixbite/beambam/tree/main/docs">docs/</a> in the repo (28 markdown files). Here's the high-level map.
-        </p>
+<section>
+    <div class="frame py-[var(--space-3xl)] grid md:grid-cols-12 gap-x-[var(--space-2xl)] gap-y-[var(--space-2xl)]">
+        <div class="md:col-span-4">
+            <div class="label mb-[var(--space-md)]">Section 04 &middot; Reference</div>
+            <h1 class="mb-[var(--space-lg)]" style="font-size: var(--text-2xl);">
+                Read the manual.
+            </h1>
+            <p class="leading-[1.65] max-w-[40ch]" style="color: var(--color-mute);">
+                Long-form deep-dives live under <a href="https://github.com/tribixbite/beambam/tree/main/docs" target="_blank" rel="noopener">docs/</a>
+                in the repo (28 markdown files). This page indexes them by
+                topic; the actual reading happens on GitHub or in your
+                editor.
+            </p>
+            <p class="mt-[var(--space-md)] leading-[1.65] max-w-[40ch] text-[var(--text-sm)]" style="color: var(--color-mute);">
+                For CLI flag detail, see <a href="/cli">/cli</a>. For per-version
+                changes, see <a href="https://github.com/tribixbite/beambam/blob/main/CHANGELOG.md" target="_blank" rel="noopener">CHANGELOG.md</a>.
+                For what's next, see <a href="https://github.com/tribixbite/beambam/blob/main/ROADMAP.md" target="_blank" rel="noopener">ROADMAP.md</a>.
+            </p>
+        </div>
 
-        <div class="space-y-10">
-            {#each sections as section}
+        <div class="md:col-span-8 space-y-[var(--space-4xl)]">
+            {#each groups as { title, intro, docs }, gi}
                 <section>
-                    <h2 class="text-2xl font-semibold text-flame-300 mb-4">{section.title}</h2>
-                    <dl class="space-y-3">
-                        {#each section.items as [name, desc]}
-                            <div class="border-l-2 border-steel-600 pl-4">
-                                <dt class="font-semibold text-stone-100">{name}</dt>
-                                <dd class="text-sm text-stone-300 mt-1">{@html desc.replace(/`([^`]+)`/g, '<code>$1</code>')}</dd>
+                    <header class="pb-[var(--space-md)] mb-[var(--space-lg)] flex items-baseline gap-[var(--space-lg)]" style="border-bottom: 1px solid var(--color-hair);">
+                        <span class="font-[var(--font-mono)] text-[var(--text-xs)]" style="color: var(--color-mute-2);">{String(gi + 1).padStart(2, '0')}</span>
+                        <h2 class="text-[var(--text-xl)] leading-none m-0" style="color: var(--color-ink);">{title}</h2>
+                        <span class="ml-auto label">{docs.length} entries</span>
+                    </header>
+                    <p class="text-[var(--text-sm)] mb-[var(--space-xl)] max-w-[55ch] leading-[1.65]" style="color: var(--color-mute);">{intro}</p>
+
+                    <dl class="grid gap-y-[var(--space-md)]">
+                        {#each docs as { name, desc }}
+                            <div class="grid md:grid-cols-12 gap-x-[var(--space-lg)] py-[var(--space-md)] last:border-0"
+                                 style="border-bottom: 1px dashed var(--color-hair);">
+                                <dt class="md:col-span-4 font-[var(--font-mono)] text-[var(--text-sm)]" style="color: var(--color-ink);">{name}</dt>
+                                <dd class="md:col-span-8 text-[var(--text-sm)] leading-[1.6]" style="color: var(--color-mute);">{desc}</dd>
                             </div>
                         {/each}
                     </dl>
                 </section>
             {/each}
         </div>
-
-        <p class="mt-12 text-sm text-stone-500">
-            Missing something? <a href="https://github.com/tribixbite/beambam/issues">Open an issue</a> or scan the
-            <a href="https://github.com/tribixbite/beambam/tree/main/docs">docs/ folder</a> directly.
-        </p>
     </div>
 </section>

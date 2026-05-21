@@ -1,4 +1,7 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
-    <rect width="32" height="32" rx="4" fill="#0a0a0a"/>
-    <text x="16" y="22" text-anchor="middle" font-family="Inter, system-ui, sans-serif" font-weight="700" font-size="20" fill="#f78421">b</text>
+    <rect width="32" height="32" rx="2" fill="oklch(15% 0.005 65)"/>
+    <text x="16" y="24" text-anchor="middle"
+          font-family="'Big Shoulders Display', 'Arial Black', sans-serif"
+          font-weight="900" font-size="26"
+          fill="oklch(72% 0.18 65)" letter-spacing="-0.04em">b</text>
 </svg>

@@ -1,6 +1,18 @@
 <script lang="ts">
     import '../app.css';
+    import { page } from '$app/stores';
     let { children } = $props();
+
+    // Workshop manual TOC — each link gets a numbered prefix like a drawing index.
+    const nav = [
+        { num: '01', href: '/', label: 'Overview' },
+        { num: '02', href: '/printers', label: 'Compatibility' },
+        { num: '03', href: '/cli', label: 'Command index' },
+        { num: '04', href: '/docs', label: 'Reference' }
+    ];
+
+    const VERSION = 'v1.2.0';
+    const REV = '21 May 2026';
 </script>
 
 <svelte:head>
@@ -8,18 +20,35 @@
 </svelte:head>
 
 <div class="min-h-screen flex flex-col">
-    <header class="border-b border-steel-700 bg-steel-900/80 backdrop-blur sticky top-0 z-10">
-        <div class="max-w-6xl mx-auto px-6 py-4 flex items-center justify-between">
-            <a href="/" class="flex items-center gap-2 text-flame-400 hover:text-flame-300 no-underline">
-                <span class="text-2xl font-bold tracking-tight">beambam</span>
-                <span class="text-xs uppercase tracking-widest text-stone-500 hidden sm:inline">.boo</span>
+    <!-- Title block: structured like an engineering-drawing header. -->
+    <header class="border-b border-[var(--color-hair)]">
+        <div class="frame py-[var(--space-lg)] flex items-baseline gap-[var(--space-2xl)]">
+            <!-- Wordmark with technical sub-label -->
+            <a href="/" class="no-underline shrink-0" style="text-decoration: none;">
+                <div class="font-[var(--font-display)] text-3xl leading-none tracking-tighter">
+                    <span style="color: var(--color-accent);">beam</span><span style="color: var(--color-ink);">bam</span>
+                </div>
+                <div class="label mt-1">.boo &middot; {VERSION} &middot; rev {REV}</div>
             </a>
-            <nav class="flex items-center gap-6 text-sm text-stone-400">
-                <a href="/docs" class="hover:text-stone-100">Docs</a>
-                <a href="/cli" class="hover:text-stone-100">CLI</a>
-                <a href="/printers" class="hover:text-stone-100">Compatibility</a>
-                <a href="https://github.com/tribixbite/beambam" class="hover:text-stone-100" target="_blank" rel="noopener">GitHub</a>
-                <a href="https://pypi.org/project/beambam/" class="hover:text-stone-100" target="_blank" rel="noopener">PyPI</a>
+
+            <!-- Numbered nav, right-aligned -->
+            <nav class="ml-auto hidden md:flex items-baseline gap-[var(--space-2xl)] font-[var(--font-mono)] text-[var(--text-xs)] uppercase tracking-widest">
+                {#each nav as { num, href, label }}
+                    {@const active = $page.url.pathname === href || (href !== '/' && $page.url.pathname.startsWith(href))}
+                    <a {href}
+                       class="no-underline"
+                       style="text-decoration: none; color: {active ? 'var(--color-ink)' : 'var(--color-mute)'};"
+                    >
+                        <span style="color: var(--color-mute-2);">{num}</span>
+                        &nbsp;{label}
+                    </a>
+                {/each}
+                <a href="https://github.com/tribixbite/beambam"
+                   class="no-underline"
+                   target="_blank" rel="noopener"
+                   style="text-decoration: none; color: var(--color-mute);">
+                    <span style="color: var(--color-mute-2);">&rarr;</span>&nbsp;GitHub
+                </a>
             </nav>
         </div>
     </header>
@@ -28,13 +57,17 @@
         {@render children()}
     </main>
 
-    <footer class="border-t border-steel-700 mt-16 py-8 text-sm text-stone-500">
-        <div class="max-w-6xl mx-auto px-6 flex flex-col sm:flex-row justify-between gap-3">
-            <span>MIT licensed · BambuStudio fork AGPL-3.0</span>
-            <span>
-                <a href="https://github.com/tribixbite/beambam">source</a> ·
-                <a href="https://github.com/tribixbite/beambam/issues">issues</a> ·
-                <a href="https://pypi.org/project/beambam/">pypi</a>
+    <!-- Drawing legend: footer is small fixed metadata, not flexible -->
+    <footer class="border-t border-[var(--color-hair)] mt-[var(--space-6xl)]">
+        <div class="frame py-[var(--space-xl)] font-[var(--font-mono)] text-[var(--text-xs)] uppercase tracking-widest text-[var(--color-mute)] flex flex-wrap gap-x-[var(--space-2xl)] gap-y-[var(--space-sm)] items-baseline">
+            <span><span style="color: var(--color-mute-2);">PKG</span>&nbsp;beambam {VERSION}</span>
+            <span><span style="color: var(--color-mute-2);">LIC</span>&nbsp;MIT &middot; BambuStudio fork AGPL-3.0</span>
+            <span class="ml-auto">
+                <a href="https://github.com/tribixbite/beambam" class="no-underline" style="text-decoration: none; color: inherit;">github</a>
+                &nbsp;&middot;&nbsp;
+                <a href="https://pypi.org/project/beambam/" class="no-underline" style="text-decoration: none; color: inherit;">pypi</a>
+                &nbsp;&middot;&nbsp;
+                <a href="https://github.com/tribixbite/beambam/issues" class="no-underline" style="text-decoration: none; color: inherit;">issues</a>
             </span>
         </div>
     </footer>

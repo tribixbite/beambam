@@ -1,19 +1,26 @@
 <!doctype html>
-<html lang="en" class="dark">
+<html lang="en">
     <head>
         <meta charset="utf-8" />
         <link rel="icon" href="%sveltekit.assets%/favicon.svg" type="image/svg+xml" />
         <meta name="viewport" content="width=device-width, initial-scale=1" />
-        <meta name="theme-color" content="#0a0a0a" />
-        <meta name="description" content="Signed-MQTT bridge + daemon for Bambu Lab 3D printers (X1, P1, A1, H2, X2D, P2S, X1E). pip install beambam." />
+        <meta name="theme-color" content="#171410" />
+        <meta name="description" content="Signed-MQTT bridge + daemon for Bambu Lab 3D printers (X1, P1, A1, H2, X2D, P2S, X1E). pip install beambam. No cloud account required." />
         <meta property="og:title" content="beambam — LAN-first stack for Bambu Lab printers" />
-        <meta property="og:description" content="pip install beambam — signed-MQTT bridge, Home Assistant publisher, MCP server, web UI, slicing helpers, AMS pretty-printer, print-plan analyzer." />
+        <meta property="og:description" content="28 CLI subcommands. 12 printer models. 300 tests. pip install beambam." />
         <meta property="og:type" content="website" />
         <meta property="og:url" content="https://beambam.boo" />
         <meta name="twitter:card" content="summary_large_image" />
+
+        <!-- Fonts: Big Shoulders Display (industrial display) + Atkinson Hyperlegible (humanist body).
+             Departure Mono loaded via @font-face in app.css. -->
+        <link rel="preconnect" href="https://fonts.googleapis.com" />
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+        <link href="https://fonts.googleapis.com/css2?family=Big+Shoulders+Display:wght@700;800;900&family=Atkinson+Hyperlegible:wght@400;700&display=swap" rel="stylesheet" />
+
         %sveltekit.head%
     </head>
-    <body data-sveltekit-preload-data="hover" class="bg-stone-950 text-stone-100 antialiased">
+    <body data-sveltekit-preload-data="hover">
         <div style="display: contents">%sveltekit.body%</div>
     </body>
 </html>

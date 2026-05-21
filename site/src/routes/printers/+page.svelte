@@ -1,74 +1,131 @@
 <script lang="ts">
+    type Family = 'X-series' | 'P-series' | 'A-series' | 'H-series' | 'X2D';
     type Row = {
+        family: Family;
         model: string;
         code: string;
-        signed: string;
-        status: '✅' | '⚠️' | '❌';
-        camera: string;
-        ams: string;
+        signed: 'optional¹' | 'required' | 'required²' | 'required (dual)';
         notes: string;
+        primary?: true;
     };
 
     const rows: Row[] = [
-        { model: 'X1 / X1C',     code: 'BL-P002 / BL-P001', signed: 'optional¹', status: '✅', camera: 'RTSPS',     ams: '✅', notes: 'original H2 family' },
-        { model: 'X1E',          code: 'C13',               signed: 'required',  status: '✅', camera: 'RTSPS',     ams: '✅', notes: 'enterprise variant' },
-        { model: 'P1P / P1S',    code: 'C11 / C12',         signed: 'required²', status: '✅', camera: 'HTTP/MJPEG', ams: '✅', notes: 'P-series' },
-        { model: 'P2S',          code: 'N7',                signed: 'required',  status: '✅', camera: 'HTTP/MJPEG', ams: '✅', notes: 'newer P-series' },
-        { model: 'A1 / A1 mini', code: 'N2S / N1',          signed: 'required²', status: '✅', camera: 'HTTP/MJPEG', ams: '✅ (AMS lite)', notes: 'direct drive' },
-        { model: 'H2D / H2D Pro', code: 'O1D / O1E',        signed: 'required',  status: '✅', camera: 'RTSPS',     ams: '✅ multi-AMS', notes: 'dual nozzle' },
-        { model: 'H2S / H2C',    code: 'O1S / O1C2',        signed: 'required',  status: '✅', camera: 'RTSPS',     ams: '✅', notes: '' },
-        { model: 'X2D',          code: 'N6',                signed: 'required',  status: '✅', camera: 'RTSPS',     ams: '✅ multi-AMS + dynamic map', notes: 'primary target — analyze developed here' }
+        { family: 'X-series',  model: 'X1',          code: 'BL-P002', signed: 'optional¹',       notes: 'original H2 family' },
+        { family: 'X-series',  model: 'X1 Carbon',   code: 'BL-P001', signed: 'optional¹',       notes: 'original H2 family' },
+        { family: 'X-series',  model: 'X1E',         code: 'C13',     signed: 'required',        notes: 'enterprise variant' },
+        { family: 'P-series',  model: 'P1P',         code: 'C11',     signed: 'required²',       notes: 'no chamber, no AMS lite' },
+        { family: 'P-series',  model: 'P1S',         code: 'C12',     signed: 'required²',       notes: 'enclosed P-series' },
+        { family: 'P-series',  model: 'P2S',         code: 'N7',      signed: 'required',        notes: 'newer P-series' },
+        { family: 'A-series',  model: 'A1',          code: 'N2S',     signed: 'required²',       notes: 'direct drive, AMS lite' },
+        { family: 'A-series',  model: 'A1 mini',     code: 'N1',      signed: 'required²',       notes: '180mm cube, AMS lite' },
+        { family: 'H-series',  model: 'H2D',         code: 'O1D',     signed: 'required (dual)', notes: 'dual nozzle, multi-AMS' },
+        { family: 'H-series',  model: 'H2D Pro',     code: 'O1E',     signed: 'required (dual)', notes: 'enterprise H2D' },
+        { family: 'H-series',  model: 'H2S',         code: 'O1S',     signed: 'required',        notes: 'single-nozzle H2' },
+        { family: 'H-series',  model: 'H2C',         code: 'O1C2',    signed: 'required',        notes: 'compact H-series' },
+        { family: 'X2D',       model: 'X2D',         code: 'N6',      signed: 'required (dual)', notes: 'primary target — analyze developed here', primary: true }
     ];
+
+    const matrix = [
+        { key: 'status',    label: 'Status' },
+        { key: 'upload',    label: 'Upload' },
+        { key: 'print',     label: 'Print' },
+        { key: 'ams',       label: 'AMS' },
+        { key: 'camera',    label: 'Camera' }
+    ];
+
+    function cellFor(row: Row, key: string): string {
+        if (key === 'camera') {
+            if (row.family === 'X-series' || row.family === 'H-series' || row.family === 'X2D') return 'RTSPS';
+            return 'HTTP/MJPEG';
+        }
+        if (key === 'ams') {
+            if (row.family === 'A-series') return '\u2713 lite';
+            if (row.family === 'H-series' || row.family === 'X2D') return '\u2713 multi';
+            return '\u2713';
+        }
+        return '\u2713';
+    }
 </script>
 
 <svelte:head>
-    <title>Printer compatibility — beambam</title>
+    <title>Compatibility — beambam</title>
 </svelte:head>
 
-<section class="py-16 px-6">
-    <div class="max-w-6xl mx-auto">
-        <h1 class="text-4xl font-bold mb-4">Printer compatibility</h1>
-        <p class="text-stone-400 max-w-3xl mb-8 leading-relaxed">
-            Every Bambu Lab printer that exposes LAN MQTT + FTPS. Signed-MQTT (Jan-2025+ firmware, always-on for X2D / H2D-family) is handled with the publicly-leaked Bambu Connect cert — no cloud account or token needed.
+<section>
+    <div class="frame py-[var(--space-3xl)]">
+        <div class="label mb-[var(--space-md)]">Section 02 &middot; Compatibility matrix</div>
+        <h1 class="mb-[var(--space-xl)]" style="font-size: var(--text-2xl);">
+            <span style="color: var(--color-accent);">13</span> printers, one bridge.
+        </h1>
+        <p class="max-w-[65ch] leading-[1.65]" style="color: var(--color-mute);">
+            Every Bambu Lab printer that exposes the standard LAN MQTT
+            (port 8883, TLS) + FTPS (port 990, implicit TLS) surface. The
+            signed-MQTT requirement&nbsp;<sup class="fn">1</sup>&nbsp;is handled
+            transparently using the publicly-leaked Bambu Connect cert
+            (ID <code>GLOF1000000000-...</code>). No cloud account or
+            Bambu-issued token needed for any operation here.
         </p>
 
-        <div class="overflow-x-auto rounded-lg border border-steel-700">
-            <table class="w-full text-sm">
-                <thead class="bg-steel-800 text-stone-400 uppercase tracking-wider text-xs">
+        <hr class="hr-dashed" />
+
+        <div class="overflow-x-auto">
+            <table class="spec min-w-[64rem]">
+                <thead>
                     <tr>
-                        <th class="px-4 py-3 text-left">Model</th>
-                        <th class="px-4 py-3 text-left">Bambu code</th>
-                        <th class="px-4 py-3 text-left">Signed MQTT</th>
-                        <th class="px-4 py-3 text-center">Status</th>
-                        <th class="px-4 py-3 text-left">Camera</th>
-                        <th class="px-4 py-3 text-left">AMS</th>
-                        <th class="px-4 py-3 text-left">Notes</th>
+                        <th class="w-[6rem]">Family</th>
+                        <th class="w-[7rem]">Model</th>
+                        <th class="w-[5rem]">Code</th>
+                        <th class="w-[8rem]">Signed MQTT</th>
+                        {#each matrix as { label }}
+                            <th class="w-[6rem]">{label}</th>
+                        {/each}
+                        <th>Notes</th>
                     </tr>
                 </thead>
-                <tbody class="divide-y divide-steel-700">
-                    {#each rows as r}
-                        <tr class="hover:bg-steel-800/60 transition">
-                            <td class="px-4 py-3 font-medium text-flame-300">{r.model}</td>
-                            <td class="px-4 py-3 text-stone-400 font-mono text-xs">{r.code}</td>
-                            <td class="px-4 py-3 text-stone-300">{r.signed}</td>
-                            <td class="px-4 py-3 text-center text-lg">{r.status}</td>
-                            <td class="px-4 py-3 text-stone-400">{r.camera}</td>
-                            <td class="px-4 py-3 text-stone-300">{r.ams}</td>
-                            <td class="px-4 py-3 text-stone-400 italic">{r.notes}</td>
+                <tbody>
+                    {#each rows as row}
+                        <tr>
+                            <td class="font-[var(--font-mono)] text-[var(--text-xs)] uppercase" style="color: var(--color-mute);">{row.family}</td>
+                            <td class="font-[var(--font-display)] text-[var(--text-lg)] leading-none tracking-tight"
+                                style="color: {row.primary ? 'var(--color-accent)' : 'var(--color-ink)'};">{row.model}</td>
+                            <td class="font-[var(--font-mono)] text-[var(--text-xs)]" style="color: var(--color-mute);">{row.code}</td>
+                            <td class="font-[var(--font-mono)] text-[var(--text-xs)]"
+                                style="color: {row.signed.includes('dual') ? 'var(--color-accent)' : 'var(--color-ink)'};">{row.signed}</td>
+                            {#each matrix as { key }}
+                                <td class="font-[var(--font-mono)] text-[var(--text-sm)]" style="color: var(--color-ink);">{cellFor(row, key)}</td>
+                            {/each}
+                            <td class="text-[var(--text-sm)]" style="color: var(--color-mute);">{row.notes}</td>
                         </tr>
                     {/each}
                 </tbody>
             </table>
         </div>
 
-        <p class="mt-6 text-sm text-stone-500 max-w-3xl">
-            ¹ X1 / X1C with pre-2025 firmware accept unsigned MQTT; bridge signs anyway (zero overhead, forward-compat).<br/>
-            ² P1S / P1P / A1 enforcement varies by firmware; bridge signs regardless.
-        </p>
+        <div class="mt-[var(--space-2xl)] grid md:grid-cols-2 gap-[var(--space-lg)] text-[var(--text-sm)] leading-[1.6] max-w-[80ch]" style="color: var(--color-mute);">
+            <p>
+                <sup class="fn">1</sup>&nbsp;X1 / X1C with pre-2025 firmware accept
+                unsigned MQTT; the bridge signs anyway (no overhead, forward
+                compatible).
+            </p>
+            <p>
+                <sup class="fn">2</sup>&nbsp;P1S / P1P / A1 enforcement varies by
+                firmware build; the bridge signs unconditionally.
+            </p>
+        </div>
 
-        <p class="mt-4 text-sm text-stone-400">
-            If your model isn't listed and it has the LAN MQTT switch in Settings → Network, it almost certainly works —
-            <a href="https://github.com/tribixbite/beambam/issues">open an issue</a> with the <code>X-BBL-Device-Model</code> header from <code>beambam status</code>.
-        </p>
+        <hr class="hr-dashed" />
+
+        <div class="grid md:grid-cols-12 gap-x-[var(--space-2xl)] gap-y-[var(--space-md)]">
+            <div class="md:col-span-3">
+                <div class="label">Not listed?</div>
+            </div>
+            <div class="md:col-span-9 max-w-[55ch] leading-[1.65]" style="color: var(--color-mute);">
+                If your model has the LAN-MQTT switch in <em>Settings &rarr; Network</em>
+                and lets you set an access code, it almost certainly works.
+                <a href="https://github.com/tribixbite/beambam/issues" target="_blank" rel="noopener">Open an issue</a>
+                with the <code>X-BBL-Device-Model</code> value from
+                <code>beambam status</code> and we'll add it to the table.
+            </div>
+        </div>
     </div>
 </section>
