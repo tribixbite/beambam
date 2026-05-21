@@ -1,7 +1,6 @@
 """beambam.ftps — FTPS-implicit-TLS helpers for the printer's SD card.
 
-Re-exports the file transfer functions from x2d_bridge. Stable import
-path going forward:
+Stable import path for the file transfer functions:
 
     from beambam.ftps import upload_file, download_file, list_files
 
@@ -10,11 +9,11 @@ path going forward:
     list_files(creds, "")                                  # root listing
     list_files(creds, "cache")                             # /cache listing
 
-All three speak Bambu's vsFTPd implicit-TLS dialect on port 990 with
-session-reuse on PASV (the firmware requires this since 2024). The
-download_file path uses the TLSv1.2 + create_default_context()
-workaround for the INVALID_ALERT bug that fires mid-print
-(see x2d_bridge:591 docstring).
+The actual implementations live in x2d_bridge.py (will move inline in
+v1.3.0). We lazy-import to avoid a circular import: x2d_bridge imports
+beambam.config (for Creds), and beambam.__init__ imports this module
+during package load — eager top-level import here would close the
+loop too early.
 
 For most callers `beambam.Printer.{upload,download,list_files}` is
 the better entry point — it's a thin wrapper that doesn't drop down
@@ -22,10 +21,30 @@ to raw FTPS.
 """
 from __future__ import annotations
 
-from x2d_bridge import (
-    download_file,
-    list_files,
-    upload_file,
-)
+from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from beambam.config import Creds
 
 __all__ = ["download_file", "list_files", "upload_file"]
+
+
+def upload_file(creds: "Creds", local_path: Path,
+                remote_name: str | None = None) -> None:
+    """Upload a file to the printer via implicit-TLS FTPS on port 990."""
+    from x2d_bridge import upload_file as _impl
+    return _impl(creds, local_path, remote_name=remote_name)
+
+
+def download_file(creds: "Creds", remote_name: str,
+                  local_path: Path) -> int:
+    """Download a file from the printer's SD card. Returns bytes written."""
+    from x2d_bridge import download_file as _impl
+    return _impl(creds, remote_name, local_path)
+
+
+def list_files(creds: "Creds", path: str = "") -> list[str]:
+    """List the printer's SD card. Empty path = root."""
+    from x2d_bridge import list_files as _impl
+    return _impl(creds, path)

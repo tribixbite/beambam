@@ -25,28 +25,64 @@ Library API
     p.upload("model.gcode.3mf")                  # FTPS upload
     p.start_print("model.gcode.3mf", ams=[0,1,2])  # signed MQTT
 
-NOTE on transitional layout (v1.1.0): this package re-exports the public
-surface from the historical top-level modules (x2d_bridge, cloud_client,
-lan_print, etc.). Subsequent releases will move the implementations under
-src/beambam/ proper — the re-exports here will remain stable.
+NOTE on layout (v1.2.0): `Creds` lives in beambam.config (canonical
+home). The signed-MQTT helpers + FTPS file transfer + cli main are
+re-exported lazily via `__getattr__` to avoid an import cycle with
+x2d_bridge.py (which itself imports `Creds` from beambam.config).
+v1.3.0 will move sign_payload + X2DClient + upload_file / download_file
+inline as well — the import paths stay stable.
 """
-
 from __future__ import annotations
 
 from importlib import metadata as _metadata
+from typing import TYPE_CHECKING, Any
 
 from beambam.config import Creds
-from beambam.ftps import download_file, list_files, upload_file
-from beambam.mqtt import BAMBU_CERT_ID, X2DClient, sign_payload
 from beambam.printer import Printer
-from cloud_client import CloudClient, CloudError
-from x2d_bridge import main as cli
 
 try:
     __version__ = _metadata.version("beambam")
 except _metadata.PackageNotFoundError:
     # Editable / source checkout without `pip install -e .`
-    __version__ = "1.1.0"
+    __version__ = "1.2.0"
+
+if TYPE_CHECKING:
+    from cloud_client import CloudClient, CloudError
+
+
+# Lazy re-exports — these live in x2d_bridge.py until v1.3.0. Eagerly
+# importing them here triggers a circular import (x2d_bridge imports
+# `Creds` from beambam.config). The package-level `__getattr__` hook
+# defers the import until the symbol is actually accessed.
+_LAZY_FROM_X2D_BRIDGE = {
+    "BAMBU_CERT_ID":  "x2d_bridge",
+    "X2DClient":      "x2d_bridge",
+    "sign_payload":   "x2d_bridge",
+    "upload_file":    "x2d_bridge",
+    "download_file":  "x2d_bridge",
+    "list_files":     "x2d_bridge",
+    "cli":            ("x2d_bridge", "main"),
+}
+_LAZY_FROM_CLOUD = {
+    "CloudClient":    "cloud_client",
+    "CloudError":     "cloud_client",
+}
+
+
+def __getattr__(name: str) -> Any:
+    """Lazy load expensive / cycle-prone symbols on first access."""
+    spec = _LAZY_FROM_X2D_BRIDGE.get(name) or _LAZY_FROM_CLOUD.get(name)
+    if spec is None:
+        raise AttributeError(f"module 'beambam' has no attribute {name!r}")
+    if isinstance(spec, tuple):
+        module_name, attr_name = spec
+    else:
+        module_name, attr_name = spec, name
+    module = __import__(module_name, fromlist=[attr_name])
+    value = getattr(module, attr_name)
+    globals()[name] = value                                # cache on hit
+    return value
+
 
 __all__ = [
     "__version__",

@@ -70,146 +70,29 @@ from cryptography.hazmat.primitives.asymmetric import padding
 X2D_ROOT_PATH = Path(os.environ.get("X2D_ROOT", str(Path(__file__).resolve().parent)))
 
 
-# Re-exported from bambu_cert.py (canonical home), with a soft-import so a
-# bare `from x2d_bridge import BAMBU_CERT_ID` still works for downstream code.
-try:
-    from bambu_cert import BAMBU_CERT_ID
-except ImportError:
-    BAMBU_CERT_ID = "GLOF1000000000-524a37c80000c6a6a274a47b3281"
-# Intentionally NOT inlined here — the signing private key is the publicly
-# leaked Bambu Connect global cert. See `bambu_cert.py` for the verbatim
-# blob. Keeping it in a sibling file makes it easier to swap for a different
-# cert if Bambu ever rotates and the leaked one stops being accepted.
+# ---------------------------------------------------------------------------
+# Credentials resolution — implementation moved to beambam.config in v1.2.0.
+# Signed-MQTT cert + signing — implementation moved to beambam.mqtt.
+# Re-exported here so legacy callers `from x2d_bridge import ...` still work.
+# ---------------------------------------------------------------------------
+
+from beambam.config import Creds  # noqa: E402  — late import after stdlib block
+from beambam.mqtt import BAMBU_CERT_ID, sign_payload  # noqa: E402
+
+# Soft-import the private key the same way beambam.mqtt does, so legacy
+# callers that grep for `BAMBU_PRIVATE_KEY_PEM` (or pass it to other tools)
+# still find it. None when the user hasn't supplied a cert.
 try:
     from bambu_cert import BAMBU_PRIVATE_KEY_PEM
 except ModuleNotFoundError:
     BAMBU_PRIVATE_KEY_PEM = None
 
 
-# ---------------------------------------------------------------------------
-# Credentials resolution
-# ---------------------------------------------------------------------------
-
-@dataclass
-class Creds:
-    ip: str
-    code: str
-    serial: str
-    name: str = ""   # which [printer:NAME] section we came from (if any)
-
-    @staticmethod
-    def list_names(ini_path: Path | None = None) -> list[str]:
-        """Return all `[printer:NAME]` section names in the creds file,
-        in declaration order. The plain `[printer]` is reported as ''."""
-        if ini_path is None:
-            ini_path = Path.home() / ".x2d" / "credentials"
-        if not ini_path.exists():
-            return []
-        cp = configparser.ConfigParser()
-        cp.read(ini_path)
-        names: list[str] = []
-        for sec in cp.sections():
-            if sec == "printer":
-                names.append("")
-            elif sec.startswith("printer:"):
-                names.append(sec.split(":", 1)[1])
-        return names
-
-    @classmethod
-    def resolve(cls, args: argparse.Namespace) -> "Creds":
-        env_ip = os.environ.get("X2D_IP", "")
-        env_code = os.environ.get("X2D_CODE", "")
-        env_serial = os.environ.get("X2D_SERIAL", "")
-
-        ini_ip = ini_code = ini_serial = ""
-        chosen_name = ""
-        ini_path = Path.home() / ".x2d" / "credentials"
-        if ini_path.exists():
-            cp = configparser.ConfigParser()
-            cp.read(ini_path)
-            requested = getattr(args, "printer", None) or os.environ.get("X2D_PRINTER", "")
-            named_sections = [s for s in cp.sections() if s.startswith("printer:")]
-            if requested:
-                target = f"printer:{requested}"
-                if not cp.has_section(target):
-                    sys.exit(
-                        f"no [{target}] section in {ini_path}.\n"
-                        f"available: {', '.join(named_sections) or '(none)'}"
-                    )
-                section = target
-                chosen_name = requested
-            elif cp.has_section("printer"):
-                section = "printer"
-            elif len(named_sections) == 1:
-                section = named_sections[0]
-                chosen_name = section.split(":", 1)[1]
-            elif len(named_sections) > 1:
-                sys.exit(
-                    "multiple [printer:NAME] sections found and no --printer/X2D_PRINTER set; "
-                    f"choose one of: {', '.join(s.split(':',1)[1] for s in named_sections)}"
-                )
-            else:
-                section = "printer"  # will fall through to "missing" below
-            if cp.has_section(section):
-                ini_ip = cp.get(section, "ip", fallback="")
-                ini_code = cp.get(section, "code", fallback="")
-                ini_serial = cp.get(section, "serial", fallback="")
-
-        ip = args.ip or env_ip or ini_ip
-        code = args.code or env_code or ini_code
-        serial = args.serial or env_serial or ini_serial
-        if not (ip and code and serial):
-            sys.exit(
-                "credentials missing — provide --ip --code --serial, or set\n"
-                "  X2D_IP / X2D_CODE / X2D_SERIAL env vars, or write\n"
-                "  ~/.x2d/credentials\n\n"
-                "  # default printer\n"
-                "  [printer]\n  ip = 192.168.x.y\n  code = 12345678\n  serial = 03ABC...\n"
-                "\n"
-                "  # OR multiple printers, selected via --printer NAME or X2D_PRINTER\n"
-                "  [printer:studio]\n  ip = …\n  code = …\n  serial = …\n"
-            )
-        return cls(ip=ip, code=code, serial=serial, name=chosen_name)
-
-
-# ---------------------------------------------------------------------------
-# Message signing — RSA-SHA256 over compact-JSON of the un-headered payload.
-# Signature lives in a top-level `header` object the firmware reads first.
-# ---------------------------------------------------------------------------
-
 def _signing_key():
-    if BAMBU_PRIVATE_KEY_PEM is None:
-        sys.exit(
-            "Bambu signing cert missing. Place the PEM-encoded private key in\n"
-            "  bambu_cert.py:BAMBU_PRIVATE_KEY_PEM\n"
-            "next to this script. The cert is the publicly-leaked Bambu\n"
-            "Connect global cert — search public references for "
-            f"`{BAMBU_CERT_ID}` if you need a copy."
-        )
-    return serialization.load_pem_private_key(
-        BAMBU_PRIVATE_KEY_PEM.encode(), password=None
-    )
-
-
-def sign_payload(payload: dict[str, Any]) -> dict[str, Any]:
-    """Wrap a Bambu MQTT payload with the `header` block the X2D / H2D /
-    refreshed P1+X1 firmware require. The signature is computed against the
-    compact-JSON of the un-headered dict in DICT-INSERTION ORDER. Empirical
-    testing showed that sort_keys=True breaks ALL commands including
-    pause/resume — so the firmware re-serializes the parsed-and-stripped
-    JSON in the same order it was received (which means the wire bytes must
-    use insertion order too)."""
-    body = json.dumps(payload, separators=(",", ":")).encode()
-    sig = _signing_key().sign(body, padding.PKCS1v15(), hashes.SHA256())
-    out = dict(payload)
-    out["header"] = {
-        "sign_ver": "v1.0",
-        "sign_alg": "RSA_SHA256",
-        "sign_string": base64.b64encode(sig).decode("ascii"),
-        "cert_id": BAMBU_CERT_ID,
-        "payload_len": len(body),
-    }
-    return out
+    """Deprecated alias — use beambam.mqtt.sign_payload directly. Kept
+    so legacy callers (network_shim, downstream importers) still resolve."""
+    from beambam.mqtt import _load_private_key
+    return _load_private_key()
 
 
 # ---------------------------------------------------------------------------
