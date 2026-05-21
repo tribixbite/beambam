@@ -1,0 +1,90 @@
+"""Guard test: `x2d_bridge.py` must not grow more `cmd_*` handlers.
+
+The bridge-split plan (`docs/BRIDGE_SPLIT_PLAN.md`) calls for `cmd_*`
+handlers to drain from the monolith into `beambam/cli/*.py` over a
+series of phases. Without an active guard, new features land in the
+monolith because the existing import path is convenient, and the
+"deferred to v1.X" excuse never expires.
+
+This test pins the current `cmd_*` count and FAILS CI if it grows.
+The intended workflow:
+
+  * To **add a new command**, put it in `beambam/cli/<group>.py` and
+    register the handler from there. The count in this file stays the
+    same.
+  * To **finish a Phase 5 sub-phase**, move a batch of handlers out
+    of `x2d_bridge.py` and lower `_MAX_CMD_HANDLERS_IN_BRIDGE`
+    accordingly. The lowering is the visible record of progress.
+  * To **bypass the guard** (only legitimate when refactoring this
+    file or the bridge itself), update both this number AND the
+    plan doc in the same commit. A reviewer can see the change.
+
+The guard's *only* job is to prevent silent regression. It does not
+say *which* handlers belong where — that's the plan doc's job.
+"""
+from __future__ import annotations
+
+import re
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+import pytest  # noqa: F401  (registered for collection only)
+
+
+REPO = Path(__file__).resolve().parents[1]
+BRIDGE = REPO / "x2d_bridge.py"
+
+# Pinned count as of 2026-05-21. To lower this number, run:
+#
+#   grep -cE "^def cmd_" x2d_bridge.py
+#
+# after a Phase 5 sub-phase lands and paste the new number here in the
+# same commit that does the migration. To RAISE this number, you need a
+# real reason — talk to the maintainer first or update
+# docs/BRIDGE_SPLIT_PLAN.md to acknowledge the new floor.
+_MAX_CMD_HANDLERS_IN_BRIDGE = 74
+
+
+def _count_cmd_handlers() -> int:
+    """Count top-level `def cmd_*` declarations in x2d_bridge.py.
+
+    Match anchor on column 0 only — nested defs inside other functions
+    don't count as new public CLI handlers."""
+    src = BRIDGE.read_text(encoding="utf-8")
+    return len(re.findall(r"^def cmd_", src, re.MULTILINE))
+
+
+def test_cmd_handler_count_does_not_grow():
+    """Pinned at 74. If you bumped it because of a feature add: STOP,
+    put the handler in beambam/cli/ instead. See
+    `docs/BRIDGE_SPLIT_PLAN.md` Phase 5 for the migration path."""
+    actual = _count_cmd_handlers()
+    assert actual <= _MAX_CMD_HANDLERS_IN_BRIDGE, (
+        f"x2d_bridge.py now has {actual} cmd_* handlers — "
+        f"the pinned ceiling is {_MAX_CMD_HANDLERS_IN_BRIDGE}. New CLI "
+        "commands must land in `beambam/cli/<group>.py`, not the "
+        "monolith. See `docs/BRIDGE_SPLIT_PLAN.md` for which group your "
+        "handler belongs in. If you genuinely need to bypass the guard "
+        "(refactoring the bridge itself), lower the floor in this file "
+        "in the same commit that does the work."
+    )
+
+
+def test_cmd_handler_count_is_not_stale():
+    """If you completed a Phase 5 sub-phase, the pinned ceiling should
+    be lowered to match. Catches the opposite drift: a successful
+    migration whose author forgot to update this number, hiding future
+    progress behind a stale ceiling."""
+    actual = _count_cmd_handlers()
+    # Tolerate the count being one or two below pinned — handlers
+    # sometimes get inlined or merged in routine cleanup. Beyond 5
+    # under, the ceiling is genuinely stale and should be lowered.
+    drift = _MAX_CMD_HANDLERS_IN_BRIDGE - actual
+    assert drift <= 5, (
+        f"x2d_bridge.py has {actual} cmd_* handlers but the pinned "
+        f"ceiling is {_MAX_CMD_HANDLERS_IN_BRIDGE} (drift {drift}). "
+        "Lower `_MAX_CMD_HANDLERS_IN_BRIDGE` in tests/test_bridge_split_progress.py "
+        "to the new actual count — visible progress is the point of this test."
+    )

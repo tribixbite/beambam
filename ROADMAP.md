@@ -24,7 +24,11 @@ are tracked in their own deep-dive plan files.
 **v1.2.0** (2026-05-21) — [changelog](CHANGELOG.md#v120--12-new-commands--bridge-split-phase-2)
 - 12 new CLI subcommands (download / ams / cam / slice / find / cloud-fetch /
   history / whoami / config / mqtt / queue / doctor)
-- Bridge split phases 1–3 (re-export modules → Creds + sign_payload inline → FTPS inline)
+- Bridge split phases 1–3: `Creds` → `beambam.config`, `sign_payload`
+  + `BAMBU_CERT_ID` → `beambam.mqtt`, FTPS upload/download/list →
+  `beambam.ftps`. `X2DClient` still lives in `x2d_bridge.py`,
+  lazy-exported from `beambam.mqtt` via `__getattr__` (closed in
+  Phase 4 — see [BRIDGE_SPLIT_PLAN.md](docs/BRIDGE_SPLIT_PLAN.md)).
 - `beambam init` first-run wizard
 - HA publisher: +6 entities (humidity_warn × 4 + queue_pending + hms_active_count)
 - MCP server: +7 tools (analyze, ams_status, ams_tray_info, doctor, download, queue_list, find_printers)
@@ -277,12 +281,38 @@ Remaining endpoints from the catalog worth wiring:
 - [x] Serve route on the bridge daemon: `GET /history/<print_id>.jpg`
   (commit 50aa9d9) reads from `~/.x2d/snapshots/`.
 
-### Refactor (boring but unblocks v2.0 surface)
-- [ ] **Bridge split phase 4** — `X2DClient` (~250 lines) → `beambam.mqtt`. Blocked on
-  extracting the `_metric_inc` helper out of x2d_bridge.py first. See
-  [BRIDGE_SPLIT_PLAN.md](docs/BRIDGE_SPLIT_PLAN.md).
-- [ ] **Bridge split phase 5** — `cmd_*` handlers (~40, ~6k LoC) → `beambam/cli/*.py`.
-  Largest diff in the bridge's history; defer until #1 daemon stops being load-bearing.
+### Refactor (boring but actively blocking v2.0 surface)
+**Status check — `x2d_bridge.py` is ~7,800 LoC with 74 `cmd_*` handlers
+and growing ~1 handler per loop iteration.** The "blockers" prior
+ROADMAP versions claimed are stale; see
+[BRIDGE_SPLIT_PLAN.md](docs/BRIDGE_SPLIT_PLAN.md) for the rewritten
+phase staging.
+
+- [ ] **Phase 4** — move `X2DClient` + `_metric_inc` into `beambam.mqtt`
+  (single commit, ~30–45 min, no live-printer required). Deletes the
+  `__getattr__` lazy-import shim and removes ~260 LoC from
+  `x2d_bridge.py`.
+- [ ] **Phase 5a** — `cmd_*` control verbs (pause / resume / stop /
+  reboot / gcode / home / level / set-temp / chamber-light / jog /
+  fod-check / ams-load / ams-unload / record / timelapse / resolution
+  / files) → `beambam/cli/control.py` + `beambam/cli/_helpers.py`.
+  ~600 LoC moved. Target post-phase: ~57 handlers in monolith.
+- [ ] **Phase 5b** — all `cmd_cloud_*` → `beambam/cli/cloud.py`.
+  ~2,000 LoC moved. Target post-phase: ~27 handlers in monolith.
+- [ ] **Phase 5c** — read-only commands (`status`, `health`, `watch`,
+  `tail`, `notify`, `printers`, `fetch`) → `beambam/cli/info.py`.
+  ~400 LoC moved.
+- [ ] **Phase 5d** — daemon cluster (`cmd_daemon`, `cmd_serve`,
+  `cmd_camera`, `cmd_webrtc`, `cmd_ha_publish`, `_serve_http`) →
+  `beambam/cli/daemon.py`. Largest single sub-phase (~1,500 LoC).
+  Critical: keep `python3 x2d_bridge.py serve` byte-stable as an
+  entry point — the GUI shim spawns it by literal pathname.
+- [ ] **Phase 5e** — `main()` + argparse builder → `beambam/cli/__init__.py`.
+  `x2d_bridge.py` becomes a 5-line shim. Update the `beambam` /
+  `bb` console-script entries in pyproject.toml.
+- [x] **Bridge-split guard test** — `tests/test_bridge_split_progress.py`
+  pins today's count (74 handlers) and fails CI if it grows. Forces
+  new features into `beambam/cli/` going forward.
 
 ### CI / repo hygiene
 - [x] **GitHub Actions Node.js 20 → 24** — bumped to
@@ -325,21 +355,24 @@ Remaining endpoints from the catalog worth wiring:
 
 ## Long-tail (IMPROVEMENTS.md backlog)
 
-[IMPROVEMENTS.md](IMPROVEMENTS.md) has a 95+ item phased ledger going back to pre-v1.0.0,
-organised as:
+[IMPROVEMENTS.md](IMPROVEMENTS.md) is the **append-only 95-item phased
+ledger** going back to pre-v1.0.0. Every item is now `[x]` — the
+ledger has been fully drained. It stays in the repo as a record of
+what shipped + the reasoning behind each commit, not as a worklist.
 
-- **Items 1–10** — bridge bootstrap
-- **Items 11–20** — UX gaps + hardening
-- **Items 21–58** — multi-phase feature-complete build (queue, HA, MCP, WebUI, …)
-- **Post-v1.0 backlog** — human-attended verification
-- **[Future enhancements (parked)](IMPROVEMENTS.md#future-enhancements-parked-not-blocking)**
+**Actual section structure** (from `grep -E "^### Phase" IMPROVEMENTS.md`):
+- **Phase 1** (items 36–41) — bridge multi-printer + observability +
+  complete the rumi print
+- **Phase 2** (items 42–49) — MCP + WebRTC + thin web UI
+- **Phase 3** (items 50–54) — Home Assistant integration
+- **Phase 4** (items 55–58) — features upstream BambuStudio doesn't have
+- **Phase 5** (items 59–62) — docs + release
 - **Phase 6** (items 87–88) — phone-display polish + camera bridge
-- **Phase 7** (items 89–94) — finish parked items
-- **Phase 8** (items 95+) — long-tail follow-ups
-- **Phase 9** (items 100+) — real-world verification
 
-When picking what to do next, scan Phase 7 / 8 for items already scoped, vs cut
-fresh from the v1.3.0 candidates list above.
+Items 1–35 and 63–86 + 89–95 live under unnumbered or differently-named
+headings (bootstrap, parked, follow-ups). When picking what to do next,
+**source from the unchecked items in this ROADMAP file, not IMPROVEMENTS** —
+IMPROVEMENTS is closed.
 
 ---
 
