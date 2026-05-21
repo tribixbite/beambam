@@ -158,6 +158,10 @@ def cmd_camera(args: argparse.Namespace) -> int:
                   file=sys.stderr)
             proc = _sp.Popen(cmd, stdout=_sp.PIPE, stderr=_sp.PIPE,
                              close_fds=True)
+            # PIPE was requested above, so stdout/stderr are guaranteed
+            # non-None — assert for the type-checker.
+            assert proc.stdout is not None
+            assert proc.stderr is not None
             try:
                 jpeg_buf = b""
                 # stdout.read() blocks indefinitely; we add a tiny
