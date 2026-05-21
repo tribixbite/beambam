@@ -169,7 +169,11 @@ BRIDGE = REPO / "x2d_bridge.py"
 #        `_x2d_search_roots` from x2d_bridge. Remaining handlers
 #        (cmd_serve + cmd_daemon) both use the ~1080-LoC ServeServer
 #        class still in monolith — that's a Phase 5d batch 7 target.
-_MAX_CMD_HANDLERS_IN_BRIDGE = 2
+#    1 — Phase 5d batch 7: cmd_serve (3 LoC) lazy-thunks
+#        x2d_bridge.ServeServer until the class itself can be
+#        extracted in a later batch. Only cmd_daemon left in monolith
+#        — it depends on the ~580-LoC _serve_http function.
+_MAX_CMD_HANDLERS_IN_BRIDGE = 1
 
 
 def _count_cmd_handlers() -> int:

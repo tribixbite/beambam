@@ -2549,10 +2549,9 @@ from beambam.cli.lan import cmd_slice_print  # noqa: E402, F401
 from beambam.cli.daemon import cmd_camera  # noqa: E402, F401
 
 
-def cmd_serve(args: argparse.Namespace) -> int:
-    sock_path = Path(args.sock).expanduser()
-    server = ServeServer(sock_path)
-    return server.serve_forever()
+# cmd_serve moved to beambam/cli/daemon.py (Phase 5d batch 7).
+# Re-exported below alongside the other daemon handlers.
+from beambam.cli.daemon import cmd_serve  # noqa: E402, F401
 
 
 def cmd_daemon(args: argparse.Namespace) -> int:

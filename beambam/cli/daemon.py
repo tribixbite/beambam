@@ -26,6 +26,22 @@ import argparse
 import sys
 
 
+def cmd_serve(args: argparse.Namespace) -> int:
+    """Run the UNIX-socket daemon that the libbambu_networking.so shim
+    talks to. See runtime/network_shim/PROTOCOL.md for the wire format.
+
+    The ServeServer class (~1080 LoC including its supporting
+    _PrinterSession / _ConnHandler / _OpError types) still lives in
+    x2d_bridge.py — extracting it is a separate Phase 5d batch. The
+    handler itself is just three lines: open socket path, instantiate
+    server, serve forever."""
+    from pathlib import Path
+    from x2d_bridge import ServeServer
+    sock_path = Path(args.sock).expanduser()
+    server = ServeServer(sock_path)
+    return server.serve_forever()
+
+
 def cmd_camera(args: argparse.Namespace) -> int:
     """Chamber-camera proxy daemon. Pulls H.264 from the printer's
     RTSPS endpoint (or the LVL_Local fallback on `--proto local`) and
