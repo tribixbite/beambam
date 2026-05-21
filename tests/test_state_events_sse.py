@@ -72,21 +72,45 @@ def _start_server(hub: StateHub) -> tuple[int, threading.Thread]:
     return port, t
 
 
-def _read_sse_event(sock: socket.socket, timeout: float = 1.0) -> bytes:
-    """Read raw bytes from the socket until we see a complete SSE event
-    (terminated by `\\n\\n`). Returns the bytes of that single event."""
-    sock.settimeout(timeout)
-    buf = b""
-    while b"\n\n" not in buf:
-        chunk = sock.recv(8192)
-        if not chunk:
-            break
-        buf += chunk
-    head, _, _ = buf.partition(b"\n\n")
-    return head + b"\n\n"
+class _SseClient:
+    """Wraps a socket + a leftover-bytes buffer so a `recv` that pulled
+    HTTP headers AND part of the first SSE event in one chunk doesn't
+    drop the event payload."""
+
+    def __init__(self, sock: socket.socket, leftover: bytes = b"") -> None:
+        self.sock = sock
+        self._buf = leftover
+
+    def read_event(self, timeout: float = 1.0) -> bytes:
+        self.sock.settimeout(timeout)
+        while b"\n\n" not in self._buf:
+            chunk = self.sock.recv(8192)
+            if not chunk:
+                break
+            self._buf += chunk
+        head, sep, rest = self._buf.partition(b"\n\n")
+        self._buf = rest
+        return head + sep
+
+    def drain(self, timeout: float = 0.2) -> None:
+        """Best-effort: consume anything currently sitting on the
+        socket, then return. Useful for skipping the initial retry
+        directive in tests that don't care about it."""
+        self.sock.settimeout(timeout)
+        try:
+            while True:
+                chunk = self.sock.recv(8192)
+                if not chunk:
+                    return
+                self._buf += chunk
+        except socket.timeout:
+            return
+
+    def close(self) -> None:
+        self.sock.close()
 
 
-def _open_sse(port: int) -> socket.socket:
+def _open_sse(port: int) -> _SseClient:
     s = socket.create_connection(("127.0.0.1", port), timeout=2.0)
     s.sendall(
         b"GET /state.events HTTP/1.1\r\n"
@@ -94,7 +118,10 @@ def _open_sse(port: int) -> socket.socket:
         b"Accept: text/event-stream\r\n"
         b"Connection: close\r\n\r\n"
     )
-    # Consume HTTP response headers + the initial `retry: 2000\n\n`.
+    # Consume HTTP response headers. CRITICAL: if the same recv that
+    # delivered the headers also carried part of the first SSE event,
+    # we keep those bytes in `leftover` so the caller's first
+    # read_event sees them.
     s.settimeout(2.0)
     buf = b""
     while b"\r\n\r\n" not in buf:
@@ -102,8 +129,10 @@ def _open_sse(port: int) -> socket.socket:
         if not chunk:
             raise RuntimeError("server closed before headers")
         buf += chunk
-    assert b"text/event-stream" in buf, f"missing SSE content-type: {buf[:200]!r}"
-    return s
+    head, _, leftover = buf.partition(b"\r\n\r\n")
+    assert b"text/event-stream" in head, \
+        f"missing SSE content-type: {head[:200]!r}"
+    return _SseClient(s, leftover)
 
 
 def test_sse_replays_last_state_immediately():
@@ -114,12 +143,12 @@ def test_sse_replays_last_state_immediately():
     port, _ = _start_server(hub)
 
     t0 = time.monotonic()
-    sock = _open_sse(port)
-    # Skip the `retry:` directive — it's optional, may or may not be
-    # in this read depending on TCP packetization.
-    evt = _read_sse_event(sock, timeout=1.0)
+    client = _open_sse(port)
+    # The first non-meta event is the replayed last_state. The handler
+    # writes `retry: 2000\n\n` first; skip it.
+    evt = client.read_event(timeout=1.0)
     if b"data:" not in evt:
-        evt = _read_sse_event(sock, timeout=1.0)
+        evt = client.read_event(timeout=1.0)
     elapsed = time.monotonic() - t0
 
     assert b"data:" in evt, f"no data event in {evt!r}"
@@ -127,7 +156,7 @@ def test_sse_replays_last_state_immediately():
     # Sub-second is the load-bearing bit — the legacy poll path would
     # take up to 1.0 s of `time.sleep` before emitting anything.
     assert elapsed < 0.7, f"too slow ({elapsed*1000:.0f} ms) — hub path may not be wired"
-    sock.close()
+    client.close()
 
 
 def test_sse_pushes_on_publish_under_100ms():
@@ -136,20 +165,21 @@ def test_sse_pushes_on_publish_under_100ms():
     hub = StateHub()
     port, _ = _start_server(hub)
 
-    sock = _open_sse(port)
-    # Consume any initial event (there should be none since last_state
-    # is None at this point — but tolerate the retry line if present).
-    sock.settimeout(0.2)
-    try:
-        sock.recv(4096)
-    except socket.timeout:
-        pass
+    client = _open_sse(port)
+    # The handler writes `retry: 2000\n\n` immediately; consume it so
+    # we measure just the publish→delivery roundtrip below.
+    pre = client.read_event(timeout=1.0)
+    assert pre.startswith(b"retry:"), f"unexpected pre-event: {pre!r}"
 
     t0 = time.monotonic()
     hub.publish({"gcode_state": "FINISH", "percent": 100})
-    evt = _read_sse_event(sock, timeout=1.0)
+    # Skip any extra meta lines until we see a real data event.
+    while True:
+        evt = client.read_event(timeout=1.0)
+        if evt.startswith(b"data:"):
+            break
     elapsed = time.monotonic() - t0
 
     assert b"FINISH" in evt and b"100" in evt, f"missing payload in {evt!r}"
     assert elapsed < 0.20, f"push took {elapsed*1000:.0f} ms — should be sub-100ms"
-    sock.close()
+    client.close()
