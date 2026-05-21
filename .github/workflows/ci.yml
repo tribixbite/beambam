@@ -33,7 +33,13 @@ jobs:
       - run: pip install --upgrade pip
       - run: pip install ruff mypy paho-mqtt cryptography
       - name: ruff check (beambam package only — legacy modules tracked separately)
-        run: ruff check beambam tests/test_analyze.py tests/test_frame.py tests/test_printer.py tests/test_schemas.py tests/test_simulate.py tests/test_cloud_fetch.py tests/test_state_hub.py
+        run: |
+          # Lint the package + all beambam-owned tests. Legacy modules
+          # (x2d_bridge.py, cloud_client.py, etc.) and the pre-rename test
+          # files (test_ams_mapping, test_cloud_client, test_ipcam_commands,
+          # test_remix_3mf, test_serve_smoke, test_signing_roundtrip) have
+          # years of style drift — fix incrementally, not in CI.
+          ruff check beambam $(ls tests/test_*.py | grep -vE 'test_(ams_mapping|cloud_client|ipcam_commands|remix_3mf|serve_smoke|signing_roundtrip)\.py$' | tr '\n' ' ')
       - name: mypy (beambam shim)
         run: mypy beambam
 
