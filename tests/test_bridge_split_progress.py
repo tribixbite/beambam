@@ -136,7 +136,13 @@ BRIDGE = REPO / "x2d_bridge.py"
 #        _print_search_printables helper moved into beambam.cli.cloud.
 #        These are catalog-search handlers — they belong with the
 #        cloud-search/browse/design family already there.
-_MAX_CMD_HANDLERS_IN_BRIDGE = 10
+#    8 — Phase 5d batch 1: scaffold beambam.cli.lan with cmd_upload
+#        (FTPS upload) + cmd_files (FTPS SD-card listing). Also
+#        retroactively fixed Creds imports (beambam.creds →
+#        beambam.config; the wrong path had been latent across info.py
+#        handlers since Phase 5c — caught here because cmd_files has
+#        actual test coverage that triggers the lazy import.)
+_MAX_CMD_HANDLERS_IN_BRIDGE = 8
 
 
 def _count_cmd_handlers() -> int:

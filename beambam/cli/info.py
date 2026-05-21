@@ -26,7 +26,7 @@ def cmd_status(args: argparse.Namespace) -> int:
     """Connect, request the latest pushed printer state once, print as
     JSON, disconnect. The canonical introspection verb — every other
     read-only command builds on the same X2DClient.request_state path."""
-    from beambam.creds import Creds
+    from beambam.config import Creds
     from beambam.mqtt import X2DClient
 
     creds = Creds.resolve(args)
@@ -48,7 +48,7 @@ def cmd_health(args: argparse.Namespace) -> int:
     import socket as _socket
     import time as _time
 
-    from beambam.creds import Creds
+    from beambam.config import Creds
     from beambam.mqtt import X2DClient
 
     creds = Creds.resolve(args)
@@ -161,7 +161,7 @@ def cmd_watch(args: argparse.Namespace) -> int:
     import sys
     import time as _time
 
-    from beambam.creds import Creds
+    from beambam.config import Creds
     from beambam.mqtt import X2DClient
 
     creds = Creds.resolve(args)
@@ -350,7 +350,7 @@ def cmd_tail(args: argparse.Namespace) -> int:
     from threading import Event as _Event
 
     from beambam.cli._helpers import _next_seq
-    from beambam.creds import Creds
+    from beambam.config import Creds
     from beambam.mqtt import X2DClient
 
     creds = Creds.resolve(args)
@@ -405,7 +405,7 @@ def cmd_notify(args: argparse.Namespace) -> int:
     import sys
     import time as _time
 
-    from beambam.creds import Creds
+    from beambam.config import Creds
     from beambam.mqtt import X2DClient
 
     if not shutil.which("termux-notification"):

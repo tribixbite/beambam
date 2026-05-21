@@ -1454,11 +1454,8 @@ from beambam.cli.info import (  # noqa: E402, F401
 )
 
 
-def cmd_upload(args: argparse.Namespace) -> int:
-    creds = Creds.resolve(args)
-    upload_file(creds, Path(args.file), remote_name=args.remote)
-    print(f"uploaded {args.file} -> {creds.ip}:/{args.remote or Path(args.file).name}")
-    return 0
+# cmd_upload moved to beambam/cli/lan.py (Phase 5d batch 1).
+from beambam.cli.lan import cmd_upload  # noqa: E402, F401
 
 
 class PrintRefusal(Exception):
@@ -2978,40 +2975,8 @@ from beambam.cli.control import (  # noqa: E402, F401
 # (Phase 5a batch 2).
 
 
-def cmd_files(args: argparse.Namespace) -> int:
-    """List SD-card files via FTPS — see runtime/network_shim/file_tunnel.py.
-    Empirical finding (#92): X2D firmware exposes its SD card via vsFTPd
-    on port 990, NOT the BambuTunnel:6000 protocol that older Bambu
-    printers + BambuStudio source assume."""
-    import json as _json
-    creds = Creds.resolve(args)
-    try:
-        from runtime.network_shim.file_tunnel import (
-            FileTunnelClient, FileTunnelError,
-        )
-    except ImportError as e:
-        sys.exit(f"file_tunnel module missing: {e}")
-
-    try:
-        with FileTunnelClient(creds.ip, creds.code) as cli:
-            files = cli.list_files(args.kind)
-    except FileTunnelError as e:
-        sys.exit(f"file_tunnel: {e}")
-    except OSError as e:
-        sys.exit(f"socket error: {e}")
-
-    if args.json:
-        print(_json.dumps(
-            [{"name": f.name, "path": f.path, "time": f.time,
-              "size": f.size, "is_dir": f.is_dir}
-             for f in files], indent=2,
-        ))
-    else:
-        if not files:
-            print(f"(no {args.kind} files)")
-        for f in files:
-            print(f)
-    return 0
+# cmd_files moved to beambam/cli/lan.py (Phase 5d batch 1).
+from beambam.cli.lan import cmd_files  # noqa: E402, F401
 
 
 # cmd_fetch moved to beambam/cli/info.py (Phase 5c batch 4 — closes Phase 5c).
