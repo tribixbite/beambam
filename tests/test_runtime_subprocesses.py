@@ -60,30 +60,72 @@ _TIMEOUTS_S: dict[str, float] = {
     "runtime/timelapse/test_recorder.py": 120.0,   # ffmpeg stitch
     "runtime/timelapse/test_http.py":     120.0,
     "runtime/mcp/test_mcp.py":             90.0,   # spawns the real bridge
+    "runtime/test_phase2_smoke.py":        90.0,   # we pass --duration=15
+    "runtime/webrtc/test_webrtc.py":       60.0,   # aiortc handshake
 }
 
 
-# Scripts to skip even from the subprocess wrapper. Mostly things that
-# need a real network reachable target (Bambu Cloud, an actual printer)
-# or a binary we don't ship in CI.
-_SKIP_REASONS: dict[str, str] = {
-    # WebRTC end-to-end needs aiortc + a working ICE path; aiortc isn't
-    # in the CI test deps and the test does real codec setup.
-    "runtime/webrtc/test_webrtc.py":
-        "aiortc + WebRTC ICE — not in CI test deps",
-    # Live MCP client connects to an actual running daemon on :8765;
-    # CI doesn't have one.
-    "runtime/mcp/test_live_client.py":
-        "needs a live daemon on http://127.0.0.1:8765",
-    # network_shim e2e dlopens libbambu_networking.so which is only
-    # built locally; CI doesn't build it.
-    "runtime/network_shim/tests/test_shim_e2e.py":
-        "needs the locally-built libbambu_networking.so",
-    # Phase 2 smoke spawns the bridge + drives a print job through it;
-    # heavy + flaky in CI.
-    "runtime/test_phase2_smoke.py":
-        "drives a full print job end-to-end — too heavy for CI",
+# Per-script extra argv we inject when invoking the runtime test. Lets
+# us pass `--skip-printer` / `--duration=N` without modifying the scripts.
+_EXTRA_ARGS: dict[str, list[str]] = {
+    # network_shim load-only mode: still dlopens the .so but skips the
+    # LAN MQTT round-trip that needs a real printer.
+    "runtime/network_shim/tests/test_shim_e2e.py": ["--skip-printer"],
+    # Phase-2 soak default is 60 s; cut to 15 s for CI (5 s wasn't
+    # enough for the webrtc workload to land its first frame, which
+    # made the "≥1 success" check fire).
+    "runtime/test_phase2_smoke.py":                ["--duration=15"],
 }
+
+
+def _need_aiortc_skip() -> str | None:
+    """Return a skip reason if aiortc isn't importable, else None.
+    Done lazily so the wrapper itself doesn't error-out at import time."""
+    try:
+        import aiortc  # noqa: F401
+        import aiohttp  # noqa: F401
+        return None
+    except Exception as e:                                # noqa: BLE001
+        return f"aiortc/aiohttp not importable in this env: {e}"
+
+
+def _need_shim_so() -> Path:
+    return REPO_ROOT / "runtime" / "network_shim" / "libbambu_networking.so"
+
+
+def _live_printer_env_set() -> bool:
+    """The same gate `@pytest.mark.live` uses across the suite."""
+    return bool(os.environ.get("BEAMBAM_TEST_IP"))
+
+
+def _conditional_skip(rel: str) -> str | None:
+    """Return a skip reason if this script can't run in the current env,
+    else None. Centralises the env-detection so the same logic is visible
+    to every script."""
+    if rel == "runtime/webrtc/test_webrtc.py":
+        return _need_aiortc_skip()
+    if rel == "runtime/network_shim/tests/test_shim_e2e.py":
+        if not _need_shim_so().is_file():
+            return (f"libbambu_networking.so not built — run `make -C "
+                    f"runtime/network_shim` to build it locally; CI "
+                    f"doesn't ship the .so.")
+        return None
+    if rel == "runtime/mcp/test_live_client.py":
+        if not _live_printer_env_set():
+            return ("live printer not configured — set BEAMBAM_TEST_IP "
+                    "to enable")
+        return None
+    if rel == "runtime/test_phase2_smoke.py":
+        # The webrtc workload inside phase2 hits a connection-setup race
+        # when the gateway is freshly spawned and immediately driven —
+        # zero successful frames within the soak window, which trips the
+        # `≥1 success` assertion. Standalone runtime/webrtc/test_webrtc.py
+        # passes because it warms the daemon first. Real bug, separate
+        # fix; keep skipped so this wrapper's other tests stay enforceable.
+        return ("phase2 webrtc workload races the gateway warm-up — "
+                "tracked separately; standalone webrtc test covers the "
+                "happy path.")
+    return None
 
 
 @pytest.mark.parametrize(
@@ -97,13 +139,15 @@ def test_runtime_script(test_path: Path, runtime_env: dict[str, str]):
     A non-zero exit code attaches the captured stderr to the pytest
     failure message so the user can diagnose without re-running."""
     rel = test_path.relative_to(REPO_ROOT).as_posix()
-    if rel in _SKIP_REASONS:
-        pytest.skip(_SKIP_REASONS[rel])
+    reason = _conditional_skip(rel)
+    if reason:
+        pytest.skip(reason)
 
     timeout = _TIMEOUTS_S.get(rel, 60.0)
+    argv = [sys.executable, str(test_path), *_EXTRA_ARGS.get(rel, [])]
     try:
         result = subprocess.run(
-            [sys.executable, str(test_path)],
+            argv,
             cwd=str(REPO_ROOT),
             env=runtime_env,
             capture_output=True,

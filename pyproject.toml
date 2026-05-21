@@ -80,6 +80,11 @@ dev = [
     "numpy",
     "numpy-stl",
     "Pillow",
+    # WebRTC end-to-end test (runtime/webrtc/test_webrtc.py); aiortc
+    # ships wheels with bundled libav/libsrtp/libopus/libvpx on Linux
+    # + macOS so install in CI is single-pip-install fast.
+    "aiortc>=1.10",
+    "aiohttp>=3.9",
 ]
 
 [project.urls]
