@@ -159,7 +159,11 @@ BRIDGE = REPO / "x2d_bridge.py"
 #        all deps (start_print, _validate_ams_slot,
 #        _derive_print_params_from_3mf, Creds, upload_file, X2DClient)
 #        now live in beambam.* packages, no lazy thunks needed.
-_MAX_CMD_HANDLERS_IN_BRIDGE = 4
+#    3 — Phase 5d batch 5: cmd_print (117 LoC LAN-direct print with
+#        --dry-run analyzer + bed/temp/filament safety derivation +
+#        AMS-slot live-state validation) moved into beambam.cli.lan.
+#        Sibling of cmd_slice_print — same dependency surface.
+_MAX_CMD_HANDLERS_IN_BRIDGE = 3
 
 
 def _count_cmd_handlers() -> int:
