@@ -58,8 +58,14 @@ Ordered by user-visible impact. Pick any 3-5 for the next release cut.
   MCP server stays on point-in-time `GET /state` (per-request latency
   dominated by LLM tool-call round-trip, not state freshness) — out
   of scope here.
-- [ ] **Daemon HTTP routes for v1.2.0 commands** — `/ams`, `/doctor`, `/analyze` (POST
-  with file upload). `/queue/*` already exists. Lets the web UI surface them.
+- [x] **Daemon HTTP routes for v1.2.0 commands** — `GET /ams`,
+  `GET /doctor`, `POST /analyze` (raw octet body, ≤64 MiB cap; returns
+  the Report dataclass as JSON via dataclasses.asdict). The /doctor
+  route aggregates `run_all_checks(state)` into a `worst` severity
+  (pass/warn/fail) so HA can drive a single status sensor. 10 unit
+  tests in `tests/test_v12_http_routes.py` cover happy paths,
+  empty/oversize/malformed bodies, severity priority, and
+  count-summary correctness.
 - [ ] **Web UI updates for v1.2.0** — `web/index.js` doesn't show AMS humidity warnings,
   doctor results, queue contents, or analyze output.
 

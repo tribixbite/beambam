@@ -1239,6 +1239,44 @@ def _serve_http(bind: str,
                                   "time for full output."),
                 }, status=200)
                 return
+            elif path == "/ams":
+                # Surface the AMS sub-tree of the printer's last cached
+                # state for HA / web-UI consumers. Returns the raw shape
+                # `state["print"]["ams"]` produces (ams.ams list with
+                # tray subarrays). 404 if the printer has never reported
+                # an AMS payload (e.g. fresh boot, no AMS hardware).
+                state = get_state(printer) or {}
+                ams_block = (state.get("print", {}) or {}).get("ams")
+                if ams_block is None:
+                    self._send_json(
+                        {"printer": printer,
+                         "error": "no AMS payload seen yet — printer may "
+                                  "be booting or has no AMS hardware"},
+                        status=404,
+                    )
+                else:
+                    self._send_json(
+                        {"printer": printer, "ams": ams_block}, status=200)
+            elif path == "/doctor":
+                # Run every doctor check_* on the printer's cached state
+                # and return the list of Check dataclasses as JSON.
+                # Severity counts in the summary so HA can drive a single
+                # "doctor_status" sensor (pass / warn / fail).
+                from beambam import doctor as _doctor
+                from dataclasses import asdict
+                state = get_state(printer) or {}
+                checks = _doctor.run_all_checks(state)
+                summary = {s: 0 for s in ("pass", "warn", "fail", "info")}
+                for c in checks:
+                    summary[c.severity] = summary.get(c.severity, 0) + 1
+                worst = ("fail" if summary["fail"] else
+                         "warn" if summary["warn"] else "pass")
+                self._send_json({
+                    "printer": printer,
+                    "worst":   worst,
+                    "summary": summary,
+                    "checks":  [asdict(c) for c in checks],
+                }, status=200)
             elif path == "/healthz":
                 # 200 if we've heard from the printer recently;
                 # 503 if MQTT silently disconnected. Used as a Home
@@ -1332,6 +1370,48 @@ def _serve_http(bind: str,
                         for t in result.transcript
                     ],
                 })
+                return
+            if path == "/analyze":
+                # POST a raw .gcode.3mf body, get the analyze Report as
+                # JSON. Web UI / HA dashboards use this to surface
+                # weight / time / purge waste / per-filament usage for
+                # a file the user uploaded but hasn't sent to the
+                # printer yet. Content-Type is irrelevant — we treat
+                # the body as octet bytes and write to a tmp file.
+                length = int(self.headers.get("Content-Length", "0") or "0")
+                if length <= 0:
+                    self._send_json(
+                        {"error": "expected raw .gcode.3mf body "
+                                  "(Content-Length > 0)"}, status=400)
+                    return
+                # Cap body at 64 MiB — Bambu .3mf bundles are typically
+                # 1-20 MiB; anything bigger is almost certainly an
+                # attack or a misuploaded video.
+                if length > 64 * 1024 * 1024:
+                    self._send_json(
+                        {"error": f"body too large ({length} B); cap is "
+                                  "64 MiB"}, status=413)
+                    return
+                raw = self.rfile.read(length)
+                import tempfile
+                from dataclasses import asdict
+                from beambam.analyze import analyze_3mf
+                with tempfile.NamedTemporaryFile(
+                        suffix=".gcode.3mf", delete=False) as tf:
+                    tf.write(raw)
+                    tmp_path = Path(tf.name)
+                try:
+                    report = analyze_3mf(tmp_path)
+                except Exception as e:
+                    self._send_json(
+                        {"error": f"analyze failed: {e}"}, status=400)
+                    return
+                finally:
+                    try:
+                        tmp_path.unlink()
+                    except OSError:
+                        pass
+                self._send_json(asdict(report), status=200)
                 return
             # Item #56: stitch a timelapse → MP4 (POST is the right
             # verb because it's a long-running, side-effecting op).
