@@ -3917,95 +3917,128 @@ def cmd_watch(args: argparse.Namespace) -> int:
 # in two ways: (a) events surface within ms of the printer's push
 # rather than once per polling interval, and (b) only deltas are
 # emitted, so the log stays terse.
-def cmd_tail(args: argparse.Namespace) -> int:
-    import time as _time
-    from threading import Event as _Event
-    from beambam.doctor import decode_hms
+class _TailDispatcher:
+    """Pure diff engine for `beambam tail`. Keeps the previous-push
+    snapshot and exposes `events_for(state)` returning a list of
+    (category, message, level) tuples for what changed since the last
+    call. Pulled outside `cmd_tail` so unit tests can drive it directly
+    without spinning up MQTT, threads, or signal handlers."""
 
-    creds = Creds.resolve(args)
-    prev = {
-        "gcode_state": None,
-        "layer":       -1,
-        "percent":     -1,
-        "hms_set":     set(),
-    }
+    def __init__(self, *, no_progress: bool = False, no_hms: bool = False,
+                 every_state: bool = False) -> None:
+        self.no_progress = no_progress
+        self.no_hms      = no_hms
+        self.every_state = every_state
+        self._prev_state:   str | None = None
+        self._prev_layer:   int        = -1
+        self._prev_percent: int        = -1
+        self._prev_hms:     set[str]   = set()
 
+    @staticmethod
     def _hms_code(h: dict) -> str:
-        """Render an HMS dict as `aaaa_bbbb_cccc_dddd` hex string,
-        matching the canonical form used by HMS_DESCRIPTIONS and the
-        Bambu HMS error page URLs."""
-        # Newer firmware uses 'a'/'b'/'c'/'d' int fields; older used
-        # 'attr'/'code' strings. Cover both.
+        """Render an HMS dict as `AAAA_BBBB_CCCC_DDDD` hex matching the
+        canonical form HMS_DESCRIPTIONS uses + the Bambu error-page URLs.
+
+        Two firmware variants seen in the wild:
+          * `{a,b,c,d}` — four 16-bit ints, one per hex group
+          * `{attr,code}` — two 32-bit ints; split each into
+            high/low 16-bit halves
+        """
         if all(k in h for k in ("a", "b", "c", "d")):
-            return "_".join(f"{int(h.get(k, 0)):04X}" for k in ("a", "b", "c", "d"))
-        return "_".join(str(h.get(k, "")) for k in ("attr", "code")).strip("_")
+            return "_".join(f"{int(h.get(k, 0)):04X}"
+                            for k in ("a", "b", "c", "d"))
+        if "attr" in h and "code" in h:
+            try:
+                attr = int(h["attr"])
+                code = int(h["code"])
+            except (TypeError, ValueError):
+                # Already-formatted strings? Pass through but normalise
+                # the join so downstream lookup against HMS_DESCRIPTIONS
+                # works in the common case.
+                return f"{h.get('attr','')}_{h.get('code','')}".strip("_")
+            return (
+                f"{(attr >> 16) & 0xFFFF:04X}_{attr & 0xFFFF:04X}"
+                f"_{(code >> 16) & 0xFFFF:04X}_{code & 0xFFFF:04X}"
+            )
+        return ""
 
-    def _emit(category: str, message: str, *,
-              level: str = "info") -> None:
-        ts_unix = _time.time()
-        ts_str  = _time.strftime("%H:%M:%S")
-        if args.json:
-            line = json.dumps({"ts":       ts_unix,
-                               "category": category,
-                               "level":    level,
-                               "message":  message},
-                              separators=(",", ":"))
-            print(line, flush=True)
-            return
-        icon = {"info": "·", "warn": "⚠", "fail": "✗",
-                "ok":   "✓"}.get(level, "·")
-        print(f"[{ts_str}] {icon} {category:<8} {message}", flush=True)
-
-    def _on_state(state: dict) -> None:
+    def events_for(self, state: dict) -> list[tuple[str, str, str]]:
+        from beambam.doctor import decode_hms
+        out: list[tuple[str, str, str]] = []
         p = state.get("print", {}) or {}
 
-        # gcode_state transitions
         gs = p.get("gcode_state")
-        if gs and gs != prev["gcode_state"]:
-            if prev["gcode_state"] is None:
-                _emit("state", f"observed {gs}")
+        if gs and gs != self._prev_state:
+            if self._prev_state is None:
+                out.append(("state", f"observed {gs}", "info"))
             else:
-                lvl = "fail" if gs in ("FAILED",) else "info"
-                _emit("state", f"{prev['gcode_state']} -> {gs}",
-                      level=lvl)
-            prev["gcode_state"] = gs
+                lvl = "fail" if gs == "FAILED" else "info"
+                out.append(("state", f"{self._prev_state} -> {gs}", lvl))
+            self._prev_state = gs
 
-        # progress milestones — every 10 % during a print
-        if not args.no_progress:
+        if not self.no_progress:
             pct = int(p.get("mc_percent", 0) or 0)
-            # Only emit when we cross a 10-pct bucket boundary upward.
-            # `-1` initial state ensures the first push doesn't fire
-            # a spurious "0%" line on a fresh idle printer.
-            if pct >= 0 and prev["percent"] >= 0:
-                step = (pct // 10) - (prev["percent"] // 10)
+            if pct >= 0 and self._prev_percent >= 0:
+                step = (pct // 10) - (self._prev_percent // 10)
                 if step >= 1 and pct < 100:
-                    _emit("progress", f"{pct}%")
-                elif pct == 100 and prev["percent"] < 100:
-                    _emit("progress", "100% — print finished", level="ok")
-            prev["percent"] = pct
+                    out.append(("progress", f"{pct}%", "info"))
+                elif pct == 100 and self._prev_percent < 100:
+                    out.append(("progress", "100% — print finished", "ok"))
+            self._prev_percent = pct
 
-        # layer changes (chatty — opt-in via --every-state)
-        if args.every_state:
+        if self.every_state:
             layer = int(p.get("layer_num", 0) or 0)
             total = int(p.get("total_layer_num", 0) or 0)
-            if layer != prev["layer"] and layer > 0:
-                _emit("layer", f"L{layer}/{total}")
-                prev["layer"] = layer
+            if layer != self._prev_layer and layer > 0:
+                out.append(("layer", f"L{layer}/{total}", "info"))
+                self._prev_layer = layer
 
-        # HMS — diff the current set against the previous to find new
-        # codes (fail) and cleared codes (ok). Always shown unless
-        # explicitly disabled.
-        if not args.no_hms:
+        if not self.no_hms:
             hms_now: set[str] = set()
             for h in (p.get("hms") or []):
-                code = _hms_code(h)
+                code = self._hms_code(h)
                 if code:
                     hms_now.add(code)
-            for code in (hms_now - prev["hms_set"]):
-                _emit("hms", f"{code}: {decode_hms(code)}", level="fail")
-            for code in (prev["hms_set"] - hms_now):
-                _emit("hms", f"{code} cleared", level="ok")
-            prev["hms_set"] = hms_now
+            for code in sorted(hms_now - self._prev_hms):
+                out.append(("hms", f"{code}: {decode_hms(code)}", "fail"))
+            for code in sorted(self._prev_hms - hms_now):
+                out.append(("hms", f"{code} cleared", "ok"))
+            self._prev_hms = hms_now
+
+        return out
+
+
+def _tail_print(events: list[tuple[str, str, str]],
+                *, as_json: bool) -> None:
+    """Render a list of dispatcher events as either ndjson lines or
+    the human-readable [HH:MM:SS] ICON CATEGORY MESSAGE format."""
+    import time as _time
+    icons = {"info": "·", "warn": "⚠", "fail": "✗", "ok": "✓"}
+    if as_json:
+        ts = _time.time()
+        for category, message, level in events:
+            print(json.dumps({"ts": ts, "category": category,
+                              "level": level, "message": message},
+                              separators=(",", ":")), flush=True)
+        return
+    ts_str = _time.strftime("%H:%M:%S")
+    for category, message, level in events:
+        icon = icons.get(level, "·")
+        print(f"[{ts_str}] {icon} {category:<8} {message}", flush=True)
+
+
+def cmd_tail(args: argparse.Namespace) -> int:
+    from threading import Event as _Event
+
+    creds = Creds.resolve(args)
+    disp = _TailDispatcher(no_progress=args.no_progress,
+                           no_hms=args.no_hms,
+                           every_state=args.every_state)
+
+    def _on_state(state: dict) -> None:
+        events = disp.events_for(state)
+        if events:
+            _tail_print(events, as_json=args.json)
 
     cli = X2DClient(creds, on_state=_on_state)
     try:
@@ -4027,8 +4060,8 @@ def cmd_tail(args: argparse.Namespace) -> int:
     stop = _Event()
     try:
         # Idle the main thread; events come in via the on_state callback
-        # which runs on the paho client thread. wait() releases the GIL
-        # so Ctrl-C is responsive.
+        # on the paho client thread. wait() releases the GIL so Ctrl-C
+        # is responsive.
         stop.wait()
     except KeyboardInterrupt:
         if not args.json:

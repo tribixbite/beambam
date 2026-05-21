@@ -89,7 +89,23 @@ Ordered by user-visible impact. Pick any 3-5 for the next release cut.
   with plate N removed (refuses if N is the only plate). 32 unit tests
   in `tests/test_plate.py` against the bundled rumi fixture (1-plate)
   + synthetic 2-plate 3MFs.
-- [ ] `beambam tail` — stream HMS errors + state changes as a live log
+- [x] `beambam tail` — push-driven event-stream CLI (this round).
+  Connects via MQTT, registers an `on_state` callback, and emits one
+  line per delta: state transitions (`IDLE -> RUNNING`), progress
+  milestones (every 10 % bucket crossed), and HMS code add/clear with
+  canonical `AAAA_BBBB_CCCC_DDDD` hex format (so codes are
+  paste-able into the Bambu HMS error pages) + decoded description
+  from `beambam.doctor.HMS_DESCRIPTIONS`. `--every-state` opts into
+  per-layer lines (chatty); `--json` swaps the human format for
+  ndjson with `{ts, category, level, message}`. Diff engine extracted
+  as `_TailDispatcher` so it's testable without MQTT or threads — 16
+  unit tests in `tests/test_tail.py`. Live-verified against real X2D
+  `00M09A000000000 @ 192.168.1.42`: connected in <1 s, surfaced two
+  active HMS codes (`0500_0600_0002_0070`, `0702_2100_0002_0025`) in
+  canonical form. Caught a real bug along the way — the `attr`/`code`
+  int-pair firmware variant (which our printer uses) needed splitting
+  into hex high/low halves before the form would match
+  `HMS_DESCRIPTIONS` keys.
 - [x] `beambam upgrade` — pip self-upgrade. Queries PyPI JSON API for
   the latest stable (filters yanked + pre-releases unless `--pre`),
   diffs against `importlib.metadata.version("beambam")`, then invokes
