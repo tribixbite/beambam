@@ -104,6 +104,17 @@ def _live_printer_env_set() -> bool:
     return bool(os.environ.get("BEAMBAM_TEST_IP"))
 
 
+# Tests that drive amqtt in-process broker fixtures. amqtt has known
+# race bugs (`dictionary changed size during iteration`, NoneType
+# comparison in PluginManager) that surface as intermittent failures
+# under CI load even on Linux. Retry once before failing.
+_AMQTT_BACKED_TESTS = {
+    "runtime/ha/test_ha.py",
+    "runtime/ha/test_multi_printer.py",
+    "runtime/ha/test_snapshot.py",
+}
+
+
 # Tests that fail INSIDE the script (not at our wrapper-level timeout)
 # on macOS GHA — amqtt's PUBACK timeout is 10 s and the test internally
 # times out long before any wrapper-side timeout helps. The same code
@@ -227,24 +238,42 @@ def test_runtime_script(test_path: Path, runtime_env: dict[str, str]):
 
     timeout = _timeout_for(rel)
     argv = [sys.executable, str(test_path), *_EXTRA_ARGS.get(rel, [])]
-    try:
-        result = subprocess.run(
-            argv,
-            cwd=str(REPO_ROOT),
-            env=runtime_env,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-        )
-    except subprocess.TimeoutExpired as e:
+
+    # amqtt-driven HA tests sometimes fail with internal library races
+    # (`dictionary changed size during iteration`, plugin-manager
+    # NoneType compares). Retry once before failing — a clean second
+    # run is fine. Other tests don't retry, so legitimate bugs still
+    # surface on the first failure.
+    attempts = 2 if rel in _AMQTT_BACKED_TESTS else 1
+    result = None
+    last_err = None
+    for _attempt in range(attempts):
+        try:
+            result = subprocess.run(
+                argv,
+                cwd=str(REPO_ROOT),
+                env=runtime_env,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+            )
+        except subprocess.TimeoutExpired as e:
+            last_err = e
+            result = None
+            continue
+        if result.returncode == 0:
+            break
+
+    if result is None:
+        e = last_err
         pytest.fail(
-            f"{rel} exceeded {timeout}s timeout\n"
+            f"{rel} exceeded {timeout}s timeout ({attempts} attempt(s))\n"
             f"stdout tail:\n{(e.stdout or '')[-2000:]}\n"
             f"stderr tail:\n{(e.stderr or '')[-2000:]}")
 
     if result.returncode != 0:
         pytest.fail(
-            f"{rel} exited {result.returncode}\n"
+            f"{rel} exited {result.returncode} ({attempts} attempt(s))\n"
             f"stdout tail:\n{result.stdout[-4000:]}\n"
             f"stderr tail:\n{result.stderr[-2000:]}")
 
