@@ -182,9 +182,14 @@ Remaining endpoints from the catalog worth wiring:
   MakerWorld, Daemon, Doctor) and add `beambam help <topic>` aliasing
   to `beambam <topic> --help`. Stretch: argcomplete + a `beambam tldr`
   showing the 5 most-used commands.
-- [ ] **`beambam init --cloud-only`** — current `init` wizard requires
-  a LAN-reachable printer; add a path for users who only want cloud-mode
-  control (skips discovery, just runs the OAuth login).
+- [x] **`beambam init --cloud-only`** (this round) — skips SSDP /
+  connectivity / `~/.x2d/credentials` entirely. Runs `cloud-login
+  --code-only` flow directly (email → Bambu sends 6-digit code → enter
+  → session saved to `~/.x2d/cloud_session.json`). Right for `uvx
+  beambam` users whose printer isn't on the current LAN. Flags:
+  `--email` / `--email-code` / `--region` (us|china). Honors
+  `$BAMBU_EMAIL`. 5 unit tests in `tests/test_init_wizard.py` (LAN path
+  guard, non-interactive failure, login error, env fallback).
 
 ### FCM snapshot harvester ([HANDY_DATA_AUDIT_PART2.md](runtime/handy_extract/HANDY_DATA_AUDIT_PART2.md))
 - [x] Promoted `runtime/handy_extract/fcm_snapshot_harvest.py` to bridge

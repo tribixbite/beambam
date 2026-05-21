@@ -28,6 +28,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import os
 import socket
 import sys
 from typing import Optional
@@ -98,11 +99,73 @@ def _resolve_target(args: argparse.Namespace):
     return p.ip, p.serial, p.name or "?", p.model or ""
 
 
+def _cmd_init_cloud_only(args: argparse.Namespace) -> int:
+    """Initialise a cloud-only beambam install: log into Bambu Cloud
+    (via the code-only email flow) and stop. No LAN credentials, no
+    discovery, no connectivity test. For users who only want cloud-
+    mediated control of a remote printer.
+
+    Returns 0 on successful login, 1 on login failure, 2 on missing
+    --email under --non-interactive.
+    """
+    import cloud_client
+
+    print("Cloud-only mode — skipping LAN discovery + connectivity test.\n")
+
+    email = args.email or os.environ.get("BAMBU_EMAIL", "")
+    if not email:
+        if args.non_interactive:
+            print("--non-interactive requires --email (or $BAMBU_EMAIL)",
+                  file=sys.stderr)
+            return 2
+        try:
+            email = _prompt("Bambu account email")
+        except (EOFError, KeyboardInterrupt):
+            print("\naborted", file=sys.stderr)
+            return 1
+
+    region = args.region or "us"
+
+    def _prompt_for_code(addr: str) -> str:
+        if args.email_code:
+            return args.email_code.strip()
+        if args.non_interactive:
+            raise SystemExit(
+                "--non-interactive needs --email-code for the code prompt")
+        print(f"\nBambu emailed a 6-digit verification code to {addr}.")
+        return _prompt("Enter the code")
+
+    cli = cloud_client.CloudClient.load_or_anonymous()
+    try:
+        cli.login_code_only(email, region=region,
+                             code_resolver=_prompt_for_code)
+    except cloud_client.CloudError as e:
+        print(f"\ncloud-login failed: {e}", file=sys.stderr)
+        return 1
+
+    print(f"\n✓ logged in as user {cli.session.user_id} "
+          f"(region={cli.session.region})")
+    print(f"  session saved to ~/.x2d/cloud_session.json (chmod 0600)\n")
+    print(f"Next steps:")
+    print(f"  beambam cloud-printers      — list your bound printers")
+    print(f"  beambam cloud-search Q      — search MakerWorld for models")
+    print(f"  beambam cloud-print-design ID — download + slice + print")
+    print(f"  beambam --help              — every subcommand")
+    return 0
+
+
 def cmd_init(args: argparse.Namespace) -> int:
     from beambam.config import Creds
     from beambam.configcli import _section_name, list_sections, _save, _load
 
     print("beambam init — first-run setup wizard\n")
+
+    # Cloud-only path: skip SSDP / LAN connectivity / credentials file
+    # entirely. Drives `cloud-login --code-only` so the user lands with a
+    # working `~/.x2d/cloud_session.json` and can use cloud-* commands
+    # immediately. Right for `uvx beambam` users not on the printer's LAN.
+    if getattr(args, "cloud_only", False):
+        return _cmd_init_cloud_only(args)
 
     # Step 1+2: discover + pick (or use --ip/--serial)
     try:
@@ -205,5 +268,21 @@ def add_subparser(sub: "argparse._SubParsersAction") -> argparse.ArgumentParser:
                    help="Overwrite existing section without prompting")
     p.add_argument("--non-interactive", action="store_true",
                    help="Don't prompt; require all of --ip --serial --code")
+    p.add_argument("--cloud-only", action="store_true",
+                   help="Skip LAN discovery + connectivity test entirely. "
+                        "Runs the email-code Bambu Cloud login flow and "
+                        "writes ~/.x2d/cloud_session.json. Use when the "
+                        "printer isn't on this LAN, or when you only want "
+                        "cloud-mediated control.")
+    p.add_argument("--email",
+                   help="Bambu account email (used by --cloud-only; or "
+                        "$BAMBU_EMAIL). Required under --non-interactive.")
+    p.add_argument("--email-code",
+                   help="6-digit code Bambu emails (used by --cloud-only). "
+                        "Pass this in --non-interactive mode to skip the "
+                        "prompt; otherwise the wizard prompts after sending.")
+    p.add_argument("--region", default=None,
+                   help="Cloud region for --cloud-only login (us / china). "
+                        "Default us.")
     p.set_defaults(fn=cmd_init)
     return p

@@ -114,7 +114,9 @@ def test_resolve_target_multi_printer_prompts(monkeypatch):
 def _full_args(**overrides):
     """Build the full init Namespace with sensible defaults."""
     base = dict(name=None, ip=None, serial=None, code=None,
-                timeout=0.1, force=False, non_interactive=True)
+                timeout=0.1, force=False, non_interactive=True,
+                # --cloud-only branch fields (default off).
+                cloud_only=False, email=None, email_code=None, region=None)
     base.update(overrides)
     return argparse.Namespace(**base)
 
@@ -217,3 +219,114 @@ def test_subparser_with_all_flags():
     assert args.timeout == 10.0
     assert args.force is True
     assert args.non_interactive is True
+
+
+# ----- --cloud-only branch --------------------------------------------------
+
+
+def test_subparser_cloud_only_flag():
+    p = argparse.ArgumentParser()
+    sub = p.add_subparsers()
+    add_subparser(sub)
+    ns = p.parse_args([
+        "init", "--cloud-only", "--email", "u@example.com",
+        "--email-code", "123456", "--region", "us",
+    ])
+    assert ns.cloud_only is True
+    assert ns.email == "u@example.com"
+    assert ns.email_code == "123456"
+    assert ns.region == "us"
+
+
+def test_cloud_only_skips_lan_path_entirely(monkeypatch, capsys):
+    """The --cloud-only path must NOT call _resolve_target or _check_tcp.
+    If either is invoked, the LAN flow leaked into the cloud path."""
+    import beambam.init_wizard as iw
+    import cloud_client
+
+    def _boom_lan(*_a, **_kw):
+        raise AssertionError(
+            "LAN code reached under --cloud-only — flag isn't gating")
+    monkeypatch.setattr(iw, "_resolve_target", _boom_lan)
+    monkeypatch.setattr(iw, "_check_tcp", _boom_lan)
+
+    # Replace login_code_only with a stub that records the call and
+    # populates the session so the success path can be exercised.
+    calls = []
+
+    def _stub_login(self, email, region=None, code_resolver=None):
+        calls.append({"email": email, "region": region,
+                       "resolver": code_resolver})
+        self.session = cloud_client.Session(
+            access_token="AT", refresh_token="RT",
+            expires_at=9999999999, user_id="42", region=region or "us")
+
+    monkeypatch.setattr(cloud_client.CloudClient, "login_code_only",
+                         _stub_login)
+
+    args = _full_args(cloud_only=True, email="user@example.com",
+                       email_code="123456", region="us")
+    rc = cmd_init(args)
+    assert rc == 0
+    assert len(calls) == 1
+    assert calls[0]["email"] == "user@example.com"
+    assert calls[0]["region"] == "us"
+    out = capsys.readouterr().out
+    assert "logged in" in out
+    assert "user 42" in out
+    assert "cloud-printers" in out  # next-steps hint
+
+
+def test_cloud_only_no_email_non_interactive_fails(creds_file):
+    """Non-interactive cloud-only without --email must exit 2."""
+    args = _full_args(cloud_only=True, non_interactive=True, email=None)
+    rc = cmd_init(args)
+    assert rc == 2
+
+
+def test_cloud_only_login_failure_returns_1(monkeypatch, capsys):
+    """A CloudError on login_code_only must surface as exit 1 with a
+    clean stderr message — NOT crash."""
+    import beambam.init_wizard as iw
+    import cloud_client
+
+    monkeypatch.setattr(iw, "_resolve_target",
+                         lambda *_a, **_kw: pytest.fail("LAN path reached"))
+
+    def _raise(self, *args, **kw):
+        raise cloud_client.CloudError("403 bad credentials")
+    monkeypatch.setattr(cloud_client.CloudClient, "login_code_only", _raise)
+
+    args = _full_args(cloud_only=True, email="u@example.com",
+                       email_code="000000", region="us")
+    rc = cmd_init(args)
+    assert rc == 1
+    assert "cloud-login failed" in capsys.readouterr().err
+
+
+def test_cloud_only_uses_env_BAMBU_EMAIL_when_no_flag(monkeypatch):
+    """--email is optional under --non-interactive=False if $BAMBU_EMAIL
+    is set (matches cmd_cloud_login's behavior)."""
+    import beambam.init_wizard as iw
+    import cloud_client
+
+    monkeypatch.setenv("BAMBU_EMAIL", "fromenv@example.com")
+    monkeypatch.setattr(iw, "_resolve_target",
+                         lambda *_a, **_kw: pytest.fail("LAN path reached"))
+
+    seen = {}
+
+    def _stub_login(self, email, region=None, code_resolver=None):
+        seen["email"] = email
+        self.session = cloud_client.Session(
+            access_token="AT", refresh_token="RT",
+            expires_at=9999999999, user_id="42", region="us")
+
+    monkeypatch.setattr(cloud_client.CloudClient, "login_code_only",
+                         _stub_login)
+
+    args = _full_args(cloud_only=True, email=None,
+                       email_code="123456", region="us")
+    rc = cmd_init(args)
+    assert rc == 0
+    assert seen["email"] == "fromenv@example.com"
