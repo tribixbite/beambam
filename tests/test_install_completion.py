@@ -95,8 +95,8 @@ def test_emit_zsh_compdef_and_describe():
 def test_emit_fish_one_complete_line_per_subcmd():
     out = emit_fish(discover_subcommands(_toy_parser()))
     body_lines = [
-        l for l in out.splitlines()
-        if l.startswith("complete -c beambam ")
+        line for line in out.splitlines()
+        if line.startswith("complete -c beambam ")
     ]
     assert len(body_lines) == 4
     # fish descriptions are single-quoted; sanitize apostrophes too.

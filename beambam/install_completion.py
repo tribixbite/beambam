@@ -31,7 +31,6 @@ the user still needs (e.g. fpath+= for zsh).
 from __future__ import annotations
 
 import argparse
-import os
 import sys
 from pathlib import Path
 from typing import Iterable

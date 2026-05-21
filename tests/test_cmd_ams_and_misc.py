@@ -247,9 +247,10 @@ def test_cmd_files_sys_exits_on_missing_module(monkeypatch):
     import x2d_bridge
 
     # Inject a broken module that raises ImportError on attribute access.
-    sentinel = "_x2d_missing_file_tunnel"
+    # `sys.modules[name] = None` makes `from <name> import X` raise
+    # ImportError without us providing a real module.
     monkeypatch.setitem(sys.modules, "runtime.network_shim.file_tunnel",
-                         None)  # `from <None> import X` raises ImportError
+                         None)
     with pytest.raises(SystemExit) as exc:
         x2d_bridge.cmd_files(_args(kind="sdcard", json=True))
     # SystemExit's str() should mention the missing module.
