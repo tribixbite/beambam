@@ -7,7 +7,7 @@
             title: 'Setup',
             description: 'Get a fresh install to "working" in one command.',
             cmds: [
-                { name: 'init',     desc: 'Interactive first-run wizard (discover \u2192 code \u2192 test \u2192 write).', example: 'beambam init --name studio', v: 'v1.2' },
+                { name: 'init',     desc: 'Interactive first-run wizard (discover → code → test → write).', example: 'beambam init --name studio', v: 'v1.2' },
                 { name: 'find',     desc: 'SSDP LAN discovery.', example: 'beambam find --timeout 5', v: 'v1.2' },
                 { name: 'config',   desc: 'Credentials editor (list / show / add / remove / rename).', example: 'beambam config list --reveal', v: 'v1.2' }
             ]
@@ -34,7 +34,7 @@
             title: 'AMS',
             description: 'Slot inspection + filament control.',
             cmds: [
-                { name: 'ams status',  desc: 'Pretty AMS state \u2014 colors, humidity, slots.', v: 'v1.2' },
+                { name: 'ams status',  desc: 'Pretty AMS state — colors, humidity, slots.', v: 'v1.2' },
                 { name: 'ams info N',  desc: 'Detail for one tray by global slot 0..15.', v: 'v1.2' },
                 { name: 'ams load N',  desc: 'Load filament from slot N.' },
                 { name: 'ams unload',  desc: 'Unload current filament.' },
@@ -51,7 +51,7 @@
                 { name: 'files',     desc: 'List printer SD contents.' },
                 { name: 'fetch',     desc: 'Download from MakerWorld / direct URL.' },
                 { name: 'slice',     desc: 'Standalone STL slice via BambuStudio CLI.', example: 'beambam slice model.stl -o out.gcode.3mf', v: 'v1.2' },
-                { name: 'analyze',   desc: 'Dissect a local .gcode.3mf \u2014 flushes, AMS, hints.', example: 'beambam analyze model.gcode.3mf', v: 'v1.2' },
+                { name: 'analyze',   desc: 'Dissect a local .gcode.3mf — flushes, AMS, hints.', example: 'beambam analyze model.gcode.3mf', v: 'v1.2' },
                 { name: 'frame',     desc: 'Generate a picture-frame STL with debossed text.', example: 'beambam frame --preset rumi -o rumi.stl', v: 'v1.2' }
             ]
         },
@@ -74,7 +74,7 @@
             title: 'Diagnostics',
             description: 'Pre-print sanity + debugging.',
             cmds: [
-                { name: 'doctor',   desc: 'Full health check \u2014 AMS, HMS, sensors, wifi.', v: 'v1.2' },
+                { name: 'doctor',   desc: 'Full health check — AMS, HMS, sensors, wifi.', v: 'v1.2' },
                 { name: 'health',   desc: 'Connectivity + MQTT smoke test.' },
                 { name: 'mqtt sub', desc: 'Stream the printer reply topic.', v: 'v1.2' },
                 { name: 'mqtt pub', desc: 'Sign + publish arbitrary JSON.', example: 'beambam mqtt pub \'{"print":{"command":"pause"}}\'', v: 'v1.2' }
@@ -126,28 +126,29 @@
 </svelte:head>
 
 <section>
-    <div class="frame py-[var(--space-3xl)] grid md:grid-cols-12 gap-x-[var(--space-2xl)] gap-y-[var(--space-2xl)]">
+    <div class="frame py-[var(--space-3xl)] grid gap-[var(--space-2xl)] md:grid-cols-12 md:gap-x-[var(--space-2xl)]">
 
+        <!-- HEADER COLUMN — also acts as sidebar nav on desktop -->
         <div class="md:col-span-4">
-            <div class="label mb-[var(--space-md)]">Section 03 &middot; Command index</div>
+            <div class="label mb-[var(--space-md)]">03 · Command index</div>
             <h1 class="mb-[var(--space-lg)]" style="font-size: var(--text-2xl);">
-                <span style="color: var(--color-accent);">{total}</span>&nbsp;sub&shy;commands.
+                <span style="color: var(--color-accent);">{total}</span>&nbsp;subcommands.
             </h1>
-            <p class="leading-[1.65] max-w-[42ch]" style="color: var(--color-mute);">
-                Each verb is also importable as a Python module under
-                <code>beambam.</code>. Every command accepts
-                <code>--ip</code> / <code>--code</code> / <code>--serial</code> /
-                <code>--printer&nbsp;NAME</code> to override the default printer
-                section.
+            <p class="leading-[1.65] max-w-[42ch] text-[var(--text-sm)] sm:text-[var(--text-base)]" style="color: var(--color-mute);">
+                Each verb is also importable under <code>beambam.</code>. Every
+                command accepts <code>--ip</code> / <code>--code</code> /
+                <code>--serial</code> / <code>--printer&nbsp;NAME</code> to override
+                the default printer section.
             </p>
 
-            <nav class="mt-[var(--space-2xl)] hidden md:block sticky top-[var(--space-2xl)]">
+            <!-- Desktop sticky TOC. Hidden on mobile — sections scroll naturally. -->
+            <nav class="mt-[var(--space-xl)] hidden md:block sticky" style="top: 72px;">
                 <div class="label mb-[var(--space-sm)]">In this index</div>
                 <ol class="space-y-[var(--space-xs)] font-[var(--font-mono)] text-[var(--text-xs)] uppercase tracking-widest">
                     {#each sections as { id, title, cmds }, i}
                         <li>
                             <a href={'#' + id}
-                               class="no-underline flex items-baseline gap-[var(--space-md)]"
+                               class="no-underline flex items-baseline gap-[var(--space-md)] py-[2px]"
                                style="text-decoration: none; color: var(--color-mute);">
                                 <span style="color: var(--color-mute-2);">{String(i + 1).padStart(2, '0')}</span>
                                 <span>{title}</span>
@@ -157,12 +158,27 @@
                     {/each}
                 </ol>
             </nav>
+
+            <!-- Mobile TOC chip strip — horizontal scroll, easy thumb-tap -->
+            <nav class="md:hidden mt-[var(--space-xl)] -mx-[var(--space-xl)] overflow-x-auto" style="scrollbar-width: none;">
+                <div class="flex gap-[var(--space-sm)] px-[var(--space-xl)] pb-[var(--space-sm)]" style="white-space: nowrap;">
+                    {#each sections as { id, title }, i}
+                        <a href={'#' + id}
+                           class="badge no-underline shrink-0"
+                           style="text-decoration: none; color: var(--color-mute);">
+                            <span style="color: var(--color-mute-2);">{String(i + 1).padStart(2, '0')}</span>
+                            &nbsp;{title}
+                        </a>
+                    {/each}
+                </div>
+            </nav>
         </div>
 
-        <div class="md:col-span-8 space-y-[var(--space-5xl)]">
+        <!-- COMMAND LIST BODY -->
+        <div class="md:col-span-8 min-w-0 space-y-[var(--space-4xl)]">
             {#each sections as { id, title, description, cmds }, i}
-                <section id={id} class="scroll-mt-[var(--space-3xl)]">
-                    <header class="pb-[var(--space-md)] mb-[var(--space-lg)] flex items-baseline gap-[var(--space-lg)]" style="border-bottom: 1px solid var(--color-hair);">
+                <section id={id} class="scroll-mt-[80px]">
+                    <header class="pb-[var(--space-md)] mb-[var(--space-lg)] flex items-baseline gap-[var(--space-md)] sm:gap-[var(--space-lg)] flex-wrap" style="border-bottom: 1px solid var(--color-hair);">
                         <span class="font-[var(--font-mono)] text-[var(--text-xs)]" style="color: var(--color-mute-2);">{String(i + 1).padStart(2, '0')}</span>
                         <h2 class="text-[var(--text-xl)] leading-none m-0" style="color: var(--color-ink);">{title}</h2>
                         <span class="ml-auto label">{cmds.length} commands</span>
@@ -171,18 +187,18 @@
 
                     <dl class="grid gap-y-[var(--space-md)]">
                         {#each cmds as { name, desc, example, v }}
-                            <div class="grid md:grid-cols-12 gap-x-[var(--space-lg)] py-[var(--space-md)] last:border-0"
+                            <div class="grid md:grid-cols-12 gap-x-[var(--space-lg)] gap-y-[var(--space-xs)] py-[var(--space-md)] last:border-0"
                                  style="border-bottom: 1px dashed var(--color-hair);">
-                                <dt class="md:col-span-4 font-[var(--font-mono)] text-[var(--text-sm)] flex items-baseline gap-[var(--space-sm)]" style="color: var(--color-ink);">
+                                <dt class="md:col-span-4 font-[var(--font-mono)] text-[var(--text-sm)] flex items-baseline gap-[var(--space-sm)] flex-wrap" style="color: var(--color-ink); word-break: break-word;">
                                     <span>beambam&nbsp;{name}</span>
                                     {#if v}
                                         <span class="text-[10px] uppercase tracking-widest font-[var(--font-mono)]" style="color: var(--color-accent-dim);">{v}</span>
                                     {/if}
                                 </dt>
-                                <dd class="md:col-span-8 text-[var(--text-sm)] leading-[1.6]" style="color: var(--color-mute);">
+                                <dd class="md:col-span-8 text-[var(--text-sm)] leading-[1.6] min-w-0" style="color: var(--color-mute);">
                                     {desc}
                                     {#if example}
-                                        <div class="mt-[var(--space-xs)] text-[var(--text-xs)] font-[var(--font-mono)] opacity-80" style="color: var(--color-accent-dim);">{example}</div>
+                                        <div class="mt-[var(--space-xs)] text-[var(--text-xs)] font-[var(--font-mono)] opacity-80" style="color: var(--color-accent-dim); word-break: break-word;">{example}</div>
                                     {/if}
                                 </dd>
                             </div>
@@ -193,10 +209,9 @@
 
             <hr class="hr-dashed" style="margin: 0;" />
             <p class="text-[var(--text-sm)] leading-[1.6]" style="color: var(--color-mute);">
-                For full per-command help: <code>beambam &lt;cmd&gt; --help</code>.
-                For long-form deep-dives: <a href="/docs">/docs</a>.
-                For new-in-v1.2 commands, the version tag appears next to the
-                command name above.
+                Full per-command help: <code>beambam &lt;cmd&gt; --help</code>.
+                Deep-dive docs: <a href="/docs">/docs</a>.
+                v1.2 tag marks commands new in the current release.
             </p>
         </div>
     </div>

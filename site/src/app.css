@@ -3,20 +3,12 @@
 /* ====================================================================
    beambam.boo — machine-shop blueprint aesthetic
 
-   Type stack (committed, no monoculture):
-     Display:  "Big Shoulders Display" (Google) — industrial, bold,
-               carries the wordmark + section headers
-     Body:     "Atkinson Hyperlegible" (Google) — designed for low-vision
-               utility, distinctive humanist sans, runs body + UI
-     Mono:     "Departure Mono" (free CC license) — workshop-grade
-               monospace with bitmap heritage, carries all code/CLI/data
+   Mobile-first responsive. Type stack:
+     Display:  Big Shoulders Display (Google) — industrial, bold
+     Body:     Atkinson Hyperlegible (Google) — humanist, distinctive
+     Mono:     Departure Mono (CC) — workshop-grade bitmap mono
 
-   Color (OKLCH, neutrals tinted toward filament amber for cohesion):
-     Surface:  oklch(15% 0.005 65)    near-black graphite, faint warm tint
-     Ink:      oklch(96% 0.01 65)     paper, faint warm tint
-     Mute:     oklch(60% 0.012 65)    captions/labels
-     Hair:     oklch(28% 0.005 65)    borders, dashed dividers, rules
-     Accent:   oklch(72% 0.18 65)     molten-filament amber — earned, rare
+   Color: OKLCH neutrals tinted toward filament amber for cohesion.
    ==================================================================== */
 
 @font-face {
@@ -28,19 +20,20 @@
 }
 
 @theme {
-    /* Type */
+    /* Type families */
     --font-display: 'Big Shoulders Display', 'Arial Black', sans-serif;
     --font-sans: 'Atkinson Hyperlegible', system-ui, sans-serif;
     --font-mono: 'Departure Mono', ui-monospace, 'SF Mono', Menlo, monospace;
 
-    /* Type scale — perfect-fourth (1.333), 5 sizes, fluid on hero */
+    /* Type scale — perfect-fourth (1.333). Hero gets a sane mobile minimum
+       so it doesn't blow out a 360px viewport. */
     --text-xs: 0.75rem;
     --text-sm: 0.875rem;
     --text-base: 1rem;
-    --text-lg: 1.333rem;
-    --text-xl: clamp(1.75rem, 1.2rem + 2.5vw, 2.5rem);
-    --text-2xl: clamp(2.5rem, 1.5rem + 5vw, 4.5rem);
-    --text-hero: clamp(4rem, 2rem + 12vw, 9rem);
+    --text-lg: 1.25rem;
+    --text-xl: clamp(1.5rem, 1.1rem + 1.5vw, 2.25rem);
+    --text-2xl: clamp(2rem, 1.4rem + 3vw, 3.5rem);
+    --text-hero: clamp(3.5rem, 2rem + 9vw, 9rem);
 
     /* Space — 4pt scale, semantic names */
     --space-xs: 0.25rem;
@@ -54,24 +47,36 @@
     --space-5xl: 6rem;
     --space-6xl: 9rem;
 
-    /* Color */
+    /* Color — OKLCH */
     --color-surface: oklch(15% 0.005 65);
     --color-surface-2: oklch(18% 0.005 65);
+    --color-surface-3: oklch(12% 0.005 65);
     --color-ink: oklch(96% 0.01 65);
     --color-mute: oklch(60% 0.012 65);
     --color-mute-2: oklch(45% 0.01 65);
     --color-hair: oklch(28% 0.005 65);
+    --color-hair-soft: oklch(22% 0.005 65);
     --color-accent: oklch(72% 0.18 65);
-    --color-accent-dim: oklch(60% 0.14 65);
+    --color-accent-dim: oklch(58% 0.14 65);
+    --color-grid: oklch(20% 0.005 65);
 }
 
-/* ----- Base reset ---------------------------------------------------- */
+/* ----- Base reset --------------------------------------------------- */
+
+* {
+    /* prevent any single element forcing horizontal overflow */
+    min-width: 0;
+}
 
 html {
     color-scheme: dark;
     background: var(--color-surface);
     color: var(--color-ink);
     line-height: 1.5;
+    /* prevent overscroll bounce revealing white on mobile Safari */
+    overscroll-behavior: none;
+    /* iOS Safari tap-highlight off */
+    -webkit-tap-highlight-color: transparent;
 }
 
 body {
@@ -79,8 +84,9 @@ body {
     font-size: var(--text-base);
     text-rendering: optimizeLegibility;
     -webkit-font-smoothing: antialiased;
-    /* increase leading for light-on-dark per typography rules */
     line-height: 1.6;
+    /* the absolute belt-and-braces against horizontal overflow */
+    overflow-x: hidden;
 }
 
 ::selection {
@@ -88,7 +94,34 @@ body {
     color: var(--color-surface);
 }
 
-/* ----- Typography defaults ------------------------------------------ */
+/* ----- Subtle engineering-paper backdrop ----------------------------
+   Faint grid that suggests a drafting board without crossing into the
+   AI-cyan-grid-on-dark trope. Lives on the body via a fixed pseudo-
+   element so it doesn't scroll. Opacity intentionally low. */
+
+body::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    z-index: 0;
+    background-image:
+        linear-gradient(to right, var(--color-grid) 1px, transparent 1px),
+        linear-gradient(to bottom, var(--color-grid) 1px, transparent 1px);
+    background-size: 48px 48px;
+    opacity: 0.4;
+    /* mask fades the grid as it nears the bottom so footer content sits clean */
+    -webkit-mask-image: linear-gradient(to bottom, black 0%, black 70%, transparent 100%);
+    mask-image: linear-gradient(to bottom, black 0%, black 70%, transparent 100%);
+}
+
+/* Push everything above the grid */
+body > * {
+    position: relative;
+    z-index: 1;
+}
+
+/* ----- Typography defaults ----------------------------------------- */
 
 h1, h2, h3, h4 {
     font-family: var(--font-display);
@@ -108,7 +141,6 @@ code, pre, kbd, samp {
     font-feature-settings: 'liga' 0, 'calt' 0;
 }
 
-/* Anchor links: hairline underline default, amber on hover */
 a {
     color: var(--color-ink);
     text-decoration: underline;
@@ -118,29 +150,38 @@ a {
     transition: text-decoration-color 0.15s ease, color 0.15s ease;
 }
 
-a:hover {
+a:hover, a:focus-visible {
     color: var(--color-accent);
     text-decoration-color: var(--color-accent);
+}
+
+a:focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 4px;
 }
 
 /* Inline code */
 :not(pre) > code {
     font-size: 0.875em;
     color: var(--color-accent);
-    background: oklch(20% 0.005 65);
+    background: var(--color-surface-2);
     padding: 0.05em 0.35em;
     border-radius: 2px;
     line-height: 1;
+    /* allow long inline code (commands) to wrap on mobile */
+    word-break: break-word;
 }
 
 pre {
-    font-size: var(--text-sm);
+    font-size: clamp(0.75rem, 0.7rem + 0.2vw, 0.875rem);
     line-height: 1.6;
     overflow-x: auto;
     color: var(--color-ink);
-    background: oklch(11% 0.005 65);
+    background: var(--color-surface-3);
     border: 1px solid var(--color-hair);
-    padding: var(--space-lg) var(--space-xl);
+    padding: var(--space-md) var(--space-lg);
+    /* prevent pre from blowing out the viewport on mobile */
+    max-width: 100%;
 }
 
 pre code {
@@ -150,11 +191,17 @@ pre code {
     font-size: inherit;
 }
 
-/* ----- Reusable workshop primitives ---------------------------------
-   Not cards — page-element building blocks borrowed from engineering
-   drawings: dashed hairlines, label-and-value rows, ID badges,
-   footnote markers. */
+/* ----- Page primitives ---------------------------------------------- */
 
+/* Container with mobile-first padding (cleverkeys pattern) */
+.frame {
+    max-width: 78rem;
+    margin-inline: auto;
+    padding-inline: clamp(1rem, 0.5rem + 2vw, 3rem);
+    width: 100%;
+}
+
+/* Dashed horizontal rule — blueprint fold */
 .hr-dashed {
     border: 0;
     border-top: 1px dashed var(--color-hair);
@@ -162,6 +209,7 @@ pre code {
     margin: var(--space-3xl) 0;
 }
 
+/* Tiny uppercase mono caption */
 .label {
     font-family: var(--font-mono);
     font-size: var(--text-xs);
@@ -170,6 +218,7 @@ pre code {
     color: var(--color-mute);
 }
 
+/* Drawing-style ID badge */
 .badge {
     font-family: var(--font-mono);
     font-size: var(--text-xs);
@@ -177,8 +226,41 @@ pre code {
     border: 1px solid var(--color-hair);
     padding: 0.1em 0.5em;
     white-space: nowrap;
+    display: inline-block;
 }
 
+/* Status pill — like cleverkeys', adapted to brand palette */
+.pill {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-sm);
+    border: 1px solid var(--color-hair);
+    background: var(--color-surface-3);
+    padding: var(--space-xs) var(--space-md);
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--color-mute);
+    border-radius: 0;
+}
+.pill-dot {
+    width: 6px;
+    height: 6px;
+    background: var(--color-accent);
+    box-shadow: 0 0 8px var(--color-accent);
+    flex-shrink: 0;
+    animation: pulse 2.4s ease-in-out infinite;
+}
+@keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.35; }
+}
+@media (prefers-reduced-motion: reduce) {
+    .pill-dot { animation: none; }
+}
+
+/* Drawing-style footnote marker */
 .fn {
     font-family: var(--font-mono);
     font-size: 0.7em;
@@ -187,19 +269,46 @@ pre code {
     margin-left: 0.1em;
 }
 
-.frame {
-    max-width: 78rem;
-    margin: 0 auto;
-    padding-inline: var(--space-xl);
+/* Buttons */
+.btn-primary, .btn-secondary {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: var(--space-sm);
+    padding: var(--space-md) var(--space-xl);
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    text-decoration: none;
+    /* 44px-min touch target via padding alone — 0.75rem×2 + line-height */
+    min-height: 44px;
+    border: 1px solid transparent;
+    transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease, transform 0.1s ease;
+}
+.btn-primary {
+    background: var(--color-accent);
+    color: var(--color-surface) !important;
+    border-color: var(--color-accent);
+}
+.btn-primary:hover, .btn-primary:focus-visible {
+    background: oklch(78% 0.18 65);
+    color: var(--color-surface) !important;
+    text-decoration: none;
+}
+.btn-primary:active { transform: translateY(1px); }
+.btn-secondary {
+    background: transparent;
+    color: var(--color-ink) !important;
+    border-color: var(--color-hair);
+}
+.btn-secondary:hover, .btn-secondary:focus-visible {
+    border-color: var(--color-accent);
+    color: var(--color-accent) !important;
+    text-decoration: none;
 }
 
-@media (min-width: 768px) {
-    .frame {
-        padding-inline: var(--space-3xl);
-    }
-}
-
-/* Workshop-style data table */
+/* Workshop spec table */
 table.spec {
     width: 100%;
     border-collapse: collapse;
@@ -229,6 +338,76 @@ table.spec tbody tr:last-child td {
     border-bottom: 0;
 }
 
+table.spec tbody tr {
+    transition: background 0.1s ease;
+}
 table.spec tbody tr:hover td {
     background: oklch(17% 0.005 65);
+}
+
+/* Mobile printer card (used in /printers below the md breakpoint) */
+.spec-card {
+    padding: var(--space-lg) 0;
+    border-bottom: 1px dashed var(--color-hair);
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: var(--space-sm) var(--space-lg);
+    align-items: baseline;
+}
+.spec-card:last-child {
+    border-bottom: 0;
+}
+.spec-card .model {
+    font-family: var(--font-display);
+    font-weight: 800;
+    text-transform: uppercase;
+    font-size: var(--text-lg);
+    color: var(--color-ink);
+    line-height: 1.05;
+    letter-spacing: -0.01em;
+}
+.spec-card .family {
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    text-transform: uppercase;
+    letter-spacing: 0.12em;
+    color: var(--color-mute);
+    text-align: right;
+}
+.spec-card dl {
+    grid-column: 1 / -1;
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: var(--space-xs) var(--space-lg);
+    font-size: var(--text-sm);
+    margin-top: var(--space-xs);
+}
+.spec-card dt {
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    color: var(--color-mute);
+}
+.spec-card dd {
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    color: var(--color-ink);
+}
+
+/* Cursor blink in terminal-like blocks */
+.cursor {
+    display: inline-block;
+    width: 0.55em;
+    height: 1em;
+    background: var(--color-accent);
+    margin-left: 2px;
+    vertical-align: text-bottom;
+    animation: blink 1.1s steps(2, start) infinite;
+}
+@keyframes blink {
+    to { opacity: 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+    .cursor { animation: none; opacity: 0.6; }
 }

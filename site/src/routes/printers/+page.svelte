@@ -25,25 +25,14 @@
         { family: 'X2D',       model: 'X2D',         code: 'N6',      signed: 'required (dual)', notes: 'primary target — analyze developed here', primary: true }
     ];
 
-    const matrix = [
-        { key: 'status',    label: 'Status' },
-        { key: 'upload',    label: 'Upload' },
-        { key: 'print',     label: 'Print' },
-        { key: 'ams',       label: 'AMS' },
-        { key: 'camera',    label: 'Camera' }
-    ];
-
-    function cellFor(row: Row, key: string): string {
-        if (key === 'camera') {
-            if (row.family === 'X-series' || row.family === 'H-series' || row.family === 'X2D') return 'RTSPS';
-            return 'HTTP/MJPEG';
-        }
-        if (key === 'ams') {
-            if (row.family === 'A-series') return '\u2713 lite';
-            if (row.family === 'H-series' || row.family === 'X2D') return '\u2713 multi';
-            return '\u2713';
-        }
-        return '\u2713';
+    function camera(family: Family): string {
+        if (family === 'X-series' || family === 'H-series' || family === 'X2D') return 'RTSPS';
+        return 'HTTP/MJPEG';
+    }
+    function ams(family: Family): string {
+        if (family === 'A-series') return '✓ lite';
+        if (family === 'H-series' || family === 'X2D') return '✓ multi';
+        return '✓';
     }
 </script>
 
@@ -53,32 +42,33 @@
 
 <section>
     <div class="frame py-[var(--space-3xl)]">
-        <div class="label mb-[var(--space-md)]">Section 02 &middot; Compatibility matrix</div>
+        <div class="label mb-[var(--space-md)]">02 · Compatibility matrix</div>
         <h1 class="mb-[var(--space-xl)]" style="font-size: var(--text-2xl);">
             <span style="color: var(--color-accent);">13</span> printers, one bridge.
         </h1>
         <p class="max-w-[65ch] leading-[1.65]" style="color: var(--color-mute);">
             Every Bambu Lab printer that exposes the standard LAN MQTT
-            (port 8883, TLS) + FTPS (port 990, implicit TLS) surface. The
-            signed-MQTT requirement&nbsp;<sup class="fn">1</sup>&nbsp;is handled
-            transparently using the publicly-leaked Bambu Connect cert
-            (ID <code>GLOF1000000000-...</code>). No cloud account or
+            (port 8883, TLS) and FTPS (port 990, implicit TLS) surface.
+            The signed-MQTT requirement&nbsp;<sup class="fn">1</sup>&nbsp;is
+            handled transparently using the publicly-leaked Bambu Connect
+            cert (ID <code>GLOF1000000000-…</code>). No cloud account or
             Bambu-issued token needed for any operation here.
         </p>
 
         <hr class="hr-dashed" />
 
-        <div class="overflow-x-auto">
-            <table class="spec min-w-[64rem]">
+        <!-- DESKTOP TABLE (md+) -->
+        <div class="hidden md:block overflow-x-auto">
+            <table class="spec min-w-[58rem]">
                 <thead>
                     <tr>
                         <th class="w-[6rem]">Family</th>
-                        <th class="w-[7rem]">Model</th>
+                        <th class="w-[8rem]">Model</th>
                         <th class="w-[5rem]">Code</th>
                         <th class="w-[8rem]">Signed MQTT</th>
-                        {#each matrix as { label }}
-                            <th class="w-[6rem]">{label}</th>
-                        {/each}
+                        <th class="w-[5rem]">Print</th>
+                        <th class="w-[6rem]">AMS</th>
+                        <th class="w-[7rem]">Camera</th>
                         <th>Notes</th>
                     </tr>
                 </thead>
@@ -91,9 +81,9 @@
                             <td class="font-[var(--font-mono)] text-[var(--text-xs)]" style="color: var(--color-mute);">{row.code}</td>
                             <td class="font-[var(--font-mono)] text-[var(--text-xs)]"
                                 style="color: {row.signed.includes('dual') ? 'var(--color-accent)' : 'var(--color-ink)'};">{row.signed}</td>
-                            {#each matrix as { key }}
-                                <td class="font-[var(--font-mono)] text-[var(--text-sm)]" style="color: var(--color-ink);">{cellFor(row, key)}</td>
-                            {/each}
+                            <td class="font-[var(--font-mono)] text-[var(--text-sm)]" style="color: var(--color-ink);">✓</td>
+                            <td class="font-[var(--font-mono)] text-[var(--text-sm)]" style="color: var(--color-ink);">{ams(row.family)}</td>
+                            <td class="font-[var(--font-mono)] text-[var(--text-xs)]" style="color: var(--color-ink);">{camera(row.family)}</td>
                             <td class="text-[var(--text-sm)]" style="color: var(--color-mute);">{row.notes}</td>
                         </tr>
                     {/each}
@@ -101,7 +91,32 @@
             </table>
         </div>
 
-        <div class="mt-[var(--space-2xl)] grid md:grid-cols-2 gap-[var(--space-lg)] text-[var(--text-sm)] leading-[1.6] max-w-[80ch]" style="color: var(--color-mute);">
+        <!-- MOBILE CARD LIST (below md) — purpose-built mobile view, not a shrunken table -->
+        <div class="md:hidden">
+            {#each rows as row}
+                <div class="spec-card">
+                    <div class="model" style="color: {row.primary ? 'var(--color-accent)' : 'var(--color-ink)'};">{row.model}</div>
+                    <div class="family">{row.family}</div>
+                    <dl>
+                        <dt>Code</dt>
+                        <dd style="color: var(--color-mute);">{row.code}</dd>
+                        <dt>Signed</dt>
+                        <dd style="color: {row.signed.includes('dual') ? 'var(--color-accent)' : 'var(--color-ink)'};">{row.signed}</dd>
+                        <dt>AMS</dt>
+                        <dd style="color: var(--color-ink);">{ams(row.family)}</dd>
+                        <dt>Camera</dt>
+                        <dd style="color: var(--color-ink);">{camera(row.family)}</dd>
+                    </dl>
+                    {#if row.notes}
+                        <div class="col-span-full mt-[var(--space-sm)] text-[var(--text-xs)]" style="color: var(--color-mute); grid-column: 1 / -1;">
+                            {row.notes}
+                        </div>
+                    {/if}
+                </div>
+            {/each}
+        </div>
+
+        <div class="mt-[var(--space-2xl)] grid sm:grid-cols-2 gap-[var(--space-lg)] text-[var(--text-sm)] leading-[1.6] max-w-[80ch]" style="color: var(--color-mute);">
             <p>
                 <sup class="fn">1</sup>&nbsp;X1 / X1C with pre-2025 firmware accept
                 unsigned MQTT; the bridge signs anyway (no overhead, forward
@@ -120,7 +135,7 @@
                 <div class="label">Not listed?</div>
             </div>
             <div class="md:col-span-9 max-w-[55ch] leading-[1.65]" style="color: var(--color-mute);">
-                If your model has the LAN-MQTT switch in <em>Settings &rarr; Network</em>
+                If your model has the LAN-MQTT switch in <em>Settings → Network</em>
                 and lets you set an access code, it almost certainly works.
                 <a href="https://github.com/tribixbite/beambam/issues" target="_blank" rel="noopener">Open an issue</a>
                 with the <code>X-BBL-Device-Model</code> value from
