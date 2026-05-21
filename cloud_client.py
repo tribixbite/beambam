@@ -542,11 +542,120 @@ class CloudClient:
         return out
 
     def get_user_tasks(self, limit: int = 20) -> list[dict]:
-        """Recent print history (cloud queue + ad-hoc). Each entry has
-        task_id, design_id, plate, start_time, end_time, status, etc."""
-        path = f"/v1/iot-service/api/user/print?limit={int(limit)}"
-        r = self._authed_get(path)
-        return r.get("tasks") or r.get("hits") or r.get("data") or []
+        """Print-task history (a.k.a. subtasks): every print job this user
+        has run across all bound printers. Returns the `hits` array of
+        task records — each has id (task_id), designId, designTitle,
+        instanceId, deviceId, status, startTime, endTime, plate, cover
+        URL, etc. Use task_id with get_task() to pull full project
+        metadata + signed S3 URLs to the .3mf project file.
+
+        Was previously misnamed/wired to /v1/iot-service/api/user/print
+        which actually returns DEVICES. Corrected 2026-05-21."""
+        r = self._authed_get(f"/v1/user-service/my/tasks?limit={int(limit)}")
+        return r.get("hits") or []
+
+    def get_task(self, task_id: int | str) -> dict:
+        """Fetch a single print task by its numeric ID. Returns full task
+        record including signed S3 URLs to the .3mf project file, plate
+        JSONs, configs, and finish-snapshot picture. The signed URLs are
+        ~1-hour valid. Task IDs come from FCM notifications or from the
+        device's `task_id` field in MQTT push reports."""
+        return self._authed_get(f"/v1/iot-service/api/user/task/{task_id}")
+
+    def get_message_count(self) -> dict:
+        """Notification badge counts across every Bambu surface — comment,
+        device, design, system, IM, paid-content, crowdfunding,
+        community. Returns the full breakdown dict."""
+        return self._authed_get("/v1/user-service/my/message/count")
+
+    def get_trouble_tickets(self, limit: int = 10) -> dict:
+        """Customer-support ticket history for the logged-in user.
+        Returns `{total: N, hits: [...]}` matching Bambu's standard
+        list-paging convention. Each hit has troubleId, deviceId,
+        startTime, endTime, classification, status, etc."""
+        return self._authed_get(
+            f"/v1/aftersale-service/trouble/list?limit={int(limit)}")
+
+    def get_trouble_unread_count(self) -> int:
+        return int(self._authed_get(
+            "/v1/aftersale-service/trouble/totalunreadcount").get("count", 0))
+
+    def get_makerworld_unread_count(self) -> int:
+        return int(self._authed_get(
+            "/v1/aftersale-service/makerworld/totalunreadcount").get("count", 0))
+
+    def get_for_you(self, seed: int = 1, limit: int = 20) -> dict:
+        """The MakerWorld 'For You' recommendation feed. `seed` is the
+        client-supplied paging seed (any positive int); same seed returns
+        the same page, fresh seed gets a fresh page. The breadcrumbs we
+        captured use 32-bit random ints like 501846844 here."""
+        return self._authed_get(
+            f"/v1/design-recommend-service/my/for-you?seed={int(seed)}&limit={int(limit)}")
+
+    def get_homepage_nav(self) -> dict:
+        """Top-tab config for the MakerWorld homepage. Returns the list
+        of tabs (Following / Foryou / Trending / Household / …)."""
+        return self._authed_get("/v1/search-service/homepage/nav")
+
+    def get_search_suggestions(self) -> list[str]:
+        """Trending / personalized search-bar suggestions for this user.
+        Bambu uses this to populate the search-suggestions dropdown — the
+        list reflects what the user has searched for + tariff popular
+        terms. Returns a list of suggestion strings."""
+        r = self._authed_get("/v1/search-service/recommand/youlike")
+        return r.get("sugList") or r.get("suggestions") or []
+
+    def get_my_profile(self) -> dict:
+        """My MakerWorld profile (uid, handle, name, avatar, bio,
+        like-count, follow-count, fan-count, posted-design-count)."""
+        return self._authed_get("/v1/design-user-service/my/profile")
+
+    def get_points_progress(self) -> dict:
+        """Bambu gamification points / progress breakdown."""
+        return self._authed_get("/v1/point-service/point-bill/progress")
+
+    def get_messages(self, limit: int = 20) -> dict:
+        """Full inbox of MakerWorld + device + system notifications.
+        Returns `{total, hits: [...]}` — each hit has id, type, taskMessage
+        (if device-related), title, designId/Title, createdAt, isRead."""
+        return self._authed_get(f"/v1/user-service/my/messages?limit={int(limit)}")
+
+    def get_device_firmware_versions(self) -> list[dict]:
+        """Per-device firmware version + available updates. Returns the
+        `devices` list — each entry has dev_id, version (current),
+        firmware (list of available versions with force_update flag)."""
+        r = self._authed_get("/v1/iot-service/api/user/device/version")
+        return r.get("devices") or []
+
+    def get_device_status_cached(self) -> list[dict]:
+        """Cloud-cached current state of every bound device. No MQTT
+        round-trip needed. Returns the `devices` list with dev_online +
+        recent state. Bambu serves this from its own MQTT broker's
+        last-known-state cache, refreshed by the printer ~every 5s."""
+        r = self._authed_get("/v1/iot-service/api/user/print?force=true")
+        return r.get("devices") or []
+
+    def get_filament_inventory(self) -> list[dict]:
+        """User's spool/filament inventory (RFID-tracked + manually added).
+        Each hit has filamentVendor, filamentType, filamentName, filamentId,
+        RFID, createType (ams|manual), etc."""
+        r = self._authed_get("/v1/design-user-service/my/filament/v2")
+        return r.get("hits") or []
+
+    def get_app_configuration(self) -> dict:
+        """Global app config / feature-flag manifest (rating-reason
+        categories, region-specific toggles, etc.). Useful as a feature-
+        flag probe — exposes upcoming features Bambu has provisioned
+        server-side ahead of client releases."""
+        return self._authed_get("/v1/operation-service/configuration")
+
+    def get_ttcode(self, dev_id: str) -> dict:
+        """Throughtek (TUTK) P2P NAT-traversal codes for cloud camera
+        streaming. Returns the time-limited credentials that pair the
+        Handy / Studio client to the printer's onboard Throughtek video
+        SDK. Standard call shape per Doridian/OpenBambuAPI cloud-http.md."""
+        return self._authed_get(
+            f"/v1/iot-service/api/user/ttcode?dev_id={urllib.parse.quote(dev_id)}")
 
     # ------------------------------------------------------------------
     # Cloud-side MQTT broker — for cloud-mediated print control + state

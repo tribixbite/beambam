@@ -5160,6 +5160,202 @@ def cmd_cloud_chamber_light(args: argparse.Namespace) -> int:
     return _cloud_publish_payload(serial, payload, args.timeout)
 
 
+def cmd_cloud_history(args: argparse.Namespace) -> int:
+    """List Bambu cloud's record of every print task for this account.
+
+    Hits `/v1/user-service/my/tasks` — Bambu retains the full per-account
+    history server-side (typically 90+ records vs the ~17 days of FCM
+    notifications a phone caches). Each task has id, designId, designTitle,
+    deviceId, status, startTime, endTime, cover URL (1-hour signed S3 URL
+    to the finish snapshot — same as the FCM notification payload), etc.
+
+    `cloud-task <id>` follows up on a specific task to pull the .3mf
+    project file + plate JSONs."""
+    import cloud_client
+    cli = cloud_client.CloudClient.load_or_anonymous()
+    if cli.session.empty:
+        print("not logged in — run `x2d_bridge.py cloud-login` first", file=sys.stderr)
+        return 1
+    try:
+        tasks = cli.get_user_tasks(limit=int(args.limit))
+    except cloud_client.CloudError as e:
+        print(f"cloud API failed: {e}", file=sys.stderr); return 1
+    if args.json:
+        print(json.dumps(tasks, indent=2, default=str)); return 0
+    if not tasks:
+        print("(no tasks)"); return 0
+    print(f"{len(tasks)} task(s):\n")
+    for t in tasks:
+        try:
+            start = int(t.get("startTime") or 0)
+            end = int(t.get("endTime") or 0)
+            dur = (end - start) // 60 if end else 0
+        except (TypeError, ValueError):
+            dur = 0
+        status = {2: "OK", 3: "Cancel", 4: "Failed"}.get(t.get("status"), str(t.get("status")))
+        print(f"  {str(t.get('id','')):<11} {status:<7} {str(t.get('deviceId','')):<18} {dur:>5}m  {str(t.get('designTitle',''))[:40]:<40} (designId={t.get('designId')})")
+    return 0
+
+
+def cmd_cloud_task(args: argparse.Namespace) -> int:
+    """Fetch full metadata for one cloud print task (by numeric ID).
+
+    Includes signed S3 URLs (1-hr) to the .gcode.3mf project file, plate
+    JSONs, configs, pictures. Use to archive a print — `curl` the cover
+    URL for the finish snapshot before it expires."""
+    import cloud_client
+    cli = cloud_client.CloudClient.load_or_anonymous()
+    if cli.session.empty:
+        print("not logged in", file=sys.stderr); return 1
+    try:
+        t = cli.get_task(args.task_id)
+    except cloud_client.CloudError as e:
+        print(f"cloud API failed: {e}", file=sys.stderr); return 1
+    print(json.dumps(t, indent=2, default=str))
+    return 0
+
+
+def cmd_cloud_messages(args: argparse.Namespace) -> int:
+    """Show Bambu's notification inbox counts + optionally the messages.
+
+    Counts breakdown: comment / device / design / system / IM / paid-content
+    / crowdfunding / community / unreadTotal. The `count` query returns just
+    the breakdown; pass `--list` to also pull the latest message list."""
+    import cloud_client
+    cli = cloud_client.CloudClient.load_or_anonymous()
+    if cli.session.empty:
+        print("not logged in", file=sys.stderr); return 1
+    try:
+        counts = cli.get_message_count()
+        if args.list:
+            msgs = cli.get_messages(limit=int(args.limit))
+    except cloud_client.CloudError as e:
+        print(f"cloud API failed: {e}", file=sys.stderr); return 1
+    if args.json:
+        out = {"counts": counts}
+        if args.list: out["messages"] = msgs
+        print(json.dumps(out, indent=2, default=str)); return 0
+    nonzero = {k:v for k,v in counts.items() if isinstance(v,(int,float)) and v}
+    print("Notification counts:")
+    for k,v in nonzero.items(): print(f"  {k:<20} {v}")
+    if args.list:
+        print(f"\n{len(msgs.get('hits') or [])} recent message(s):")
+        for m in (msgs.get("hits") or [])[:int(args.limit)]:
+            tm = m.get("taskMessage") or {}
+            title = tm.get("title") or m.get("title") or ""
+            print(f"  id={m.get('id'):<10} type={m.get('type'):<3}  {title[:60]}")
+    return 0
+
+
+def cmd_cloud_tickets(args: argparse.Namespace) -> int:
+    """Show Bambu customer-support ticket history for this account.
+
+    Hits `/v1/aftersale-service/trouble/list`. Each ticket has troubleId,
+    deviceId, classification (the diagnostic-tree path the AMS / extruder /
+    heat-bed / etc. error mapped to), startTime, endTime, status."""
+    import cloud_client
+    cli = cloud_client.CloudClient.load_or_anonymous()
+    if cli.session.empty:
+        print("not logged in", file=sys.stderr); return 1
+    try:
+        r = cli.get_trouble_tickets(limit=int(args.limit))
+        unread_t = cli.get_trouble_unread_count()
+        unread_mw = cli.get_makerworld_unread_count()
+    except cloud_client.CloudError as e:
+        print(f"cloud API failed: {e}", file=sys.stderr); return 1
+    if args.json:
+        print(json.dumps({"tickets": r, "unread_trouble": unread_t, "unread_makerworld": unread_mw}, indent=2, default=str))
+        return 0
+    print(f"unread: trouble={unread_t}  makerworld={unread_mw}")
+    print(f"\n{r.get('total',0)} ticket(s):")
+    for t in (r.get("hits") or []):
+        cls = (t.get("classification") or {}).get("name","")
+        print(f"  {t.get('troubleId'):<18} dev={t.get('deviceId'):<18}  {cls}")
+    return 0
+
+
+def cmd_cloud_feed(args: argparse.Namespace) -> int:
+    """MakerWorld 'For You' recommendation feed — the ranked list of 3D
+    models Bambu's recommender chose for this user, with the raw ML scores
+    we discovered in psyduck_analytics breadcrumbs."""
+    import cloud_client, random
+    cli = cloud_client.CloudClient.load_or_anonymous()
+    if cli.session.empty:
+        print("not logged in", file=sys.stderr); return 1
+    seed = args.seed if args.seed else random.randint(1, 2**31 - 1)
+    try:
+        r = cli.get_for_you(seed=seed, limit=int(args.limit))
+    except cloud_client.CloudError as e:
+        print(f"cloud API failed: {e}", file=sys.stderr); return 1
+    if args.json:
+        print(json.dumps(r, indent=2, default=str)); return 0
+    hits = r.get("hits") or r.get("designs") or []
+    print(f"{len(hits)} recommendation(s) (seed={seed}):")
+    for h in hits:
+        # Each hit wraps the actual design dict under "design".
+        d = h.get("design") or h
+        did = str(d.get("id") or d.get("designId") or "")
+        title = str(d.get("title") or d.get("designTitle") or "")
+        likes = int(d.get("likeCount") or d.get("likes") or 0)
+        downloads = int(d.get("downloadCount") or d.get("downloads") or 0)
+        creator = (d.get("designCreator") or {}).get("name", "")
+        print(f"  {did:<8} likes={likes:<5} dls={downloads:<5}  by {creator[:18]:<18}  {title[:50]}")
+    return 0
+
+
+def cmd_cloud_firmware(args: argparse.Namespace) -> int:
+    """Per-device firmware version + every available upgrade Bambu has
+    posted. Lets you see what's available without opening Handy."""
+    import cloud_client
+    cli = cloud_client.CloudClient.load_or_anonymous()
+    if cli.session.empty:
+        print("not logged in", file=sys.stderr); return 1
+    try:
+        devs = cli.get_device_firmware_versions()
+    except cloud_client.CloudError as e:
+        print(f"cloud API failed: {e}", file=sys.stderr); return 1
+    if args.json:
+        print(json.dumps(devs, indent=2, default=str)); return 0
+    for d in devs:
+        print(f"\n{d.get('dev_id'):<20} current: {d.get('version')}")
+        for fw in (d.get("firmware") or []):
+            forced = " (force_update)" if fw.get("force_update") else ""
+            print(f"   available: {fw.get('version')}{forced}  {fw.get('description','')[:60]}")
+    return 0
+
+
+def cmd_cloud_filaments(args: argparse.Namespace) -> int:
+    """User's spool / filament inventory (AMS-RFID-detected + manual)."""
+    import cloud_client
+    cli = cloud_client.CloudClient.load_or_anonymous()
+    if cli.session.empty:
+        print("not logged in", file=sys.stderr); return 1
+    try:
+        rows = cli.get_filament_inventory()
+    except cloud_client.CloudError as e:
+        print(f"cloud API failed: {e}", file=sys.stderr); return 1
+    if args.json:
+        print(json.dumps(rows, indent=2, default=str)); return 0
+    print(f"{len(rows)} spool(s):")
+    for f in rows:
+        print(f"  {f.get('createType','?'):<6} {f.get('filamentVendor',''):<10} "
+              f"{f.get('filamentType',''):<10} {f.get('filamentName',''):<25} "
+              f"id={f.get('filamentId','')}  RFID={f.get('RFID','')[:20]}")
+    return 0
+
+
+def cmd_cloud_search_suggest(_args: argparse.Namespace) -> int:
+    """Personalized search-bar suggestions (reflects what the user has
+    searched for + popular terms). Exposes your search interests."""
+    import cloud_client
+    cli = cloud_client.CloudClient.load_or_anonymous()
+    if cli.session.empty:
+        print("not logged in", file=sys.stderr); return 1
+    sugs = cli.get_search_suggestions()
+    print("\n".join(sugs))
+    return 0
+
+
 def cmd_cloud_get_access_code(args: argparse.Namespace) -> int:
     """Fetch a printer's LAN access code over cloud MQTT (no LAN needed).
 
@@ -5909,6 +6105,65 @@ def main() -> int:
     cli_clamp.add_argument("--loops",    type=int, default=0,
                            help="0 = forever for `flashing`")
     cli_clamp.add_argument("--interval", type=int, default=0)
+
+    # Read-only Bambu cloud REST queries -------------------------------
+    cli_hist = sub.add_parser(
+        "cloud-history",
+        help="List Bambu's full server-side print-task history for this "
+             "account (typically 90+ records vs ~17 days of FCM cache).")
+    cli_hist.add_argument("--limit", type=int, default=20)
+    cli_hist.add_argument("--json", action="store_true")
+    cli_hist.set_defaults(fn=cmd_cloud_history)
+
+    cli_task = sub.add_parser(
+        "cloud-task",
+        help="Fetch one cloud print task by ID — returns signed S3 URLs "
+             "to the .gcode.3mf project file, plate JSONs, configs, and "
+             "the finish-snapshot JPG.")
+    cli_task.add_argument("task_id", type=int)
+    cli_task.set_defaults(fn=cmd_cloud_task)
+
+    cli_msgs = sub.add_parser(
+        "cloud-messages",
+        help="Notification-inbox counts + optional message list.")
+    cli_msgs.add_argument("--list", action="store_true", help="Also pull message list")
+    cli_msgs.add_argument("--limit", type=int, default=10)
+    cli_msgs.add_argument("--json", action="store_true")
+    cli_msgs.set_defaults(fn=cmd_cloud_messages)
+
+    cli_tix = sub.add_parser(
+        "cloud-tickets",
+        help="Customer-support ticket history + unread counts.")
+    cli_tix.add_argument("--limit", type=int, default=10)
+    cli_tix.add_argument("--json", action="store_true")
+    cli_tix.set_defaults(fn=cmd_cloud_tickets)
+
+    cli_feed = sub.add_parser(
+        "cloud-feed",
+        help="MakerWorld 'For You' recommendations for this user.")
+    cli_feed.add_argument("--seed", type=int, default=0,
+                          help="Pagination seed (0 = random new page).")
+    cli_feed.add_argument("--limit", type=int, default=10)
+    cli_feed.add_argument("--json", action="store_true")
+    cli_feed.set_defaults(fn=cmd_cloud_feed)
+
+    cli_fw = sub.add_parser(
+        "cloud-firmware",
+        help="Current firmware version + every available upgrade for each "
+             "bound device.")
+    cli_fw.add_argument("--json", action="store_true")
+    cli_fw.set_defaults(fn=cmd_cloud_firmware)
+
+    cli_fil = sub.add_parser(
+        "cloud-filaments",
+        help="User's spool / filament inventory (AMS-RFID + manual entries).")
+    cli_fil.add_argument("--json", action="store_true")
+    cli_fil.set_defaults(fn=cmd_cloud_filaments)
+
+    cli_sug = sub.add_parser(
+        "cloud-search-suggest",
+        help="Personalized MakerWorld search-bar suggestions.")
+    cli_sug.set_defaults(fn=cmd_cloud_search_suggest)
 
     cli_gac = sub.add_parser(
         "cloud-get-access-code",
