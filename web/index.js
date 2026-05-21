@@ -74,6 +74,9 @@
     initTimelapses();
     // Assistant card init (#57)
     initAssistant();
+    // Doctor + Analyze cards (v1.3.0)
+    initDoctor();
+    initAnalyze();
     // ?capture=1 disables SSE + camera polling so headless screenshot
     // tools (chromium-browser --headless --screenshot) don't block on
     // a never-ending page-load. Inject a one-shot fake state so the
@@ -86,11 +89,14 @@
           subtask_name: "rumi_frame.gcode.3mf", mc_percent: 42,
           mc_current_layer: 17, total_layer_num: 120,
           mc_remaining_time: 75,
-          ams: { ams: [{ id: 0, tray: [
-            { tray_color: "FF7676FF", tray_type: "PLA" },
-            { tray_color: "66E08CFF", tray_type: "PETG" },
-            { tray_color: "FFC857FF", tray_type: "PLA" },
-            {} ] }], tray_now: "0" },
+          ams: { ams: [
+            { id: 0, humidity: "2", tray: [
+              { tray_color: "FF7676FF", tray_type: "PLA" },
+              { tray_color: "66E08CFF", tray_type: "PETG" },
+              { tray_color: "FFC857FF", tray_type: "PLA" },
+              {} ] },
+            { id: 1, humidity: "3", tray: [] },
+          ], tray_now: "0" },
         },
       });
       connStatus.textContent = "capture mode";
@@ -118,6 +124,7 @@
       el.textContent = lines.join("\n");
       el.scrollTop = el.scrollHeight;
     };
+
   })();
 
   // --- printer discovery ----------------------------------------------
@@ -216,13 +223,29 @@
 
   function renderAms(amsData) {
     const grid = $("ams-slots");
+    const humid = $("ams-humidity");
     const amsList = amsData.ams || [];
     const activeTrayId = (amsData.tray_now ?? "");
     grid.innerHTML = "";
+    humid.innerHTML = "";
     if (!amsList.length) {
       grid.innerHTML = '<div class="muted small">no AMS detected</div>';
       return;
     }
+    // Per-unit humidity badges. Bambu reports 0-4 (0 dry → 4 soaked);
+    // 3+ is the threshold where prints visibly suffer.
+    amsList.forEach((ams) => {
+      const lvl = parseInt(ams.humidity, 10);
+      if (isNaN(lvl)) return;
+      const pill = document.createElement("span");
+      const cls = lvl >= 4 ? "bad" : lvl >= 3 ? "warn" : lvl >= 2 ? "" : "ok";
+      pill.className = "hpill " + cls;
+      pill.title = lvl >= 3
+        ? `unit ${ams.id} is damp — consider drying`
+        : `unit ${ams.id} humidity ${lvl}/4`;
+      pill.textContent = `AMS ${ams.id} · ${lvl}/4`;
+      humid.appendChild(pill);
+    });
     amsList.forEach((ams) => {
       const trays = ams.tray || [];
       trays.forEach((tray, idx) => {
@@ -683,6 +706,180 @@
     } finally {
       $assSend.disabled = false;
       $assInput.focus();
+    }
+  }
+
+
+  // --- Doctor card (v1.3.0) ------------------------------------------
+  // Polls /doctor every 10 s. Shows the worst-severity pill in the
+  // header and a per-check list below. Stays cheap: /doctor is a pure
+  // function of the cached state, so it's <5 ms server-side.
+  function initDoctor() {
+    const $worst = $("doctor-worst");
+    const $list  = $("doctor-checks");
+    const ICONS  = { pass: "✓", warn: "⚠", fail: "✗", info: "·" };
+    const CLASSES = { pass: "ok", warn: "warn", fail: "bad", info: "muted" };
+
+    async function tick() {
+      try {
+        const r = await fetch("/doctor"
+          + (activePrinter ? "?printer=" + encodeURIComponent(activePrinter) : ""));
+        if (!r.ok) {
+          $worst.textContent = "—";
+          $worst.className = "pill muted";
+          $list.innerHTML = `<div class="muted small">/doctor → ${r.status}</div>`;
+          return;
+        }
+        const data = await r.json();
+        const worst = data.worst || "—";
+        $worst.textContent = worst;
+        $worst.className = "pill " + (CLASSES[worst] || "muted");
+        $list.innerHTML = "";
+        (data.checks || []).forEach((c) => {
+          const row = document.createElement("div");
+          row.className = "dc-row " + (c.severity || "info");
+          const icon = document.createElement("span");
+          icon.className = "icon";
+          icon.textContent = ICONS[c.severity] || "·";
+          const name = document.createElement("span");
+          name.className = "name";
+          name.textContent = `${c.category}/${c.name}`;
+          const detail = document.createElement("span");
+          detail.className = "detail";
+          detail.textContent = c.detail || "";
+          row.appendChild(icon);
+          row.appendChild(name);
+          row.appendChild(detail);
+          $list.appendChild(row);
+        });
+        if (!(data.checks || []).length) {
+          $list.innerHTML = '<div class="muted small">no checks reported</div>';
+        }
+      } catch (e) {
+        $list.innerHTML = `<div class="muted small">/doctor unreachable (${e.message})</div>`;
+      }
+    }
+
+    tick();
+    setInterval(tick, 10_000);
+  }
+
+  // --- Analyze card (v1.3.0) -----------------------------------------
+  // Drop or pick a .gcode.3mf, POST raw bytes to /analyze, render the
+  // Report dataclass back as a kv-grid + per-filament swatch row.
+  function initAnalyze() {
+    const $drop = $("analyze-drop");
+    const $file = $("analyze-file");
+    const $pick = $("analyze-pick");
+    const $rep  = $("analyze-report");
+
+    $pick.addEventListener("click", () => $file.click());
+    $file.addEventListener("change", () => {
+      if ($file.files && $file.files[0]) submit($file.files[0]);
+    });
+
+    ["dragenter", "dragover"].forEach((ev) => {
+      $drop.addEventListener(ev, (e) => {
+        e.preventDefault();
+        $drop.classList.add("over");
+      });
+    });
+    ["dragleave", "drop"].forEach((ev) => {
+      $drop.addEventListener(ev, (e) => {
+        e.preventDefault();
+        $drop.classList.remove("over");
+      });
+    });
+    $drop.addEventListener("drop", (e) => {
+      const f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+      if (f) submit(f);
+    });
+
+    async function submit(file) {
+      $drop.classList.remove("error");
+      $rep.hidden = true;
+      $rep.innerHTML = "";
+      $drop.innerHTML = `<span>analyzing <b>${file.name}</b> (${fmtBytes(file.size)})…</span>`;
+      try {
+        const body = await file.arrayBuffer();
+        const r = await fetch("/analyze", {
+          method: "POST",
+          headers: { "Content-Type": "application/octet-stream" },
+          body,
+        });
+        const data = await r.json();
+        if (!r.ok) {
+          $drop.classList.add("error");
+          $drop.innerHTML = `<span>analyze failed (${r.status}): ${data.error || "unknown"}</span>`;
+          return;
+        }
+        renderReport(data, file.name);
+      } catch (e) {
+        $drop.classList.add("error");
+        $drop.innerHTML = `<span>request failed: ${e.message}</span>`;
+      }
+    }
+
+    function renderReport(rep, filename) {
+      $drop.innerHTML = `<span>analyzed <b>${filename}</b> — drop another to replace</span>`;
+      $rep.innerHTML = "";
+      $rep.hidden = false;
+      const rows = [];
+      const f = rep.file || {};
+      rows.push(["file", filename]);
+      if (f.size != null) rows.push(["size", fmtBytes(f.size)]);
+      if (f.sha256) rows.push(["sha256", f.sha256.slice(0, 16) + "…"]);
+      if (rep.nozzle_diameter_mm != null)
+        rows.push(["nozzle", rep.nozzle_diameter_mm + " mm"]);
+      if (rep.layer_count != null) rows.push(["layers", String(rep.layer_count)]);
+      if (rep.print_time_s != null)
+        rows.push(["print time", fmtDuration(rep.print_time_s)]);
+      if (rep.total_weight_g != null)
+        rows.push(["filament", rep.total_weight_g.toFixed(1) + " g"]);
+      if (rep.flush_multiplier)
+        rows.push(["flush mult", rep.flush_multiplier.join(", ")]);
+
+      rows.forEach(([k, v]) => {
+        const row = document.createElement("div");
+        row.className = "ar-row";
+        const kEl = document.createElement("span"); kEl.className = "k"; kEl.textContent = k;
+        const vEl = document.createElement("span"); vEl.className = "v"; vEl.textContent = v;
+        row.appendChild(kEl); row.appendChild(vEl);
+        $rep.appendChild(row);
+      });
+
+      const filaments = rep.filaments || [];
+      if (filaments.length) {
+        const row = document.createElement("div");
+        row.className = "ar-row";
+        const kEl = document.createElement("span"); kEl.className = "k";
+        kEl.textContent = `filaments (${filaments.length})`;
+        const vEl = document.createElement("span"); vEl.className = "v ar-fila";
+        filaments.forEach((fil) => {
+          const sw = document.createElement("span");
+          sw.className = "swatch-mini";
+          const color = (fil.color || "").replace(/^#/, "");
+          if (color.length >= 6) sw.style.background = "#" + color.slice(0, 6);
+          sw.title = `id ${fil.id}` + (fil.dynamic ? " (dynamic)" : "");
+          vEl.appendChild(sw);
+        });
+        row.appendChild(kEl); row.appendChild(vEl);
+        $rep.appendChild(row);
+      }
+    }
+
+    function fmtBytes(n) {
+      if (n < 1024) return n + " B";
+      if (n < 1024 * 1024) return (n / 1024).toFixed(1) + " KB";
+      return (n / 1024 / 1024).toFixed(1) + " MB";
+    }
+    function fmtDuration(s) {
+      s = Math.round(s);
+      if (s < 60) return s + " s";
+      const m = Math.floor(s / 60);
+      if (m < 60) return m + " m";
+      const h = Math.floor(m / 60);
+      return `${h} h ${m % 60} m`;
     }
   }
 

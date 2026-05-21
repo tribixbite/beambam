@@ -66,8 +66,17 @@ Ordered by user-visible impact. Pick any 3-5 for the next release cut.
   tests in `tests/test_v12_http_routes.py` cover happy paths,
   empty/oversize/malformed bodies, severity priority, and
   count-summary correctness.
-- [ ] **Web UI updates for v1.2.0** — `web/index.js` doesn't show AMS humidity warnings,
-  doctor results, queue contents, or analyze output.
+- [x] **Web UI updates for v1.2.0** — three new surfaces wired into
+  the mobile-first thin client. (a) Per-unit AMS humidity badges
+  (`AMS 0 · 2/4`, etc.) at the top of the AMS card, colored ok / muted
+  / warn / bad based on the 0-4 level Bambu reports; (b) new Doctor
+  card polling `/doctor` every 10 s, showing the worst-severity pill
+  in the header and a per-check list below (pass/warn/fail/info
+  icons); (c) new Analyze 3MF card with a drag-drop + file-picker
+  drop zone that POSTs raw bytes to `/analyze` and renders the Report
+  (file metadata, filament swatches, flush multiplier). All three
+  visible in chromium-headless screenshots against the stubbed daemon;
+  full suite still 561 green. Queue contents already rendered (#55).
 
 ### New commands (each ~1-2 hr, well-scoped)
 - [ ] `beambam reboot` — soft reboot via M-code or signed control payload

@@ -367,3 +367,124 @@ button.danger  { background: var(--bad); color: #1a0a0a;
   border: 1px solid var(--line); border-radius: var(--r);
   padding: 0.55rem 0.7rem; font: inherit; min-height: 44px;
 }
+
+/* ---- AMS humidity badges (v1.3.0) ----------------------------------
+ * One small per-unit pill above the swatch grid. Level 0-1 = ok,
+ * 2 = info, 3 = warn (getting damp — common dryer cue), 4 = bad.
+ */
+.ams-humidity {
+  display: flex; flex-wrap: wrap; gap: 0.3rem;
+  margin: 0 0 0.5rem 0;
+}
+.ams-humidity .hpill {
+  font-size: 0.74rem;
+  padding: 0.12rem 0.5rem;
+  border-radius: 999px;
+  background: #2a323a;
+  color: var(--fg-muted);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.01em;
+}
+.ams-humidity .hpill.warn { background: #4a3b14; color: var(--warn); }
+.ams-humidity .hpill.bad  { background: #4a1d1d; color: var(--bad); }
+.ams-humidity .hpill.ok   { background: #1d4a30; color: #b8ffd0; }
+
+/* ---- Doctor card (v1.3.0) ------------------------------------------
+ * One severity pill in the header, then a vertical list of check rows.
+ * Each row: monospace category/name, then severity icon + detail.
+ */
+.doctor h2 { display: flex; align-items: center; gap: 0.55rem; }
+#doctor-worst.muted { background: #2a323a; color: var(--fg-muted); }
+#doctor-worst.ok    { background: #1d4a30; color: #b8ffd0; }
+#doctor-worst.warn  { background: #4a3b14; color: var(--warn); }
+#doctor-worst.bad   { background: #4a1d1d; color: var(--bad); }
+
+.doctor-checks {
+  display: flex; flex-direction: column; gap: 0.25rem;
+  max-height: 18rem; overflow-y: auto;
+}
+.dc-row {
+  display: grid;
+  /* name column wide enough for "AMS/unit N humidity" without
+     overlapping into the detail column on a 420px mobile viewport. */
+  grid-template-columns: 1.1rem minmax(8.5rem, max-content) 1fr;
+  gap: 0.5rem;
+  align-items: baseline;
+  font-size: 0.82rem;
+  padding: 0.22rem 0;
+  border-bottom: 1px dashed var(--line);
+}
+.dc-row:last-child { border-bottom: 0; }
+.dc-row .icon { text-align: center; }
+.dc-row .name {
+  color: var(--fg-muted);
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 0.74rem;
+  white-space: nowrap;
+}
+.dc-row .detail { word-break: break-word; }
+.dc-row.pass .icon { color: var(--accent); }
+.dc-row.warn .icon { color: var(--warn); }
+.dc-row.fail .icon { color: var(--bad); }
+.dc-row.info .icon { color: #88ccff; }
+
+/* ---- Analyze card (v1.3.0) -----------------------------------------
+ * Dashed drop zone, switches to "analyzing…" then to a key/value
+ * grid showing file metadata + filament list + flush stats.
+ */
+.analyze-drop {
+  border: 1.5px dashed var(--line);
+  border-radius: var(--r);
+  padding: 1.1rem 0.7rem;
+  text-align: center;
+  color: var(--fg-muted);
+  background: var(--bg-soft);
+  transition: border-color 0.15s, background 0.15s;
+}
+.analyze-drop.over {
+  border-color: var(--accent);
+  background: #16322a;
+  color: var(--accent);
+}
+.analyze-drop.error {
+  border-color: var(--bad);
+  background: #2a1414;
+  color: var(--bad);
+}
+.analyze-drop code {
+  background: var(--bg); color: var(--fg);
+  padding: 1px 5px; border-radius: 4px;
+  font-size: 0.85em;
+}
+button.link {
+  background: none; border: 0; color: var(--accent);
+  padding: 0; min-height: 0;
+  text-decoration: underline; cursor: pointer;
+  font: inherit;
+}
+button.link:hover { color: #b8ffd0; }
+.analyze-report {
+  display: grid; gap: 0.45rem;
+  font-size: 0.85rem;
+}
+.analyze-report .ar-row {
+  display: grid; grid-template-columns: 7rem 1fr; gap: 0.5rem;
+  align-items: baseline;
+}
+.analyze-report .ar-row .k {
+  color: var(--fg-muted);
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 0.74rem;
+}
+.analyze-report .ar-row .v {
+  font-variant-numeric: tabular-nums;
+  word-break: break-all;
+}
+.analyze-report .ar-fila {
+  display: flex; gap: 0.3rem; flex-wrap: wrap;
+}
+.analyze-report .ar-fila .swatch-mini {
+  width: 1.3rem; height: 1.3rem; border-radius: 4px;
+  border: 1px solid var(--line);
+  flex-shrink: 0;
+}

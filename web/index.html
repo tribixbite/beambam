@@ -73,8 +73,29 @@
 
     <section class="card ams">
       <h2>AMS slots</h2>
+      <div id="ams-humidity" class="ams-humidity"></div>
       <div id="ams-slots" class="ams-grid"></div>
       <div class="muted small">tap a swatch to load that filament</div>
+    </section>
+
+    <section class="card doctor">
+      <h2>
+        Doctor
+        <span id="doctor-worst" class="pill muted">—</span>
+      </h2>
+      <div id="doctor-checks" class="doctor-checks">
+        <div class="muted small">waiting for first check…</div>
+      </div>
+    </section>
+
+    <section class="card analyze">
+      <h2>Analyze 3MF</h2>
+      <div id="analyze-drop" class="analyze-drop">
+        <input id="analyze-file" type="file" accept=".3mf,.gcode" hidden>
+        <span>Drop a <code>.gcode.3mf</code> here, or
+          <button id="analyze-pick" type="button" class="link">pick a file</button></span>
+      </div>
+      <div id="analyze-report" class="analyze-report" hidden></div>
     </section>
 
     <section class="card assistant">
