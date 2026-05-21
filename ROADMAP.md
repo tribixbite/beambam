@@ -216,14 +216,24 @@ Remaining endpoints from the catalog worth wiring:
 - [x] **Device-code style email-code login** (commit 75cba23) — `cloud-login
   --code-only` skips the password prompt entirely; Bambu emails a 6-digit
   code that proves possession of the inbox.
-- [ ] **`beambam doctor --fix`** — auto-detect missing prerequisites
-  (no `~/.x2d/credentials`, no `~/.x2d/cloud_session.json`, no `bambu-studio`
-  binary in PATH for slicing) and offer to install/configure.
-- [ ] **Dynamic help / command discovery** — argparse already produces a
-  flat help table but it's long. Group by section (LAN, Cloud, Slicing,
-  MakerWorld, Daemon, Doctor) and add `beambam help <topic>` aliasing
-  to `beambam <topic> --help`. Stretch: argcomplete + a `beambam tldr`
-  showing the 5 most-used commands.
+- [x] **`beambam doctor --fix`** — auto-detect missing prerequisites
+  and walk the user through resolving them. `_interactive_fix()` in
+  `beambam/doctor.py` iterates each warn/fail Environment check
+  (LAN credentials / Cloud session / Bambu Studio CLI / adb / python-
+  cryptography), prompts [y/N/q] per item, and delegates to the
+  matching subcommand (`beambam init`, `cloud-login --code-only`)
+  where automatable. Manual-install paths get printed instructions.
+- [x] **Dynamic help / command discovery** (this round) — two pieces:
+  (a) grouped TOC epilog already present via `_build_epilog()` +
+  `_COMMAND_GROUPS` (commit 50aa9d9) — `beambam --help` prints
+  `Commands by topic:` with sections (LAN, Cloud, Slicing, MakerWorld,
+  Daemon, Doctor). (b) `beambam help <topic>` aliases
+  `beambam <topic> --help` by walking the subparsers action and
+  printing the matched subparser's help. Unknown topic exits 1 with
+  a listing of available topics. 7 unit tests in
+  `tests/test_help_alias.py` (incl. parametrized exact-match against
+  `<topic> --help` for 4 representative subcommands). The argcomplete
+  + `beambam tldr` stretch goal stays open as a follow-up.
 - [x] **`beambam init --cloud-only`** (this round) — skips SSDP /
   connectivity / `~/.x2d/credentials` entirely. Runs `cloud-login
   --code-only` flow directly (email → Bambu sends 6-digit code → enter
