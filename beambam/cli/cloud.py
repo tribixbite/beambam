@@ -15,6 +15,10 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    import paho.mqtt.client as mqtt
 
 
 def cmd_cloud_logout(_args: argparse.Namespace) -> int:
@@ -554,11 +558,14 @@ def cmd_cloud_presets(args: argparse.Namespace) -> int:
 # never invoked.
 
 
-def _cloud_mqtt_connect(serial: str, cli) -> "object":
+def _cloud_mqtt_connect(serial: str, cli) -> mqtt.Client:
     """Connect to Bambu's cloud broker using the logged-in JWT.
     Returns a paho.mqtt.client.Client connected + ready to subscribe
     or publish. Caller is responsible for client.loop_stop() +
-    disconnect() on exit."""
+    disconnect() on exit. The paho dependency is imported lazily in
+    the function body to keep cloud.py importable without paho on
+    the path; the module-level TYPE_CHECKING block lets mypy see the
+    real `mqtt.Client` type."""
     import os
     import ssl
     import time
