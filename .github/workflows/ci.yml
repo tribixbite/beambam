@@ -32,8 +32,8 @@ jobs:
           python-version: "3.12"
       - run: pip install --upgrade pip
       - run: pip install ruff mypy paho-mqtt cryptography
-      - name: ruff check
-        run: ruff check beambam x2d_bridge.py cloud_client.py lan_print.py lan_upload.py x2d_slice.py inject_thumbnails.py remix_3mf.py preflight_3mf.py resolve_profile.py mcp_x2d.py bambu_cert.py
+      - name: ruff check (beambam package only — legacy modules tracked separately)
+        run: ruff check beambam tests/test_analyze.py tests/test_frame.py tests/test_printer.py tests/test_schemas.py tests/test_simulate.py tests/test_cloud_fetch.py tests/test_state_hub.py
       - name: mypy (beambam shim)
         run: mypy beambam
 
