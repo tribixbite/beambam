@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "beambam"
-version = "1.1.0"
+version = "1.2.0"
 description = "Signed-MQTT bridge + daemon for Bambu Lab printers (X1/P1/A1/H2/X2D, Jan-2025+ firmware). Includes Home Assistant publisher, MCP server, web UI, slicing helpers, and a print-plan analyzer."
 readme = "README.md"
 requires-python = ">=3.10"
