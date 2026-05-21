@@ -122,7 +122,12 @@ BRIDGE = REPO / "x2d_bridge.py"
 #        upload+publish chain) + cmd_cloud_publish (43 LoC raw JSON
 #        publish) moved into beambam.cli.cloud. Both depend only on
 #        _cloud_mqtt_connect which is already there since batch 7.
-_MAX_CMD_HANDLERS_IN_BRIDGE = 16
+#   14 — Phase 5b batch 11: cmd_cloud_pull_design + cmd_cloud_print_design
+#        moved. Phase 5b CLOSED — every cmd_cloud_* handler now lives
+#        in beambam.cli.cloud. Monolith only has the LAN-print/serve/
+#        daemon handlers left (Phase 5d) plus main() argparse builder
+#        (Phase 5e).
+_MAX_CMD_HANDLERS_IN_BRIDGE = 14
 
 
 def _count_cmd_handlers() -> int:

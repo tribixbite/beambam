@@ -308,8 +308,16 @@ phase staging.
   deeply coupled to bridge I/O helpers — separate pass). Bridge
   cmd_* count down 74 → 33; original ~57-handler target beaten well
   ahead of schedule by the parallel Phase 5b cloud-handler migration.
-- [ ] **Phase 5b** — all `cmd_cloud_*` → `beambam/cli/cloud.py`.
-  ~2,000 LoC moved. Target post-phase: ~27 handlers in monolith.
+- [x] **Phase 5b** — all `cmd_cloud_*` → `beambam/cli/cloud.py`.
+  Closed over 11 batches: ttcode → search-suggest → app-config → 22
+  read-only handlers → cloud-control verbs (pause/resume/stop/gcode/
+  chamber-light) → cloud-printers/status + spool CRUD → cloud-state
+  + cloud-MQTT helpers (_cloud_mqtt_connect, _cloud_publish_payload,
+  _resolve_cloud_serial) → cloud-login (with mypy-friendly bootstrap
+  using argparse.Namespace) → cloud-get-access-code → cloud-print +
+  cloud-publish → cloud-pull-design + cloud-print-design. Every
+  cmd_cloud_* handler now lives in beambam.cli.cloud. ~2,000 LoC
+  moved as predicted; bridge cmd_* count down 74 → 14.
 - [x] **Phase 5c** — read-only commands → `beambam/cli/info.py`.
   Four batches closed: status + printers, health + watch, tail (with
   `_TailDispatcher` + `_tail_print`) + notify, fetch. All 7 listed

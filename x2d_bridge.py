@@ -4438,74 +4438,12 @@ from beambam.cli.cloud import (  # noqa: E402, F401
 )
 
 
-def cmd_cloud_pull_design(args: argparse.Namespace) -> int:
-    """Download a MakerWorld design's .3mf bundle to a local directory.
-
-    Resolves the signed bblmw.com URL via the design-service/instance
-    f3mf endpoint, then `urlretrieve`s into `--out-dir`. The default
-    instance is picked (whichever has `isDefault: true`) unless
-    `--instance-id` is given explicitly.
-
-    Companion `cloud-print-design` chains this into slice-print."""
-    import cloud_client
-    cli = cloud_client.CloudClient.load_or_anonymous()
-    if cli.session.empty:
-        print("not logged in", file=sys.stderr); return 1
-    out_dir = Path(args.out_dir).expanduser()
-    try:
-        out = cli.pull_design_3mf(args.design_id, out_dir,
-                                  instance_index=int(args.instance_index or 0))
-    except cloud_client.CloudError as e:
-        print(f"cloud API failed: {e}", file=sys.stderr); return 1
-    print(f"[cloud-pull] saved {out}  ({out.stat().st_size:,} B)")
-    if args.json:
-        print(json.dumps({"path": str(out), "size": out.stat().st_size}, default=str))
-    return 0
-
-
-def cmd_cloud_print_design(args: argparse.Namespace) -> int:
-    """End-to-end: download a MakerWorld design + slice + upload + print.
-
-    `beambam cloud-print-design 1623016 [--copies 4 --scale-pct 75 --color Gold]`
-
-    Steps:
-      1. Resolve the design's default instance + download the .3mf.
-      2. (Re-)slice via x2d_slice with the user's --copies / --scale / --color.
-      3. Upload + start print on the configured printer.
-
-    This is the FRE win — search the catalogue, pick a design, hit print."""
-    import cloud_client, tempfile, subprocess
-    cli = cloud_client.CloudClient.load_or_anonymous()
-    if cli.session.empty:
-        print("not logged in", file=sys.stderr); return 1
-
-    with tempfile.TemporaryDirectory(prefix="cloud_print_design_") as td:
-        td_p = Path(td)
-        try:
-            three_mf = cli.pull_design_3mf(args.design_id, td_p,
-                                            instance_index=int(args.instance_index or 0))
-        except cloud_client.CloudError as e:
-            print(f"cloud API failed: {e}", file=sys.stderr); return 1
-        print(f"[cloud-print-design] downloaded {three_mf.name}  "
-              f"({three_mf.stat().st_size:,} B)", file=sys.stderr)
-
-        # Build the slice-print invocation. We use the same x2d_bridge but
-        # via subprocess so all the existing arg validation + helpers fire.
-        bridge = X2D_ROOT_PATH / "x2d_bridge.py"
-        cmd = [sys.executable, str(bridge), "slice-print", str(three_mf)]
-        if args.printer: cmd.extend(["--printer", args.printer])
-        if args.ip:      cmd.extend(["--ip", args.ip])
-        if args.code:    cmd.extend(["--code", args.code])
-        if args.serial:  cmd.extend(["--serial", args.serial])
-        if args.scale != 1.0: cmd.extend(["--scale", str(args.scale)])
-        if args.scale_pct is not None: cmd.extend(["--scale-pct", str(args.scale_pct)])
-        if args.mm is not None: cmd.extend(["--mm", str(args.mm)])
-        if int(args.copies) != 1: cmd.extend(["--copies", str(args.copies)])
-        if args.color:   cmd.extend(["--color", args.color])
-        if args.slot:    cmd.extend(["--slot", str(args.slot)])
-        if args.no_ams:  cmd.append("--no-ams")
-        if args.dry_run: cmd.append("--dry-run")
-        return subprocess.call(cmd)
+# cmd_cloud_pull_design + cmd_cloud_print_design moved to
+# beambam/cli/cloud.py (Phase 5b batch 11). Re-exported.
+from beambam.cli.cloud import (  # noqa: E402, F401
+    cmd_cloud_pull_design,
+    cmd_cloud_print_design,
+)
 
 
 def cmd_fcm_harvest(args: argparse.Namespace) -> int:
