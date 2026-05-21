@@ -4072,54 +4072,12 @@ def cmd_cloud_login(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_cloud_printers(args: argparse.Namespace) -> int:
-    """List the printers bound to the logged-in Bambu account."""
-    import cloud_client
-    cli = cloud_client.CloudClient.load_or_anonymous()
-    if cli.session.empty:
-        print("not logged in — run `x2d_bridge.py cloud-login` first",
-              file=sys.stderr)
-        return 1
-    try:
-        devices = cli.get_bound_devices()
-    except cloud_client.CloudError as e:
-        print(f"cloud API call failed: {e}", file=sys.stderr)
-        return 1
-    if args.json:
-        print(json.dumps(devices, indent=2))
-    else:
-        if not devices:
-            print("(no printers bound to this account)")
-            return 0
-        print(f"{len(devices)} printer(s) bound to user "
-              f"{cli.session.user_id}:")
-        for d in devices:
-            online = "online " if d.get("online") else "offline"
-            name = d.get("name") or d.get("dev_name") or "?"
-            dev_id = d.get("dev_id") or d.get("device_id") or "?"
-            model = d.get("dev_product_name") or d.get("dev_model_name") or "?"
-            access_code = (d.get("dev_access_code") or "").strip()
-            print(f"  [{online}] {name}  serial={dev_id}  "
-                  f"model={model}  access_code={access_code or '(hidden)'}")
-    return 0
-
-
-def cmd_cloud_status(args: argparse.Namespace) -> int:
-    import cloud_client
-    cli = cloud_client.CloudClient.load_or_anonymous()
-    if cli.session.empty:
-        print("not logged in (no ~/.x2d/cloud_session.json)")
-        return 0
-    age_s = max(0, cli.session.expires_at - time.time())
-    print(json.dumps({
-        "logged_in":  True,
-        "user_id":    cli.session.user_id,
-        "region":     cli.session.region,
-        "expired":    cli.session.expired,
-        "expires_at": cli.session.expires_at,
-        "expires_in_s": int(age_s),
-    }, indent=2))
-    return 0
+# cmd_cloud_printers + cmd_cloud_status moved to beambam/cli/cloud.py
+# (Phase 5b batch 6). Re-exported.
+from beambam.cli.cloud import (  # noqa: E402, F401
+    cmd_cloud_printers,
+    cmd_cloud_status,
+)
 
 
 # cmd_cloud_logout moved to beambam/cli/cloud.py (Phase 5b).
@@ -4511,97 +4469,15 @@ from beambam.cli.cloud import (  # noqa: E402, F401
 )
 
 
-def _spool_body_from_args(args: argparse.Namespace) -> dict:
-    """Distil --vendor/--type/--name/--id/--color/--weight into the
-    spool-record dict Bambu's API expects. Skips None fields so the
-    server only sees what the user explicitly passed (matters for
-    UPDATE where you might want to change just one attribute)."""
-    raw = {
-        "filamentVendor": args.vendor,
-        "filamentType":   args.type,
-        "filamentName":   args.name,
-        "filamentId":     args.filament_id,
-        "color":          args.color,
-        "weight":         args.weight,
-        "createType":     "manual",  # WRITE-side defaults to manual entries
-    }
-    return {k: v for k, v in raw.items() if v is not None}
-
-
-def _require_allow_write(args: argparse.Namespace, what: str) -> int | None:
-    """Guard that flips write-side cloud ops behind `--allow-write`. Returns
-    an exit code to bubble up, or None if the caller should proceed."""
-    if not getattr(args, "allow_write", False):
-        print(
-            f"refusing to {what} without --allow-write\n"
-            f"This mutates account-side state on Bambu Cloud — re-run "
-            f"with --allow-write to confirm.",
-            file=sys.stderr)
-        return 1
-    return None
-
-
-def cmd_cloud_spool_add(args: argparse.Namespace) -> int:
-    """`cloud-spool add` — POST a new spool entry."""
-    import cloud_client
-    rc = _require_allow_write(args, "add a spool")
-    if rc is not None:
-        return rc
-    cli = cloud_client.CloudClient.load_or_anonymous()
-    if cli.session.empty:
-        print("not logged in", file=sys.stderr); return 1
-    body = _spool_body_from_args(args)
-    try:
-        r = cli.add_spool(body)
-    except cloud_client.CloudError as e:
-        print(f"cloud API failed: {e}", file=sys.stderr); return 1
-    if args.json:
-        print(json.dumps(r, indent=2, default=str)); return 0
-    print(f"added spool: {body}")
-    return 0
-
-
-def cmd_cloud_spool_update(args: argparse.Namespace) -> int:
-    """`cloud-spool update <filamentId>` — PUT a partial update."""
-    import cloud_client
-    rc = _require_allow_write(args, f"update spool {args.filament_id}")
-    if rc is not None:
-        return rc
-    cli = cloud_client.CloudClient.load_or_anonymous()
-    if cli.session.empty:
-        print("not logged in", file=sys.stderr); return 1
-    body = _spool_body_from_args(args)
-    body.pop("filamentId", None)  # path-segment, not body field for PUT
-    body.pop("createType", None)  # leave the existing createType alone
-    if not body:
-        print("nothing to update — pass at least one of "
-              "--vendor / --type / --name / --color / --weight",
-              file=sys.stderr); return 2
-    try:
-        r = cli.update_spool(args.filament_id, body)
-    except cloud_client.CloudError as e:
-        print(f"cloud API failed: {e}", file=sys.stderr); return 1
-    if args.json:
-        print(json.dumps(r, indent=2, default=str)); return 0
-    print(f"updated spool {args.filament_id}: {body}")
-    return 0
-
-
-def cmd_cloud_spool_delete(args: argparse.Namespace) -> int:
-    """`cloud-spool delete <filamentId>` — DELETE one entry."""
-    import cloud_client
-    rc = _require_allow_write(args, f"delete spool {args.filament_id}")
-    if rc is not None:
-        return rc
-    cli = cloud_client.CloudClient.load_or_anonymous()
-    if cli.session.empty:
-        print("not logged in", file=sys.stderr); return 1
-    try:
-        cli.delete_spool(args.filament_id)
-    except cloud_client.CloudError as e:
-        print(f"cloud API failed: {e}", file=sys.stderr); return 1
-    print(f"deleted spool {args.filament_id}")
-    return 0
+# _spool_body_from_args / _require_allow_write / cmd_cloud_spool_*
+# moved to beambam/cli/cloud.py (Phase 5b batch 6). Re-exported.
+from beambam.cli.cloud import (  # noqa: E402, F401
+    cmd_cloud_spool_add,
+    cmd_cloud_spool_update,
+    cmd_cloud_spool_delete,
+    _spool_body_from_args,
+    _require_allow_write,
+)
 
 
 # cmd_cloud_ttcode moved to beambam/cli/cloud.py (start of Phase 5b);

@@ -97,7 +97,14 @@ BRIDGE = REPO / "x2d_bridge.py"
 #        moved into beambam.cli.info. Lazy-thunks back into x2d_bridge
 #        for PACKAGE_VERSION + X2D_ROOT_PATH. Phase 5c CLOSED — all
 #        7 listed read-only handlers now live in beambam.cli.info.
-_MAX_CMD_HANDLERS_IN_BRIDGE = 26
+#   21 — Phase 5b batch 6: cmd_cloud_printers + cmd_cloud_status +
+#        cmd_cloud_spool_{add,update,delete} moved into
+#        beambam.cli.cloud. `_spool_body_from_args` +
+#        `_require_allow_write` helpers relocated too — re-exported
+#        for back-compat. Remaining cloud handlers in monolith are
+#        the heavy ones (login, state, pull/print-design,
+#        get-access-code, print, publish) tied to bridge internals.
+_MAX_CMD_HANDLERS_IN_BRIDGE = 21
 
 
 def _count_cmd_handlers() -> int:
