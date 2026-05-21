@@ -1,7 +1,32 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
-    <rect width="32" height="32" rx="2" fill="oklch(15% 0.005 65)"/>
-    <text x="16" y="24" text-anchor="middle"
-          font-family="'Big Shoulders Display', 'Arial Black', sans-serif"
-          font-weight="900" font-size="26"
-          fill="oklch(72% 0.18 65)" letter-spacing="-0.04em">b</text>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+    <!-- Tiny ghost-benchy. Same identity as the OG mascot, simplified
+         for 16×16/32×32 favicon rendering: smokestack + cabin + hull
+         with wavy ghost tail + two big white eyes. -->
+    <rect width="64" height="64" rx="6" fill="#181614"/>
+
+    <!-- Smokestack -->
+    <rect x="29" y="8" width="6" height="9" fill="none" stroke="#e0a050" stroke-width="1.5"/>
+
+    <!-- Cabin -->
+    <path d="M 18,17 L 46,17 L 49,27 L 15,27 Z"
+          fill="#181614" stroke="#e0a050" stroke-width="1.5"
+          stroke-linejoin="round"/>
+
+    <!-- Hull — wavy bottom (ghost tail) -->
+    <path d="M 12,27 L 52,27 L 54,46
+             Q 54,50 50,48
+             Q 46,46 42,48
+             Q 38,50 34,48
+             Q 30,46 26,48
+             Q 22,50 18,48
+             Q 14,46 10,48
+             Q 8,46 12,46 Z"
+          fill="#181614" stroke="#e0a050" stroke-width="1.5"
+          stroke-linejoin="round"/>
+
+    <!-- Eyes — the identity. Two simple white circles. -->
+    <circle cx="25" cy="22" r="3" fill="#f7f5f1"/>
+    <circle cx="39" cy="22" r="3" fill="#f7f5f1"/>
+    <circle cx="26" cy="23" r="1.2" fill="#181614"/>
+    <circle cx="40" cy="23" r="1.2" fill="#181614"/>
 </svg>
