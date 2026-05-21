@@ -6159,7 +6159,7 @@ def _package_version() -> str:
         from importlib.metadata import version, PackageNotFoundError
         return version("beambam")
     except Exception:
-        return "1.1.0+source"
+        return "1.3.0+source"
 
 
 PACKAGE_VERSION = _package_version()

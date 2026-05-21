@@ -407,6 +407,11 @@ def cmd_doctor(args: argparse.Namespace) -> int:
             checks.append(Check("Connectivity", "Reach printer", "fail",
                                 f"can't reach printer: {e} — pass --env-only "
                                 "to skip printer checks"))
+            # Preserve the legacy contract: tests + callers may grep stderr
+            # for the unreachable-printer error before deciding whether to
+            # fall back to env-only mode. The Check is also visible in the
+            # report on stdout for human readers.
+            print(f"can't reach printer: {e}", file=sys.stderr)
 
     if args.json_out:
         import dataclasses
