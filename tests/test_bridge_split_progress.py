@@ -44,7 +44,12 @@ BRIDGE = REPO / "x2d_bridge.py"
 # same commit that does the migration. To RAISE this number, you need a
 # real reason — talk to the maintainer first or update
 # docs/BRIDGE_SPLIT_PLAN.md to acknowledge the new floor.
-_MAX_CMD_HANDLERS_IN_BRIDGE = 74
+# History:
+#   74 — Phase 4 close (X2DClient / metrics → beambam.mqtt)
+#   71 — Phase 5b incremental: cloud-logout, cloud-search-suggest,
+#        cloud-app-config moved into beambam.cli.cloud (cloud-ttcode
+#        moved with the scaffold)
+_MAX_CMD_HANDLERS_IN_BRIDGE = 71
 
 
 def _count_cmd_handlers() -> int:

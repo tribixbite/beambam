@@ -4963,12 +4963,8 @@ def cmd_cloud_status(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_cloud_logout(args: argparse.Namespace) -> int:
-    import cloud_client
-    cli = cloud_client.CloudClient.load_or_anonymous()
-    cli.logout()
-    print("session cleared")
-    return 0
+# cmd_cloud_logout moved to beambam/cli/cloud.py (Phase 5b).
+from beambam.cli.cloud import cmd_cloud_logout  # noqa: E402, F401
 
 
 # ---------------------------------------------------------------------------
@@ -5645,16 +5641,8 @@ def cmd_cloud_spool_delete(args: argparse.Namespace) -> int:
 from beambam.cli.cloud import cmd_cloud_ttcode  # noqa: E402, F401
 
 
-def cmd_cloud_search_suggest(_args: argparse.Namespace) -> int:
-    """Personalized search-bar suggestions (reflects what the user has
-    searched for + popular terms). Exposes your search interests."""
-    import cloud_client
-    cli = cloud_client.CloudClient.load_or_anonymous()
-    if cli.session.empty:
-        print("not logged in", file=sys.stderr); return 1
-    sugs = cli.get_search_suggestions()
-    print("\n".join(sugs))
-    return 0
+# cmd_cloud_search_suggest moved to beambam/cli/cloud.py (Phase 5b).
+from beambam.cli.cloud import cmd_cloud_search_suggest  # noqa: E402, F401
 
 
 def _format_design_hits(hits: list, header: str = ""):
@@ -6183,28 +6171,8 @@ def cmd_fcm_harvest(args: argparse.Namespace) -> int:
     return subprocess.call(cmd)
 
 
-def cmd_cloud_app_config(args: argparse.Namespace) -> int:
-    """Global app feature-flag manifest."""
-    import cloud_client
-    cli = cloud_client.CloudClient.load_or_anonymous()
-    if cli.session.empty:
-        print("not logged in", file=sys.stderr); return 1
-    try:
-        r = cli.get_app_configuration()
-    except cloud_client.CloudError as e:
-        print(f"cloud API failed: {e}", file=sys.stderr); return 1
-    if args.json:
-        print(json.dumps(r, indent=2, default=str)); return 0
-    for k, v in r.items():
-        if isinstance(v, list):
-            print(f"  {k} ({len(v)} entries)")
-            for e in v[:5]:
-                if isinstance(e, dict):
-                    label = e.get("name") or e.get("key") or str(e)[:60]
-                    print(f"    - {label}")
-        else:
-            print(f"  {k}: {str(v)[:80]}")
-    return 0
+# cmd_cloud_app_config moved to beambam/cli/cloud.py (Phase 5b).
+from beambam.cli.cloud import cmd_cloud_app_config  # noqa: E402, F401
 
 
 def cmd_cloud_get_access_code(args: argparse.Namespace) -> int:
@@ -7067,11 +7035,7 @@ def main() -> int:
     )
     cli_status.set_defaults(fn=cmd_cloud_status)
 
-    cli_logout = sub.add_parser(
-        "cloud-logout",
-        help="Wipe ~/.x2d/cloud_session.json.",
-    )
-    cli_logout.set_defaults(fn=cmd_cloud_logout)
+    # cloud-logout subparser now registered by beambam/cli/cloud.py.
 
     cli_printers = sub.add_parser(
         "cloud-printers",
@@ -7281,13 +7245,11 @@ def main() -> int:
                                 help="Required: confirm this mutates account state.")
     cli_spool_del.set_defaults(fn=cmd_cloud_spool_delete)
 
-    cli_sug = sub.add_parser(
-        "cloud-search-suggest",
-        help="Personalized MakerWorld search-bar suggestions.")
-    cli_sug.set_defaults(fn=cmd_cloud_search_suggest)
+    # cloud-search-suggest subparser now registered by beambam/cli/cloud.py.
 
-    # Phase 5b start: cloud-* handlers progressively migrate to
-    # beambam.cli.cloud. cloud-ttcode is the first.
+    # Phase 5b: cloud-* handlers progressively migrate to beambam.cli.cloud.
+    # Currently owns: cloud-logout / cloud-search-suggest / cloud-app-config
+    # / cloud-ttcode.
     from beambam.cli.cloud import add_subparser as _cloud_subparser
     _cloud_subparser(sub)
 
@@ -7347,11 +7309,7 @@ def main() -> int:
     cli_pre.add_argument("--json", action="store_true")
     cli_pre.set_defaults(fn=cmd_cloud_presets)
 
-    cli_cfg = sub.add_parser(
-        "cloud-app-config",
-        help="Global app feature-flag manifest — exposes pre-release feature flags.")
-    cli_cfg.add_argument("--json", action="store_true")
-    cli_cfg.set_defaults(fn=cmd_cloud_app_config)
+    # cloud-app-config subparser now registered by beambam/cli/cloud.py.
 
     cli_psr = sub.add_parser(
         "printables-search",
