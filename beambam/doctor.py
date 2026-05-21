@@ -383,8 +383,15 @@ def add_subparser(sub: "argparse._SubParsersAction") -> argparse.ArgumentParser:
                    help="Disable ANSI color in output")
     p.add_argument("--json", dest="json_out", action="store_true",
                    help="Machine output: list of check dicts")
+    p.add_argument("--env", action="store_true",
+                   help="Include host environment / fresh-OS prereq checks "
+                        "alongside the printer state checks. (env checks "
+                        "are also run automatically if the printer is "
+                        "unreachable, so fresh-OS users get actionable "
+                        "next steps.)")
     p.add_argument("--env-only", action="store_true",
-                   help="Only check host environment / fresh-OS prereqs.")
+                   help="Only check host environment / fresh-OS prereqs; "
+                        "skip the printer state entirely.")
     p.add_argument("--fix", action="store_true",
                    help="After the report, walk the user through resolving "
                         "each actionable warn/fail (interactive). Implies "
@@ -395,23 +402,36 @@ def add_subparser(sub: "argparse._SubParsersAction") -> argparse.ArgumentParser:
 
 def cmd_doctor(args: argparse.Namespace) -> int:
     env_only = getattr(args, "env_only", False) or getattr(args, "fix", False)
+    want_env = env_only or getattr(args, "env", False)
 
-    checks: list[Check] = check_environment()
-    if not env_only:
+    checks: list[Check] = []
+    if env_only:
+        # Explicit env-only mode (or --fix); skip the printer entirely.
+        checks.extend(check_environment())
+    else:
+        # Default: printer checks. Env checks only run if (a) the user
+        # passed --env explicitly, or (b) the printer is unreachable and
+        # we want to surface what's mis-configured locally.
+        if want_env:
+            checks.extend(check_environment())
         from beambam import Printer
         try:
             with Printer() as printer:
                 state = printer.state(timeout=10.0)
             checks.extend(run_all_checks(state))
         except Exception as e:                              # noqa: BLE001
-            checks.append(Check("Connectivity", "Reach printer", "fail",
-                                f"can't reach printer: {e} — pass --env-only "
-                                "to skip printer checks"))
-            # Preserve the legacy contract: tests + callers may grep stderr
-            # for the unreachable-printer error before deciding whether to
-            # fall back to env-only mode. The Check is also visible in the
-            # report on stdout for human readers.
+            # Preserve the legacy contract: tests + callers may grep
+            # stderr for the unreachable-printer error before deciding
+            # whether to fall back to env-only mode.
             print(f"can't reach printer: {e}", file=sys.stderr)
+            # Record the failure as a Check so the report + exit code
+            # surface it (return 2 when any check is `fail`).
+            checks.append(Check("Connectivity", "Reach printer", "fail",
+                                f"can't reach printer: {e}"))
+            # Auto-fall-through to env checks so fresh-OS users see
+            # actionable next steps alongside the reachability failure.
+            if not want_env:
+                checks.extend(check_environment())
 
     if args.json_out:
         import dataclasses
