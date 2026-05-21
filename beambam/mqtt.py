@@ -305,6 +305,9 @@ class X2DClient:
         self.publish({"pushing": {"sequence_id": "0", "command": "pushall"}})
         if not self._got_state.wait(timeout):
             raise TimeoutError("no state report received from printer")
+        # _got_state being set implies _on_message already populated
+        # _latest_state — narrow the type for mypy.
+        assert self._latest_state is not None
         return self._latest_state
 
     def publish(self, payload: dict, qos: int = 1, *,
