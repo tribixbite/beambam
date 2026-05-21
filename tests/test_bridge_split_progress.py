@@ -65,7 +65,12 @@ BRIDGE = REPO / "x2d_bridge.py"
 #        printers, status) still live in the monolith — they pull in
 #        too many bridge internals to move cleanly without dragging
 #        the daemon machinery with them. Tracked separately.
-_MAX_CMD_HANDLERS_IN_BRIDGE = 49
+#   41 — Phase 5a sub-batch: pause, resume, stop, gcode, home, level,
+#        set-temp, chamber-light moved into beambam.cli.control (LAN
+#        siblings of the cloud-control verbs migrated at 49). Lazy
+#        thunk back into x2d_bridge._publish_one keeps the LAN
+#        connect/sign/ack-wait state machine in the monolith for now.
+_MAX_CMD_HANDLERS_IN_BRIDGE = 41
 
 
 def _count_cmd_handlers() -> int:

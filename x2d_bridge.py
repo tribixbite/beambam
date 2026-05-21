@@ -2913,19 +2913,8 @@ def _xcam_cmd(module_name: str, on_off: bool, halt_print_sensitivity: str | None
     return {"xcam": body}
 
 
-def cmd_pause(args: argparse.Namespace) -> int:
-    # MachineObject::command_task_pause — DeviceManager.cpp:1337
-    return _publish_one(args, _print_cmd("pause", param=""))
-
-
-def cmd_resume(args: argparse.Namespace) -> int:
-    # MachineObject::command_task_resume — DeviceManager.cpp:1347
-    return _publish_one(args, _print_cmd("resume", param=""))
-
-
-def cmd_stop(args: argparse.Namespace) -> int:
-    # MachineObject::command_task_abort — DeviceManager.cpp:1316
-    return _publish_one(args, _print_cmd("stop", param=""))
+# cmd_pause / cmd_resume / cmd_stop moved to beambam/cli/control.py
+# (Phase 5a). Re-exported below alongside the other LAN control verbs.
 
 
 # Constant + helper used by cmd_reboot and its unit tests so the wire
@@ -2969,57 +2958,18 @@ def cmd_reboot(args: argparse.Namespace) -> int:
     return _publish_one(args, payload)
 
 
-def cmd_gcode(args: argparse.Namespace) -> int:
-    # MachineObject::publish_gcode — DeviceManager.cpp:3645
-    gcode = args.gcode if args.gcode.endswith("\n") else args.gcode + "\n"
-    return _publish_one(args, _print_cmd("gcode_line", param=gcode))
-
-
-def cmd_home(args: argparse.Namespace) -> int:
-    return _publish_one(args, _print_cmd("gcode_line", param="G28\n"))
-
-
-def cmd_level(args: argparse.Namespace) -> int:
-    # G29 = auto bed leveling on most G-code dialects; the X-series
-    # firmwares accept it as the canonical "level the bed now" command.
-    return _publish_one(args, _print_cmd("gcode_line", param="G29\n"))
-
-
-def cmd_set_temp(args: argparse.Namespace) -> int:
-    if args.target == "bed":
-        # MachineObject::command_set_bed (mqtt path) — DeviceManager.cpp:1474
-        return _publish_one(args, _print_cmd("set_bed_temp", temp=int(args.value)))
-    elif args.target == "nozzle":
-        # MachineObject::command_set_nozzle_new — DeviceManager.cpp:1509
-        return _publish_one(args, _print_cmd(
-            "set_nozzle_temp",
-            extruder_index=int(args.idx),
-            target_temp=int(args.value),
-        ))
-    elif args.target == "chamber":
-        # No mqtt verb in the source — fall back to gcode M141.
-        return _publish_one(args, _print_cmd(
-            "gcode_line", param=f"M141 S{int(args.value)}\n"
-        ))
-    else:
-        sys.exit(f"unknown set-temp target: {args.target}")
-
-
-def cmd_chamber_light(args: argparse.Namespace) -> int:
-    # DevLamp::command_set_chamber_light — DeviceCore/DevLampCtrl.cpp:36
-    state = args.state.lower()
-    if state not in ("on", "off", "flashing"):
-        sys.exit(f"chamber-light state must be on/off/flashing, got: {state}")
-    payload = _system_cmd(
-        "ledctrl",
-        led_node="chamber_light",
-        led_mode=state,
-        led_on_time=int(args.on_time),
-        led_off_time=int(args.off_time),
-        loop_times=int(args.loops),
-        interval_time=int(args.interval),
-    )
-    return _publish_one(args, payload)
+# cmd_gcode / cmd_home / cmd_level / cmd_set_temp / cmd_chamber_light
+# moved to beambam/cli/control.py (Phase 5a). Re-exported below.
+from beambam.cli.control import (  # noqa: E402, F401
+    cmd_pause,
+    cmd_resume,
+    cmd_stop,
+    cmd_gcode,
+    cmd_home,
+    cmd_level,
+    cmd_set_temp,
+    cmd_chamber_light,
+)
 
 
 def cmd_fod_check(args: argparse.Namespace) -> int:
