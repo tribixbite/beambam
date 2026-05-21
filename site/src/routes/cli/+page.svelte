@@ -1,4 +1,6 @@
 <script lang="ts">
+    import CodeBlock from '$lib/CodeBlock.svelte';
+
     type Cmd = { name: string; desc: string; example?: string; v?: string };
 
     const sections: { id: string; title: string; description: string; cmds: Cmd[] }[] = [
@@ -131,8 +133,12 @@
         <!-- HEADER COLUMN — also acts as sidebar nav on desktop -->
         <div class="md:col-span-4">
             <div class="label mb-[var(--space-md)]">03 · Command index</div>
-            <h1 class="mb-[var(--space-lg)]" style="font-size: var(--text-2xl);">
-                <span style="color: var(--color-accent);">{total}</span>&nbsp;subcommands.
+            <!-- Two-line stacked heading prevents "subcommands" overflowing
+                 the narrow sidebar column at md (where the column is ~14rem
+                 and the word at text-2xl exceeds it). -->
+            <h1 class="mb-[var(--space-lg)] leading-[0.95]" style="font-size: clamp(2.25rem, 1.6rem + 2.5vw, 3rem); word-break: keep-all; overflow-wrap: break-word;">
+                <span style="color: var(--color-accent); display: block;">{total}</span>
+                <span style="display: block;">subcommands.</span>
             </h1>
             <p class="leading-[1.65] max-w-[42ch] text-[var(--text-sm)] sm:text-[var(--text-base)]" style="color: var(--color-mute);">
                 Each verb is also importable under <code>beambam.</code>. Every
@@ -198,7 +204,9 @@
                                 <dd class="md:col-span-8 text-[var(--text-sm)] leading-[1.6] min-w-0" style="color: var(--color-mute);">
                                     {desc}
                                     {#if example}
-                                        <div class="mt-[var(--space-xs)] text-[var(--text-xs)] font-[var(--font-mono)] opacity-80" style="color: var(--color-accent-dim); word-break: break-word;">{example}</div>
+                                        <div class="mt-[var(--space-xs)]">
+                                            <CodeBlock code={example} variant="line" ariaLabel="Copy example" />
+                                        </div>
                                     {/if}
                                 </dd>
                             </div>

@@ -43,8 +43,11 @@
 <section>
     <div class="frame py-[var(--space-3xl)]">
         <div class="label mb-[var(--space-md)]">02 · Compatibility matrix</div>
-        <h1 class="mb-[var(--space-xl)]" style="font-size: var(--text-2xl);">
-            <span style="color: var(--color-accent);">13</span> printers, one bridge.
+        <!-- Stacked heading: prevents "printers, one bridge" wrapping
+             awkwardly at md sizes and looks more like a workshop poster. -->
+        <h1 class="mb-[var(--space-xl)] leading-[0.95]" style="font-size: clamp(2.25rem, 1.6rem + 3vw, 3.5rem); letter-spacing: -0.03em;">
+            <span style="color: var(--color-accent);">13</span> printers.<br />
+            One bridge.
         </h1>
         <p class="max-w-[65ch] leading-[1.65]" style="color: var(--color-mute);">
             Every Bambu Lab printer that exposes the standard LAN MQTT

@@ -70,8 +70,10 @@
     <div class="frame py-[var(--space-3xl)] grid gap-[var(--space-2xl)] md:grid-cols-12 md:gap-x-[var(--space-2xl)]">
         <div class="md:col-span-4">
             <div class="label mb-[var(--space-md)]">04 · Reference</div>
-            <h1 class="mb-[var(--space-lg)]" style="font-size: var(--text-2xl);">
-                Read the manual.
+            <!-- Match /cli sizing — leaves room in a 4-col sidebar without
+                 the word overflowing. -->
+            <h1 class="mb-[var(--space-lg)] leading-[0.95]" style="font-size: clamp(2.25rem, 1.6rem + 2.5vw, 3rem);">
+                Read the<br />manual.
             </h1>
             <p class="leading-[1.65] max-w-[40ch] text-[var(--text-sm)] sm:text-[var(--text-base)]" style="color: var(--color-mute);">
                 Long-form deep-dives live under

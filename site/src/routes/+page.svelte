@@ -1,4 +1,6 @@
 <script lang="ts">
+    import CodeBlock from '$lib/CodeBlock.svelte';
+
     const stats = [
         { n: '28', label: 'CLI subcommands' },
         { n: '12', label: 'printer models' },
@@ -107,8 +109,7 @@ Summary: 6 pass, 2 warn, 0 fail`;
             </div>
 
             <div class="md:col-span-5 min-w-0">
-                <div class="label mb-[var(--space-sm)]">Install &amp; first print · &lt; 90s</div>
-                <pre><code>{install}<span class="cursor"></span></code></pre>
+                <CodeBlock code={install} caption="Install & first print · < 90s" cursor />
             </div>
         </div>
     </div>
@@ -179,7 +180,7 @@ Summary: 6 pass, 2 warn, 0 fail`;
             </p>
         </div>
         <div class="md:col-span-8 min-w-0">
-            <pre><code>{doctorSample}</code></pre>
+            <CodeBlock code={doctorSample} ariaLabel="Copy doctor output" />
         </div>
     </div>
 </section>
@@ -194,9 +195,7 @@ Summary: 6 pass, 2 warn, 0 fail`;
             Three lines from <span style="color: var(--color-accent);">zero</span> to first print.
         </h2>
         <div class="inline-block text-left max-w-full">
-            <pre style="font-size: clamp(0.875rem, 0.8rem + 0.3vw, 1rem);"><code>pip install beambam
-beambam init
-beambam print model.3mf --slot 1</code></pre>
+            <CodeBlock code={`pip install beambam\nbeambam init\nbeambam print model.3mf --slot 1`} ariaLabel="Copy quickstart" />
         </div>
         <div class="mt-[var(--space-xl)] font-[var(--font-mono)] text-[var(--text-xs)] uppercase tracking-widest flex flex-wrap justify-center gap-x-[var(--space-md)] gap-y-[var(--space-sm)]" style="color: var(--color-mute);">
             <span>Full reference: <a href="/cli" style="color: var(--color-ink);">/cli</a></span>
