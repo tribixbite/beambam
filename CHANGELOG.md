@@ -1,7 +1,66 @@
 # Changelog
 
-All notable changes to this project. Tracks every IMPROVEMENTS.md
-ledger item between v0.1.0 and v1.0.0.
+All notable changes to this project.
+
+## v1.1.0 — Package rename + PyPI debut
+
+Rebrand from `x2d` to **`beambam`** ([beambam.boo](https://beambam.boo))
+and first publish to PyPI: `pip install beambam`. The bridge supports
+every Bambu Lab printer (X1/P1/A1/H2/X2D, signed-MQTT family) — the
+`x2d` name was too narrow.
+
+### New since v1.0.0
+
+* **PyPI distribution** — pyproject.toml (hatchling), 6 console scripts
+  (`beambam`, `bb`, `beambam-mcp`, `beambam-slice`, `beambam-upload`,
+  `beambam-print`), optional extras (`[slicing,mcp,webui,assistant,all,
+  dev]`), GitHub Actions CI + OIDC trusted-publishing release workflow,
+  per-Python-version matrix on Ubuntu + macOS.
+* **`beambam` Python package** — re-exports the public API
+  (`Printer`, `Creds`, `CloudClient`, `sign_payload`, `upload_file`,
+  `download_file`, `list_files`).
+* **`beambam.Printer`** — high-level stateful library facade with lazy
+  MQTT + cloud connections, context-manager protocol. Methods cover
+  state, start_print, pause/resume/stop, gcode, set_temp, chamber_light,
+  ams_load/unload, home, upload/download/list_files.
+* **`beambam.schemas`** — TypedDicts for the MQTT wire shapes
+  (PrintState, AmsBus/AmsUnit/AmsTray, StartPrintCommand, …).
+* **`beambam analyze <file.3mf>`** — print-plan dissector reporting
+  filament/nozzle assignment, per-phase toolchanges, real flush volume,
+  AMS-tray requirements, hints. `--json` for machine output.
+* **`beambam simulate <subcmd>`** — dry-run MQTT payload preview
+  returning the SIGNED envelope. Use for CI regression diffs.
+* **`beambam cloud-fetch`** — MakerWorld + Bambu Cloud query CLI
+  (`--info`, `--instances`, `--design-cover`, `--user-tasks`,
+  `--bound-devices`). Replaces the stale `fetch <makerworld_url>` path.
+* **`beambam frame --preset NAME`** — frame-STL generator with
+  built-in presets (mira, rumi, zoey, huntrx).
+* **`beambam.state_hub.StateHub`** — sync+async pub/sub primitive for
+  printer state fan-out, foundation for v1.2.0's daemon refactor.
+
+### Fixed
+
+* `download_file()` `[SSL: INVALID_ALERT]` mid-print — port working
+  `upload_file` TLS pattern (TLSv1.2 + manual session-reuse on PASV).
+* `start_print` kwarg drift between Printer/simulate and the real
+  signature.
+* `tests/test_ams_mapping.py` 6 pre-existing failures fixed; suite
+  21 → **108** offline + 3 live.
+
+### Repo hygiene
+
+* `dist/bambustudio-x2d-termux-aarch64/run_gui.sh` →
+  `bs-runtime/aarch64-termux/run_gui.sh` (frees `dist/` for Python
+  build output).
+* `test_signed_mqtt.py` → `tools/probe_signed_mqtt.py`.
+* `LICENSE` (MIT) for the Python package; AGPL-3.0 stays on the
+  BambuStudio fork + network_shim.
+
+### Deferred to v1.2.0 (plans written)
+
+* `docs/BRIDGE_SPLIT_PLAN.md` — full `x2d_bridge.py` decomposition.
+* `docs/SUBMODULE_MIGRATION_PLAN.md` — BambuStudio submodule.
+* Wire HA/MCP/WebUI/timelapse to `StateHub`.
 
 ## v1.0.0 — Feature-complete LAN-first stack
 
