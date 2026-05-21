@@ -6405,6 +6405,9 @@ def main() -> int:
     from beambam.mqttcli import add_subparser as _mqttcli_subparser
     _mqttcli_subparser(sub)
 
+    from beambam.queuecli import add_subparser as _queuecli_subparser
+    _queuecli_subparser(sub)
+
     an = sub.add_parser(
         "analyze",
         help="Dissect a .gcode.3mf — filament/nozzle assignment, per-phase "
