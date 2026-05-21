@@ -2564,6 +2564,7 @@ from beambam.cli.daemon import cmd_daemon  # noqa: E402, F401
 # handler — main() below references each name via `set_defaults(fn=...)`.
 from beambam.cli.cloud import (  # noqa: E402, F401
     cmd_cloud_login,
+    cmd_cloud_logout,
     cmd_cloud_printers,
     cmd_cloud_status,
 )
