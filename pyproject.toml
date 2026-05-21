@@ -80,10 +80,10 @@ dev = [
 
 [project.urls]
 Homepage = "https://beambam.boo"
-Documentation = "https://github.com/tribixbite/x2d/tree/main/docs"
-Repository = "https://github.com/tribixbite/x2d"
-Issues = "https://github.com/tribixbite/x2d/issues"
-Changelog = "https://github.com/tribixbite/x2d/blob/main/CHANGELOG.md"
+Documentation = "https://github.com/tribixbite/beambam/tree/main/docs"
+Repository = "https://github.com/tribixbite/beambam"
+Issues = "https://github.com/tribixbite/beambam/issues"
+Changelog = "https://github.com/tribixbite/beambam/blob/main/CHANGELOG.md"
 
 [project.scripts]
 beambam = "x2d_bridge:main"

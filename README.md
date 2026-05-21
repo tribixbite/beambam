@@ -1,6 +1,6 @@
 # beambam — LAN-first stack for Bambu Lab printers (any model, any firmware)
 
-[![ci](https://github.com/tribixbite/x2d/actions/workflows/ci.yml/badge.svg)](https://github.com/tribixbite/x2d/actions/workflows/ci.yml)
+[![ci](https://github.com/tribixbite/beambam/actions/workflows/ci.yml/badge.svg)](https://github.com/tribixbite/beambam/actions/workflows/ci.yml)
 [![pypi](https://img.shields.io/pypi/v/beambam.svg)](https://pypi.org/project/beambam/)
 [![python](https://img.shields.io/pypi/pyversions/beambam.svg)](https://pypi.org/project/beambam/)
 [![license](https://img.shields.io/pypi/l/beambam.svg)](LICENSE)
@@ -143,7 +143,7 @@ xdg-open http://localhost:8765/
 # One-line install. Pulls latest release tarball + builds bridge runtime;
 # idempotent. Required for the BambuStudio GUI + libbambu_networking.so
 # shim — the pip package alone covers everything except the GUI.
-bash <(curl -fsSL https://raw.githubusercontent.com/tribixbite/x2d/main/install.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/tribixbite/beambam/main/install.sh)
 ```
 
 ### Requirements
@@ -261,7 +261,7 @@ camera proxy URLs, and a troubleshooting table.
 ### One-line install (recommended)
 
 ```
-bash <(curl -fsSL https://raw.githubusercontent.com/tribixbite/x2d/main/install.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/tribixbite/beambam/main/install.sh)
 ```
 
 Idempotent — runs the platform check, `pkg install`s the runtime deps,
@@ -280,7 +280,7 @@ A prebuilt tarball is attached to the GitHub release:
 
 ```
 curl -L -o bs-x2d.tar.xz \
-    https://github.com/tribixbite/x2d/releases/latest/download/bambustudio-x2d-termux-aarch64.tar.xz
+    https://github.com/tribixbite/beambam/releases/latest/download/bambustudio-x2d-termux-aarch64.tar.xz
 tar -xJf bs-x2d.tar.xz
 cd bambustudio-x2d-termux-aarch64
 ./run_gui.sh                  # needs termux-x11 running on DISPLAY=:1

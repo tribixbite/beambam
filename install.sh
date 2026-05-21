@@ -2,14 +2,14 @@
 # install.sh — one-shot installer for x2d on aarch64 Termux.
 #
 # Run via:
-#   bash <(curl -fsSL https://raw.githubusercontent.com/tribixbite/x2d/main/install.sh)
+#   bash <(curl -fsSL https://raw.githubusercontent.com/tribixbite/beambam/main/install.sh)
 #
 # What it does (idempotent — safe to re-run for upgrades):
 #   1. Verify we're on Termux + aarch64 + termux-x11 reachable.
 #   2. `pkg install` every runtime dependency (idempotent).
 #   3. `pip install paho-mqtt` (idempotent).
 #   4. Download the latest tarball from
-#      github.com/tribixbite/x2d/releases/latest, verify SHA-256 against
+#      github.com/tribixbite/beambam/releases/latest, verify SHA-256 against
 #      the released .sha256 sibling, and unpack into INSTALL_ROOT
 #      (default ~/x2d).
 #   5. Drop the libbambu_networking.so + libBambuSource.so plug-ins at
@@ -34,7 +34,7 @@
 
 set -eu
 
-REPO=tribixbite/x2d
+REPO=tribixbite/beambam
 INSTALL_ROOT=${INSTALL_ROOT:-$HOME/x2d}
 CONFIG_DIR=$HOME/.config/BambuStudioInternal
 PLUGINS_DIR=$CONFIG_DIR/plugins

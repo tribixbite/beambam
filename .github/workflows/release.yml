@@ -6,16 +6,12 @@ name: release
 # manual workflow_dispatch. Tag-push alone does NOT trigger this — that's
 # a documented GitHub behaviour: tag pushes do not fire `release` events.
 #
-# Setup checklist (one-time, owner):
-#   1. Visit https://pypi.org/manage/account/publishing/ and add a
-#      trusted publisher for project `beambam`:
+# Setup checklist (one-time, owner) — DONE for the beambam project:
+#   1. https://pypi.org/manage/account/publishing/ trusted publisher:
 #        Owner:        tribixbite
-#        Repository:   x2d
+#        Repository:   beambam
 #        Workflow:     release.yml
-#        Environment:  pypi  (matches the `environment:` block below)
-#   2. (For first publish only) The PyPI project name must be claimed —
-#      manual upload of v1.1.0a0 with a token works, or pre-create the
-#      project page via the legacy upload form.
+#        Environment:  (none — workflow publishes without environment gate)
 #
 # Critical: NO PYPI_TOKEN / TWINE_PASSWORD env vars anywhere. With OIDC
 # trusted publishing the token has to be absent — pypa/gh-action-pypi-publish
@@ -68,9 +64,10 @@ jobs:
     needs: [build]
     runs-on: ubuntu-24.04
     if: github.event_name == 'release' || inputs.dry_run == false
-    environment:
-      name: pypi
-      url: https://pypi.org/project/beambam/
+    # No `environment:` block — the PyPI trusted publisher config for
+    # this project doesn't pin an environment name, so the workflow
+    # publishes without requiring one. If you add environment
+    # protection on PyPI later, add the matching `environment:` here.
     permissions:
       id-token: write   # MANDATORY for OIDC trusted publishing
       contents: read
