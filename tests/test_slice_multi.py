@@ -7,6 +7,12 @@ Unit tests for the helpers added this session:
   * `patch_project_settings_for_multi_color` — expand filament_* lists
 
 No BS CLI required — these test the static 3MF rewriting only.
+
+Tests that need the bundled X2D template (`rumi_frame.gcode.3mf`) or
+the Bambu colour-codes catalogue are guarded by skip markers; the
+template is built locally (`x2d_slice <stl>`), the colour catalogue
+ships inside the BambuStudio submodule (`bs-bionic/resources/...`).
+Neither is present in a fresh CI runner without further setup.
 """
 from __future__ import annotations
 import json
@@ -31,6 +37,25 @@ from x2d_slice import (
     graft_stl_into_template,
     resolve_color_name,
     DEFAULT_TEMPLATE,
+)
+
+# Skip the entire template-dependent test set if the template is missing
+# (CI doesn't ship it; locally it's built by the first `x2d_slice` run).
+needs_template = pytest.mark.skipif(
+    not Path(DEFAULT_TEMPLATE).exists(),
+    reason=f"X2D slicer template missing: {DEFAULT_TEMPLATE} — "
+           f"build locally via `x2d_slice <stl>` to populate; "
+           f"CI runners don't ship the .gcode.3mf bundle.",
+)
+
+# Resolving Bambu colour names needs the colour catalogue JSON that
+# lives inside BambuStudio's filament profile dir.
+_COLOUR_CATALOGUE = (Path(__file__).resolve().parent.parent /
+                     "bs-bionic" / "resources" / "profiles" / "BBL" /
+                     "filament" / "filaments_color_codes.json")
+needs_colour_catalogue = pytest.mark.skipif(
+    not _COLOUR_CATALOGUE.exists(),
+    reason=f"Bambu colour catalogue missing: {_COLOUR_CATALOGUE}",
 )
 
 
@@ -134,6 +159,7 @@ def test_build_3mf_object_scale_applied_to_verts():
 # ----- _patch_wrapper_for_copies + _patch_model_settings_for_copies -------
 
 
+@needs_template
 def test_patch_wrapper_for_copies_emits_n_objects():
     """Multi-object structure: 4 copies → 4 <object> in resources +
     4 <item> in <build>."""
@@ -152,6 +178,7 @@ def test_patch_wrapper_for_copies_emits_n_objects():
     assert sorted(int(x) for x in items) == [2, 3, 4, 5]
 
 
+@needs_template
 def test_patch_wrapper_for_copies_unique_transforms():
     """Each <item> gets a distinct (dx, dy) so copies don't overlap."""
     verts, _ = _tiny_mesh()
@@ -170,6 +197,7 @@ def test_patch_wrapper_for_copies_unique_transforms():
     assert len(translations) == 4
 
 
+@needs_template
 def test_patch_wrapper_for_copies_one_copy_is_noop():
     """copies=1 returns the input bytes unchanged."""
     verts, _ = _tiny_mesh()
@@ -179,6 +207,7 @@ def test_patch_wrapper_for_copies_one_copy_is_noop():
     assert patched == wrapper
 
 
+@needs_template
 def test_patch_model_settings_for_copies():
     """4 copies → 4 <object> blocks + 4 <model_instance> blocks with
     distinct object_id refs."""
@@ -202,11 +231,13 @@ def test_patch_model_settings_for_copies():
 
 
 def test_resolve_color_name_hex_passthrough():
-    """Hex input should round-trip cleanly (with the leading #)."""
+    """Hex input should round-trip cleanly (with the leading #) — no
+    catalogue lookup needed for raw hex literals."""
     assert "FF0000" in resolve_color_name("#FF0000").upper()
     assert "E4BD68" in resolve_color_name("#E4BD68").upper()
 
 
+@needs_colour_catalogue
 def test_resolve_color_name_known_name():
     """'Gold' resolves to a real Bambu color hex."""
     result = resolve_color_name("Gold")
@@ -215,6 +246,7 @@ def test_resolve_color_name_known_name():
     assert "E4BD68" in result.upper() or "FFD700" in result.upper()
 
 
+@needs_template
 def test_patch_project_settings_for_color_replaces_first_entry():
     """Single-color patch replaces filament_colour[0] only."""
     with zipfile.ZipFile(DEFAULT_TEMPLATE) as z:
@@ -224,6 +256,7 @@ def test_patch_project_settings_for_color_replaces_first_entry():
     assert j["filament_colour"][0] == "#FF0000"
 
 
+@needs_template
 def test_patch_project_settings_for_multi_color_expands_lists():
     """4 colors → filament_colour has 4 entries + parallel filament_*
     lists are expanded to 4 entries each + flush_volumes_matrix is N²."""
@@ -243,6 +276,7 @@ def test_patch_project_settings_for_multi_color_expands_lists():
     assert len(j["flush_volumes_vector"]) == 8
 
 
+@needs_template
 def test_patch_project_settings_for_multi_color_empty_noop():
     """Empty color list returns the input unchanged."""
     with zipfile.ZipFile(DEFAULT_TEMPLATE) as z:
@@ -253,6 +287,7 @@ def test_patch_project_settings_for_multi_color_empty_noop():
 # ----- per-object extruder + safety guard ---------------------------------
 
 
+@needs_template
 def test_patch_per_object_extruder_one_copy_is_noop():
     """The per-object-extruder helper is a no-op for copies<=1."""
     with zipfile.ZipFile(DEFAULT_TEMPLATE) as z:
@@ -278,6 +313,7 @@ def _write_cube_stl() -> Path:
     return out
 
 
+@needs_template
 def test_graft_4_copies_produces_valid_3mf():
     """End-to-end graft: cube STL + --copies 4 produces a 3MF where
     both the wrapper and model_settings.config have 4 object entries."""
@@ -295,6 +331,7 @@ def test_graft_4_copies_produces_valid_3mf():
     assert sorted(wrap_objs) == sorted(cfg_objs)
 
 
+@needs_template
 def test_graft_with_multi_color_expands_filaments():
     """End-to-end graft with --colors expands filament_colour list."""
     stl = _write_cube_stl()
