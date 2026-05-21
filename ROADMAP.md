@@ -66,22 +66,25 @@ Shipped in commit cb84385: cloud-search / cloud-browse / cloud-design /
 cloud-design-remixes / cloud-favorites / cloud-liked / cloud-presets /
 cloud-app-config.
 Shipped in commit 75cba23: cloud-pull-design / cloud-print-design.
+Shipped in commit 0115af6: cloud-like / cloud-comments / print-search.
 Remaining endpoints from the catalog worth wiring:
 - [ ] `cloud-project [list|show <id>]` — `/v1/iot-service/api/user/project`
-  paginated project list + per-project full record. (405 on GET as of
-  2026-05-21 — may be POST-only; needs follow-up.)
-- [ ] `cloud-like <designId>` — POST `/v1/design-service/design/{id}/like`
-  (write — needs explicit opt-in flag).
-- [ ] `cloud-ttcode <serial>` — `/v1/iot-service/api/user/ttcode` returns
-  ThroughTek P2P codes; would enable cloud-native camera streaming without
-  the existing LAN MJPEG path. Method already on cloud_client; just needs
-  the CLI wrapper.
+  is POST-only (creates a new project). GET fails 405. Wiring write-side
+  needs a careful "are you sure" prompt because it permanently creates
+  account-side state.
+- [ ] `cloud-ttcode <serial>` — `/v1/iot-service/api/user/ttcode`
+  **gated 403** on regular cloud-login sessions; restricted to Bambu
+  Connect / Handy via additional auth headers we don't have. Method
+  defined on `CloudClient` (best-effort) but the CLI wrapper would just
+  surface the 403. Defer until we have Handy-style auth.
 - [ ] `cloud-device-info <serial>` — `/v1/iot-service/api/user/device/info`
-  (405 on GET; verify method).
+  is 405 on GET, format of POST body undocumented. Defer until needed.
 - [ ] `cloud-spool {add|update|delete}` — `/v1/design-user-service/my/filament/v2`
   CRUD for the spool inventory (extends the read-only `cloud-filaments`).
-- [ ] `cloud-comment <designId>` — GET `/v1/comment-service/commentandrating`
-  for a design; POST replies via `/comment/{id}/reply`.
+  Each is a single POST/PUT/DELETE — but live-testing risks mutating the
+  real account; needs an `--allow-write` opt-in.
+- [ ] `cloud-comment-reply <commentId>` — POST `/v1/comment-service/comment/{id}/reply`
+  reply to a comment. Read-side already shipped as cloud-comments.
 
 ### Slicer power-features
 - [x] **`--copies N` / `--quantity N`** in `x2d_slice` (commit 678a0df) —
@@ -102,14 +105,15 @@ Remaining endpoints from the catalog worth wiring:
 - [x] **`beambam cloud-browse <nav>`** (commit cb84385) — browse by nav key.
 - [x] **`beambam cloud-print-design <id>`** (commit 75cba23) — MW search →
   design → slice → upload chain. `cloud-pull-design` for download-only.
+- [x] **`beambam print-search <query>`** (commit 0115af6) — interactive
+  picker: search MW → numbered list → user picks → chain into
+  cloud-print-design. `--pick N` for non-interactive selection.
 - [ ] **`beambam printables-search <query>`** — Printables GraphQL search;
   same output shape as cloud-search.
 - [ ] **`beambam thingiverse-search <query>`** — Thingiverse REST search
   (needs the 2026 browser-cookie auth that lands per #34).
-- [ ] **`beambam print-search <source> <query>`** — interactive picker:
-  search → numbered list → user picks N → fetch → slice → upload.
-  Today `cloud-print-design <id>` works given a known designId; the
-  interactive picker is the remaining 2-hr enhancement.
+- [ ] **`beambam print-search --source <printables|thingiverse>`** —
+  extend `print-search` to multi-source. MakerWorld backend works today.
 
 ### First-run experience (FRE) for `uvx beambam`
 - [x] **Device-code style email-code login** (commit 75cba23) — `cloud-login
