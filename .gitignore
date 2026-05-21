@@ -87,6 +87,8 @@ UNANSWERED_QUESTIONS.md
 runtime/network_shim/src/*.o
 runtime/network_shim/*.so
 !docs/*.png
+!site/static/*.png
+!site/static/**/*.png
 _mobile_daemon.py
 
 # Local dev convenience symlink to dist tree
