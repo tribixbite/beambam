@@ -114,7 +114,11 @@ BRIDGE = REPO / "x2d_bridge.py"
 #        flows + bootstrap loop) moved into beambam.cli.cloud. The
 #        bootstrap path lazy-imports cmd_cloud_get_access_code from
 #        x2d_bridge until that handler moves in a follow-up batch.
-_MAX_CMD_HANDLERS_IN_BRIDGE = 19
+#   18 — Phase 5b batch 9: cmd_cloud_get_access_code moved into
+#        beambam.cli.cloud. Closes the lazy thunk that cmd_cloud_login
+#        had against the bridge — the bootstrap loop now calls a
+#        same-module helper directly.
+_MAX_CMD_HANDLERS_IN_BRIDGE = 18
 
 
 def _count_cmd_handlers() -> int:
