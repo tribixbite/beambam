@@ -296,6 +296,80 @@ def test_cloud_design_json_emits_full_payload(fake_cli, capsys):
     assert parsed["id"] == 1
 
 
+# ===== cmd_cloud_ttcode ==================================================
+
+
+def test_cloud_ttcode_happy_path(fake_cli, capsys):
+    """Lucky case (handy-class session): get_ttcode returns the TUTK
+    creds dict and we pretty-print each field."""
+    import x2d_bridge
+
+    fake_cli.get_ttcode.return_value = {
+        "ttcode": "GHIJ", "uid": "AAA111", "auth_key": "secret",
+    }
+    rc = x2d_bridge.cmd_cloud_ttcode(
+        argparse.Namespace(serial="00P9AJ000000000", json=False))
+    assert rc == 0
+    fake_cli.get_ttcode.assert_called_once_with("00P9AJ000000000")
+    out = capsys.readouterr().out
+    assert "00P9AJ000000000" in out
+    assert "ttcode" in out
+    assert "AAA111" in out
+
+
+def test_cloud_ttcode_403_explains_gate(fake_cli, capsys):
+    """The documented expected 403 for non-Handy sessions must surface
+    as a clean stderr explanation (not a raw API error message)."""
+    import x2d_bridge
+
+    fake_cli.get_ttcode.side_effect = cloud_client.CloudError(
+        "HTTP 403 on GET /v1/iot-service/api/user/ttcode: Forbidden",
+        status=403)
+    rc = x2d_bridge.cmd_cloud_ttcode(
+        argparse.Namespace(serial="X", json=False))
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "ttcode gated" in err
+    assert "Handy" in err
+
+
+def test_cloud_ttcode_other_error_falls_through_to_generic_message(
+        fake_cli, capsys):
+    """Non-403 CloudErrors take the standard `cloud API failed: ...`
+    path — the 403 special-case is the only gated message."""
+    import x2d_bridge
+
+    fake_cli.get_ttcode.side_effect = cloud_client.CloudError(
+        "HTTP 500 on GET ...: Internal Server Error", status=500)
+    rc = x2d_bridge.cmd_cloud_ttcode(
+        argparse.Namespace(serial="X", json=False))
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "cloud API failed" in err
+    assert "500" in err
+
+
+def test_cloud_ttcode_json_emits_raw_dict(fake_cli, capsys):
+    import x2d_bridge
+
+    fake_cli.get_ttcode.return_value = {"ttcode": "X", "uid": "Y"}
+    rc = x2d_bridge.cmd_cloud_ttcode(
+        argparse.Namespace(serial="X", json=True))
+    assert rc == 0
+    parsed = json.loads(capsys.readouterr().out)
+    assert parsed == {"ttcode": "X", "uid": "Y"}
+
+
+def test_cloud_ttcode_logged_out_returns_1(anon_cli, capsys):
+    import x2d_bridge
+
+    rc = x2d_bridge.cmd_cloud_ttcode(
+        argparse.Namespace(serial="X", json=False))
+    assert rc == 1
+    assert "not logged in" in capsys.readouterr().err
+    anon_cli.get_ttcode.assert_not_called()
+
+
 # ===== cmd_cloud_comment_reply ===========================================
 
 

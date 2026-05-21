@@ -163,11 +163,15 @@ Remaining endpoints from the catalog worth wiring:
   is POST-only (creates a new project). GET fails 405. Wiring write-side
   needs a careful "are you sure" prompt because it permanently creates
   account-side state.
-- [ ] `cloud-ttcode <serial>` — `/v1/iot-service/api/user/ttcode`
-  **gated 403** on regular cloud-login sessions; restricted to Bambu
-  Connect / Handy via additional auth headers we don't have. Method
-  defined on `CloudClient` (best-effort) but the CLI wrapper would just
-  surface the 403. Defer until we have Handy-style auth.
+- [x] `cloud-ttcode <serial>` (this round) — CLI wrapper around
+  `CloudClient.get_ttcode`. Endpoint is gated 403 on regular cloud-
+  login sessions; the wrapper catches that case and prints a clean
+  stderr explanation pointing at HANDY_DATA_AUDIT_PART2.md instead of
+  surfacing the raw API error. Happy path (Handy-class session)
+  pretty-prints each TUTK credential field. `--json` for raw output.
+  5 unit tests in `tests/test_cmd_cloud_handlers.py` (happy path,
+  403 gate explanation, non-403 falls through to generic message,
+  --json, logged-out).
 - [ ] `cloud-device-info <serial>` — `/v1/iot-service/api/user/device/info`
   is 405 on GET, format of POST body undocumented. Defer until needed.
 - [x] `cloud-spool {add|update|delete}` (this round) — write-side CRUD
