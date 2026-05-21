@@ -1,23 +1,27 @@
 """Guard test: `x2d_bridge.py` must not grow more `cmd_*` handlers.
 
-The bridge-split plan (`docs/BRIDGE_SPLIT_PLAN.md`) calls for `cmd_*`
+The bridge-split plan (`docs/BRIDGE_SPLIT_PLAN.md`) called for `cmd_*`
 handlers to drain from the monolith into `beambam/cli/*.py` over a
-series of phases. Without an active guard, new features land in the
-monolith because the existing import path is convenient, and the
-"deferred to v1.X" excuse never expires.
+series of phases. As of commit 404352f (Phase 5d batch 8, 2026-05-21)
+**that goal is complete** — `grep -c '^def cmd_' x2d_bridge.py`
+returns 0. Every CLI command now lives under `beambam/cli/{cloud,
+control,daemon,info,lan}.py`, and `x2d_bridge.py` re-exports each
+handler for back-compat.
 
-This test pins the current `cmd_*` count and FAILS CI if it grows.
-The intended workflow:
+This test still exists as a regression guard: it FAILS CI if a new
+`cmd_*` handler is ever re-added to the monolith. The intended
+workflow going forward:
 
   * To **add a new command**, put it in `beambam/cli/<group>.py` and
-    register the handler from there. The count in this file stays the
-    same.
-  * To **finish a Phase 5 sub-phase**, move a batch of handlers out
-    of `x2d_bridge.py` and lower `_MAX_CMD_HANDLERS_IN_BRIDGE`
-    accordingly. The lowering is the visible record of progress.
-  * To **bypass the guard** (only legitimate when refactoring this
-    file or the bridge itself), update both this number AND the
-    plan doc in the same commit. A reviewer can see the change.
+    register the handler from there. The count in this file stays
+    at zero.
+  * To **bypass the guard** (only legitimate when refactoring the
+    monolith itself), update both this number AND the plan doc in
+    the same commit. A reviewer can see the change.
+
+The remaining bridge-split work (Phase 5e — _serve_http /
+ServeServer / main()) doesn't add new `cmd_*` handlers, so this
+guard stays at zero.
 
 The guard's *only* job is to prevent silent regression. It does not
 say *which* handlers belong where — that's the plan doc's job.
