@@ -89,7 +89,7 @@ class _ImplicitFTPTLS(FTP_TLS):
             conn = self.context.wrap_socket(
                 conn,
                 server_hostname=self.host,
-                session=self.sock.session,  # type: ignore[union-attr]
+                session=self.sock.session,
             )
         return conn, size
 
@@ -173,7 +173,7 @@ class _FTP_TLS_Reuse(FTP_TLS):
         if self._prot_p:
             conn = self.context.wrap_socket(
                 conn, server_hostname=self.host,
-                session=self.sock.session,  # type: ignore[union-attr]
+                session=self.sock.session,
             )
         return conn, size
 
@@ -201,7 +201,7 @@ def _manual_ftp_tls(creds: "Creds", *, timeout: float = 20.0) -> _FTP_TLS_Reuse:
     ftp.timeout = timeout + 10
     ftp.passiveserver = True
     ftp.encoding = "utf-8"
-    ftp._prot_p = False
+    ftp._prot_p = False  # type: ignore[attr-defined]
     ftp.welcome = ftp.getresp()
     ftp.login(user="bblp", passwd=creds.code)
     ftp.prot_p()
