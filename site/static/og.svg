@@ -1,17 +1,22 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 1200" width="1200" height="1200">
     <!-- =====================================================================
          beambam.boo — Open Graph image (square, 1200×1200).
-         Square aspect because most renderers crop or letterbox 1.91:1; a
-         square card survives Twitter / Discord / iMessage / Slack with
-         minimal cropping. The 1.91:1 "safe crop" sits between y=286–914,
-         so wordmark + mascot are inside that band.
 
-         Mascot: ghost-benchy. Classic benchy silhouette (smokestack +
-         cabin + hull) with the bottom of the hull replaced by a wavy
-         ghost-tail — three humps. Two big circular eyes where windows
-         would be. Drawn as a single-weight outline in filament-amber
-         (oklch(72% 0.18 65) ≈ #e0a050) on graphite (oklch(15% 0.005 65)
-         ≈ #181614), reading as a workshop blueprint diagram.
+         Mascot redesigned to a SIDE-PROFILE ghost-benchy:
+           • Classic benchy tugboat in profile (stern at left, bow at right)
+           • Smokestack rising from the cabin with three smoke wisps
+           • Cabin window + a single big ghost-eye on the cabin
+           • Hull plating lines (workshop drawing detail)
+           • Hull bottom replaced with a wavy ghost tail (5 humps)
+           • Open-mouth "o" on the bow — he's saying it
+           • Four speech bubbles trailing up + right from the bow:
+             "boo · boo · boo · boo" in descending sizes, fading toward
+             the corner. They literally lead the eye to the .boo TLD.
+
+         Safe crop band (y=286–914) holds the wordmark + mascot + tagline
+         for 1.91:1 renderers. Bubbles extend above the safe band; they
+         can crop without losing meaning because the wordmark/install
+         line below carry the brand.
          ===================================================================== -->
 
     <!-- Background -->
@@ -55,83 +60,124 @@
           fill="#6b6660">28 SUBCOMMANDS · 12 MODELS · 300 TESTS</text>
 
     <!-- ================================================================
-         GHOST-BENCHY MASCOT  (centered, ~520px tall, sits ~y=240–730)
-         All strokes amber #e0a050, single line-weight. The hull's bottom
-         edge is the ghost identity — three humps instead of a flat keel.
-         The two big eyes anchor the apparition silhouette without needing
-         a translucent overlay (which renders inconsistently across embed
-         platforms).
+         SIDE-PROFILE GHOST-BENCHY
+         Local origin = smokestack base. Mascot extends roughly:
+            x:  -210  → +320     (530px wide)
+            y:   -90  → +260     (350px tall — local)
+         Absolute (after translate(420, 350)):
+            x:   210  →  740
+            y:   260  →  610
          ================================================================ -->
-    <g transform="translate(600, 240)" stroke-linejoin="round" stroke-linecap="round">
+    <g transform="translate(420, 350)" stroke-linejoin="round" stroke-linecap="round">
 
-        <!-- Smoke wisps (3 little puffs above the stack) -->
+        <!-- Smoke wisps drifting up from the stack (3 puffs, fading) -->
         <g fill="none" stroke="#e0a050" stroke-width="3" opacity="0.55">
             <circle cx="0"   cy="-30" r="10"/>
-            <circle cx="-22" cy="-60" r="8"/>
-            <circle cx="14"  cy="-78" r="6"/>
+            <circle cx="-18" cy="-58" r="7"/>
+            <circle cx="6"   cy="-82" r="5"/>
         </g>
 
-        <!-- Smokestack -->
-        <rect x="-26" y="0" width="52" height="64" fill="#181614" stroke="#e0a050" stroke-width="4"/>
-        <!-- Stack rim -->
-        <line x1="-34" y1="0" x2="34" y2="0" stroke="#e0a050" stroke-width="4"/>
+        <!-- Smokestack (rectangular pipe with flared rim) -->
+        <rect x="-18" y="0" width="36" height="68" fill="#181614" stroke="#e0a050" stroke-width="4"/>
+        <line x1="-26" y1="0" x2="26" y2="0" stroke="#e0a050" stroke-width="4"/>
+        <!-- Stack band -->
+        <line x1="-18" y1="20" x2="18" y2="20" stroke="#e0a050" stroke-width="2" opacity="0.7"/>
 
-        <!-- Cabin (trapezoid) -->
-        <path d="M -130,64 L 130,64 L 160,160 L -160,160 Z"
+        <!-- Cabin (rear-half perched on the hull deck) -->
+        <path d="M -100,68 L 90,68 L 110,170 L -120,170 Z"
               fill="#181614" stroke="#e0a050" stroke-width="4"/>
 
-        <!-- Cabin windows (porthole pair, will be partly covered by eyes) -->
-        <rect x="-110" y="80" width="60" height="50" fill="#0f0e0c" stroke="#e0a050" stroke-width="3"/>
-        <rect x="50"   y="80" width="60" height="50" fill="#0f0e0c" stroke="#e0a050" stroke-width="3"/>
-        <!-- window cross-bars (workshop drawing detail) -->
-        <line x1="-110" y1="105" x2="-50" y2="105" stroke="#e0a050" stroke-width="1.5"/>
-        <line x1="-80"  y1="80"  x2="-80" y2="130" stroke="#e0a050" stroke-width="1.5"/>
-        <line x1="50"   y1="105" x2="110" y2="105" stroke="#e0a050" stroke-width="1.5"/>
-        <line x1="80"   y1="80"  x2="80"  y2="130" stroke="#e0a050" stroke-width="1.5"/>
+        <!-- Aft window (small square porthole at the back of cabin) -->
+        <rect x="40" y="92" width="48" height="40" fill="#0f0e0c" stroke="#e0a050" stroke-width="2.5"/>
+        <line x1="40" y1="112" x2="88" y2="112" stroke="#e0a050" stroke-width="1.5"/>
+        <line x1="64" y1="92"  x2="64" y2="132" stroke="#e0a050" stroke-width="1.5"/>
 
-        <!-- Hull top stripe -->
-        <line x1="-200" y1="170" x2="200" y2="170" stroke="#e0a050" stroke-width="2"/>
+        <!-- GHOST EYE — single large eye on the captain's window position -->
+        <ellipse cx="-50" cy="115" rx="34" ry="38"
+                 fill="#f7f5f1" stroke="#e0a050" stroke-width="3.5"/>
+        <!-- Pupil looks slightly forward (toward the bow / "boo"s) -->
+        <circle cx="-38" cy="120" r="13" fill="#181614"/>
+        <circle cx="-34" cy="115" r="4.5" fill="#f7f5f1"/>
 
-        <!-- Hull body — wavy bottom = ghost tail. 5-hump curve, even spacing. -->
+        <!-- Deck rail (line between cabin and hull) -->
+        <line x1="-200" y1="170" x2="250" y2="170" stroke="#e0a050" stroke-width="3"/>
+
+        <!-- Hull — long horizontal block, raised bow on the right, wavy ghost-tail bottom -->
         <path d="
-            M -200,160
-            L 200,160
-            L 215,340
-            Q 215,380 175,365
-            Q 135,340 95,365
-            Q 55,390 15,365
-            Q -25,340 -65,365
-            Q -105,390 -145,365
-            Q -185,340 -215,365
-            Q -225,365 -215,340 Z"
+            M -200,170
+            L 220,170
+            L 290,135                     /* bow gunwale rises */
+            L 320,170                     /* bow peak */
+            L 320,205
+            L 295,250                     /* bow curves down to waterline */
+            L 230,260
+            Q 195,272 160,258
+            Q 125,242 90,258
+            Q 55,272 20,258
+            Q -15,242 -50,258
+            Q -85,272 -120,258
+            Q -155,242 -190,258
+            Q -215,260 -205,228 Z"
               fill="#181614" stroke="#e0a050" stroke-width="4"/>
 
-        <!-- Hull plating lines (3 horizontal dashes for the workshop-drawing detail) -->
-        <line x1="-180" y1="200" x2="180" y2="200" stroke="#e0a050" stroke-width="1.5" opacity="0.5"/>
-        <line x1="-180" y1="240" x2="180" y2="240" stroke="#e0a050" stroke-width="1.5" opacity="0.5"/>
-        <line x1="-180" y1="280" x2="180" y2="280" stroke="#e0a050" stroke-width="1.5" opacity="0.5"/>
+        <!-- Hull plating horizontal lines (workshop detail, faint) -->
+        <line x1="-180" y1="195" x2="225" y2="195" stroke="#e0a050" stroke-width="1.5" opacity="0.4"/>
+        <line x1="-180" y1="220" x2="240" y2="220" stroke="#e0a050" stroke-width="1.5" opacity="0.4"/>
 
-        <!-- THE EYES — big round ghost eyes, slightly oval, sit on the cabin level.
-             These are the identity bit: the moment you see them you know it's a ghost. -->
-        <ellipse cx="-80" cy="105" rx="24" ry="28" fill="#f7f5f1" stroke="#e0a050" stroke-width="3"/>
-        <ellipse cx="80"  cy="105" rx="24" ry="28" fill="#f7f5f1" stroke="#e0a050" stroke-width="3"/>
-        <!-- Pupils — looking slightly to the right, gives the ghost personality -->
-        <circle cx="-72" cy="110" r="9" fill="#181614"/>
-        <circle cx="88"  cy="110" r="9" fill="#181614"/>
-        <!-- Eye highlights -->
-        <circle cx="-69" cy="106" r="3" fill="#f7f5f1"/>
-        <circle cx="91"  cy="106" r="3" fill="#f7f5f1"/>
+        <!-- Open mouth — small "o" hovering just forward of the eye on the cabin face -->
+        <ellipse cx="-30" cy="158" rx="9" ry="12" fill="#0f0e0c" stroke="#e0a050" stroke-width="2.5"/>
+    </g>
 
-        <!-- Small bow-of-boat detail — a tiny dot/notch at the front to keep the
-             benchy silhouette legible even without color -->
-        <circle cx="0" cy="160" r="3" fill="#e0a050"/>
+    <!-- ================================================================
+         SPEECH-BUBBLE TRAIL — four bubbles arcing from the bow up and to
+         the right, getting smaller (yelling-cartoon convention). Each
+         carries the brand "boo" — they literally lead the eye to the
+         .boo TLD line at the bottom.
 
+         Bow tip absolute coords ≈ (740, 555). Bubbles trail toward the
+         upper-right of the safe-crop band.
+         ================================================================ -->
+    <g>
+        <!-- bubble 1 — closest to the bow, biggest -->
+        <ellipse cx="800" cy="500" rx="62" ry="42"
+                 fill="#181614" stroke="#e0a050" stroke-width="3.5"/>
+        <text x="800" y="515"
+              font-family="'Atkinson Hyperlegible', 'Inter', system-ui, sans-serif"
+              font-weight="700" font-size="40"
+              fill="#f7f5f1" text-anchor="middle">boo</text>
+        <!-- tail toward the mouth -->
+        <path d="M 760,535 L 745,560 L 770,540 Z"
+              fill="#181614" stroke="#e0a050" stroke-width="3.5"/>
+
+        <!-- bubble 2 -->
+        <ellipse cx="920" cy="410" rx="52" ry="36"
+                 fill="#181614" stroke="#e0a050" stroke-width="3"/>
+        <text x="920" y="423"
+              font-family="'Atkinson Hyperlegible', 'Inter', system-ui, sans-serif"
+              font-weight="700" font-size="34"
+              fill="#f7f5f1" text-anchor="middle">boo</text>
+
+        <!-- bubble 3 -->
+        <ellipse cx="1020" cy="320" rx="42" ry="30"
+                 fill="#181614" stroke="#e0a050" stroke-width="2.5"/>
+        <text x="1020" y="331"
+              font-family="'Atkinson Hyperlegible', 'Inter', system-ui, sans-serif"
+              font-weight="700" font-size="26"
+              fill="#f7f5f1" text-anchor="middle">boo</text>
+
+        <!-- bubble 4 — tiny, fading -->
+        <ellipse cx="1090" cy="250" rx="30" ry="22"
+                 fill="#181614" stroke="#e0a050" stroke-width="2" opacity="0.85"/>
+        <text x="1090" y="259"
+              font-family="'Atkinson Hyperlegible', 'Inter', system-ui, sans-serif"
+              font-weight="700" font-size="18"
+              fill="#f7f5f1" text-anchor="middle" opacity="0.9">boo</text>
     </g>
 
     <!-- ================================================================
          WORDMARK — Big Shoulders Display ideal, Arial Black fallback.
          ================================================================ -->
-    <text x="600" y="830"
+    <text x="600" y="800"
           font-family="'Big Shoulders Display', 'Arial Black', 'Helvetica Neue', sans-serif"
           font-size="220"
           font-weight="900"
@@ -141,14 +187,14 @@
     </text>
 
     <!-- Tagline -->
-    <text x="600" y="900"
+    <text x="600" y="870"
           font-family="'Atkinson Hyperlegible', 'Inter', system-ui, sans-serif"
           font-size="32"
           fill="#f7f5f1"
           text-anchor="middle">
         Signed-MQTT bridge for every Bambu Lab printer.
     </text>
-    <text x="600" y="942"
+    <text x="600" y="912"
           font-family="'Atkinson Hyperlegible', 'Inter', system-ui, sans-serif"
           font-size="24"
           fill="#9b948c"
@@ -157,7 +203,7 @@
     </text>
 
     <!-- Install command, monospace, centered -->
-    <g transform="translate(600, 1020)">
+    <g transform="translate(600, 1000)">
         <text x="0" y="0"
               font-family="'Departure Mono', 'JetBrains Mono', 'SF Mono', Menlo, monospace"
               font-size="28"
@@ -166,7 +212,7 @@
     </g>
 
     <!-- Hostname stamp, bottom center -->
-    <text x="600" y="1095"
+    <text x="600" y="1085"
           font-family="'JetBrains Mono', 'SF Mono', Menlo, monospace"
           font-size="16"
           letter-spacing="4"
