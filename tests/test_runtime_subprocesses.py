@@ -21,6 +21,7 @@ real bridge and need longer.
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -114,6 +115,18 @@ def _conditional_skip(rel: str) -> str | None:
         if not _live_printer_env_set():
             return ("live printer not configured — set BEAMBAM_TEST_IP "
                     "to enable")
+        return None
+    if rel == "runtime/webui/test_mobile.py":
+        # The mobile UI test shells out to `chromium-browser --headless`
+        # to render the page at S25 viewport + screenshot. CI runners
+        # don't ship chromium by default; skip cleanly so a Linux box
+        # without chromium doesn't drag the whole wrapper red.
+        if not shutil.which("chromium-browser") and \
+           not shutil.which("chromium") and \
+           not shutil.which("google-chrome"):
+            return ("chromium-browser not installed — see "
+                    "runtime/webui/test_mobile.py for the apt/brew "
+                    "install hint; Linux jobs need this to render.")
         return None
     if rel == "runtime/test_phase2_smoke.py":
         # The webrtc workload inside phase2 hits a connection-setup race

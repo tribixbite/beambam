@@ -85,6 +85,10 @@ dev = [
     # + macOS so install in CI is single-pip-install fast.
     "aiortc>=1.10",
     "aiohttp>=3.9",
+    # In-process MQTT broker for the HA discovery test suite
+    # (runtime/ha/test_*.py — they spin up an amqtt broker on a free
+    # port so paho clients can publish + verify without a real broker).
+    "amqtt>=0.11",
 ]
 
 [project.urls]
