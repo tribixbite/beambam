@@ -118,7 +118,11 @@ BRIDGE = REPO / "x2d_bridge.py"
 #        beambam.cli.cloud. Closes the lazy thunk that cmd_cloud_login
 #        had against the bridge — the bootstrap loop now calls a
 #        same-module helper directly.
-_MAX_CMD_HANDLERS_IN_BRIDGE = 18
+#   16 — Phase 5b batch 10: cmd_cloud_print (120 LoC project_file
+#        upload+publish chain) + cmd_cloud_publish (43 LoC raw JSON
+#        publish) moved into beambam.cli.cloud. Both depend only on
+#        _cloud_mqtt_connect which is already there since batch 7.
+_MAX_CMD_HANDLERS_IN_BRIDGE = 16
 
 
 def _count_cmd_handlers() -> int:
