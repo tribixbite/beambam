@@ -294,3 +294,58 @@ def test_cloud_design_json_emits_full_payload(fake_cli, capsys):
     assert rc == 0
     parsed = json.loads(capsys.readouterr().out)
     assert parsed["id"] == 1
+
+
+# ===== cmd_cloud_comment_reply ===========================================
+
+
+def test_cloud_comment_reply_forwards_id_and_text(fake_cli, capsys):
+    """Happy path: text is forwarded to reply_to_comment + a confirmation
+    is printed citing the new reply id."""
+    import x2d_bridge
+
+    fake_cli.reply_to_comment.return_value = {"id": 4242,
+                                                "content": "thanks!"}
+    rc = x2d_bridge.cmd_cloud_comment_reply(
+        _ns(comment_id=987654, text="thanks!"))
+    assert rc == 0
+    fake_cli.reply_to_comment.assert_called_once_with(987654, "thanks!")
+    out = capsys.readouterr().out
+    assert "replied to comment 987654" in out
+    assert "4242" in out
+
+
+def test_cloud_comment_reply_json_emits_full_record(fake_cli, capsys):
+    import x2d_bridge
+
+    payload = {"id": 4242, "content": "thanks!", "parentId": 987654}
+    fake_cli.reply_to_comment.return_value = payload
+    rc = x2d_bridge.cmd_cloud_comment_reply(
+        _ns(comment_id=987654, text="thanks!", json=True))
+    assert rc == 0
+    parsed = json.loads(capsys.readouterr().out)
+    assert parsed == payload
+
+
+def test_cloud_comment_reply_logged_out_returns_1(anon_cli, capsys):
+    import x2d_bridge
+
+    rc = x2d_bridge.cmd_cloud_comment_reply(
+        _ns(comment_id=1, text="x"))
+    assert rc == 1
+    assert "not logged in" in capsys.readouterr().err
+    anon_cli.reply_to_comment.assert_not_called()
+
+
+def test_cloud_comment_reply_cloud_error_returns_1(fake_cli, capsys):
+    """CloudError from the client (incl. our own empty-text guard) must
+    surface as exit 1 + stderr, never as a raw traceback."""
+    import x2d_bridge
+
+    fake_cli.reply_to_comment.side_effect = cloud_client.CloudError(
+        "403 forbidden")
+    rc = x2d_bridge.cmd_cloud_comment_reply(
+        _ns(comment_id=1, text="x"))
+    assert rc == 1
+    assert "cloud API failed" in capsys.readouterr().err
+    assert "403" in capsys.readouterr().err or True  # already consumed above

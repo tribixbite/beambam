@@ -6122,6 +6122,27 @@ def cmd_cloud_comments(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_cloud_comment_reply(args: argparse.Namespace) -> int:
+    """Reply to a MakerWorld comment by its numeric ID.
+
+    Wraps CloudClient.reply_to_comment → POST
+    /v1/comment-service/comment/{id}/reply with the user-supplied text.
+    """
+    import cloud_client
+    cli = cloud_client.CloudClient.load_or_anonymous()
+    if cli.session.empty:
+        print("not logged in", file=sys.stderr); return 1
+    try:
+        r = cli.reply_to_comment(args.comment_id, args.text)
+    except cloud_client.CloudError as e:
+        print(f"cloud API failed: {e}", file=sys.stderr); return 1
+    if args.json:
+        print(json.dumps(r, indent=2, default=str)); return 0
+    reply_id = r.get("id") or r.get("commentId") or "?"
+    print(f"replied to comment {args.comment_id} (reply id={reply_id})")
+    return 0
+
+
 def cmd_cloud_pull_design(args: argparse.Namespace) -> int:
     """Download a MakerWorld design's .3mf bundle to a local directory.
 
@@ -7363,6 +7384,18 @@ def main() -> int:
     cli_com.add_argument("--offset", type=int, default=0)
     cli_com.add_argument("--json", action="store_true")
     cli_com.set_defaults(fn=cmd_cloud_comments)
+
+    cli_reply = sub.add_parser(
+        "cloud-comment-reply",
+        help="Reply to a MakerWorld comment (POST "
+             "/v1/comment-service/comment/<id>/reply).")
+    cli_reply.add_argument("comment_id", type=int,
+                            help="Numeric ID of the comment to reply to")
+    cli_reply.add_argument("text",
+                            help="Reply body. Pass via shell-quoted string.")
+    cli_reply.add_argument("--json", action="store_true",
+                            help="Emit the new reply record as JSON")
+    cli_reply.set_defaults(fn=cmd_cloud_comment_reply)
 
     cli_pull = sub.add_parser(
         "cloud-pull-design",

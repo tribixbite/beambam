@@ -170,8 +170,12 @@ Remaining endpoints from the catalog worth wiring:
   CRUD for the spool inventory (extends the read-only `cloud-filaments`).
   Each is a single POST/PUT/DELETE — but live-testing risks mutating the
   real account; needs an `--allow-write` opt-in.
-- [ ] `cloud-comment-reply <commentId>` — POST `/v1/comment-service/comment/{id}/reply`
-  reply to a comment. Read-side already shipped as cloud-comments.
+- [x] `cloud-comment-reply <commentId> <text>` (this round) — POST
+  `/v1/comment-service/comment/{id}/reply` with `{"content": text}`
+  body. `CloudClient.reply_to_comment` short-circuits empty/
+  whitespace text with `CloudError` so users see a clean error instead
+  of an opaque API 400. 6 new tests (2 cloud_client URL/body/
+  empty-guard + 4 handler happy/json/logged-out/CloudError).
 
 ### Slicer power-features
 - [x] **`--copies N` / `--quantity N`** in `x2d_slice` (commit 678a0df) —

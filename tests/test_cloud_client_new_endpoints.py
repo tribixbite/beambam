@@ -276,6 +276,25 @@ def test_toggle_design_like_uses_POST(cli, monkeypatch):
     assert cap.calls[0]["url"].endswith("/v1/design-service/design/1623016/like")
 
 
+def test_reply_to_comment_posts_correct_body(cli, monkeypatch):
+    """POST to /v1/comment-service/comment/<id>/reply with `content` in body."""
+    cap = _patch_request(monkeypatch, {"id": 999, "content": "thanks!"})
+    cli.reply_to_comment(987654, "thanks!")
+    assert cap.calls[0]["method"] == "POST"
+    assert cap.calls[0]["url"].endswith(
+        "/v1/comment-service/comment/987654/reply")
+    assert cap.calls[0]["body"] == {"content": "thanks!"}
+
+
+def test_reply_to_comment_rejects_empty_text(cli):
+    """Empty / whitespace-only text raises CloudError before the network
+    call — we short-circuit so the server's opaque 400 doesn't surface."""
+    with pytest.raises(cloud_client.CloudError, match="empty"):
+        cli.reply_to_comment(1, "")
+    with pytest.raises(cloud_client.CloudError, match="empty"):
+        cli.reply_to_comment(1, "   ")
+
+
 # ----- f3mf download URL --------------------------------------------------
 
 

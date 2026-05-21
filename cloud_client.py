@@ -761,6 +761,25 @@ class CloudClient:
             f"/v1/comment-service/commentandrating?designId={design_id}"
             f"&limit={int(limit)}&offset={int(offset)}")
 
+    def reply_to_comment(self, comment_id: int | str, text: str) -> dict:
+        """Post a reply to an existing MakerWorld comment.
+
+        Wraps POST `/v1/comment-service/comment/{commentId}/reply` with
+        a `{"content": "..."}` body. Returns the new reply record on
+        success (containing id, content, parentId, replyTo, createTime,
+        user info). Empty text raises CloudError up-front; the server
+        also rejects empties with 400 but we short-circuit so the user
+        isn't confused by an opaque API error.
+        """
+        if not text or not text.strip():
+            raise CloudError("comment reply text cannot be empty")
+        self._ensure_fresh()
+        url = REGIONS[self.session.region]["iot"] + \
+              f"/v1/comment-service/comment/{comment_id}/reply"
+        return _request("POST", url, body={"content": text}, headers={
+            "Authorization": f"Bearer {self.session.access_token}",
+        })
+
     def get_instance_download_url(self, instance_id: int | str,
                                    kind: str = "download") -> dict:
         """Resolve the signed download URL for a MakerWorld design instance.
