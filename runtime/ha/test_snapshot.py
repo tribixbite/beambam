@@ -171,6 +171,36 @@ def main() -> int:
           body == _SYNTH_JPEG,
           detail=f"got {len(body)} B, want {len(_SYNTH_JPEG)} B")
 
+    # ----- cfg-discovery sniffer (subscribe BEFORE publisher.start()) -----
+    # If we subscribe AFTER the publisher publishes its retained config, we
+    # depend on amqtt's retain-on-subscribe delivery, which races under load
+    # (the broker has been observed to misroute a wildcard-subscribed
+    # JPEG onto this subscription instead). Subscribing first means we
+    # catch the live publish in section 2 below, no retain dependency.
+    cfg_topic = "homeassistant/image/x2d_00M09A000000000/snapshot/config"
+    cfg_msgs: list[tuple[str, bytes]] = []
+    cfg_done = threading.Event()
+    cfg_client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2,
+                              client_id=f"cfg-sniff-{os.getpid()}-{time.time_ns()}")
+    cfg_subscribed = threading.Event()
+    def on_cfg_connect(c, _u, _f, _rc, _props):
+        c.subscribe(cfg_topic, qos=1)
+    def on_cfg_subscribe(_c, _u, _mid, _rcs, _props):
+        cfg_subscribed.set()
+    def on_cfg(_c, _u, msg):
+        # Defensive filter: amqtt has been observed to mis-route messages
+        # from a wildcard subscription onto a literal one. Drop anything
+        # that isn't our literal cfg_topic so cfg_msgs stays clean.
+        if msg.topic == cfg_topic:
+            cfg_msgs.append((msg.topic, msg.payload))
+            cfg_done.set()
+    cfg_client.on_connect   = on_cfg_connect
+    cfg_client.on_subscribe = on_cfg_subscribe
+    cfg_client.on_message   = on_cfg
+    cfg_client.connect("127.0.0.1", broker_port, keepalive=10)
+    cfg_client.loop_start()
+    cfg_subscribed.wait(timeout=4)
+
     # ----- 2. Publisher pulls + republishes to MQTT --------------
     pub = HAPublisher(
         broker_host="127.0.0.1",
@@ -195,29 +225,10 @@ def main() -> int:
               detail=f"got {len(first)}B want {len(_SYNTH_JPEG)}B")
 
     # ----- 3. mqtt.image discovery payload uses image_topic ------
-    # Read what HA would see by re-decoding the discovery config the
-    # publisher sent earlier.
-    cfg_topic = "homeassistant/image/x2d_00M09A000000000/snapshot/config"
-    cfg_msgs: list[tuple[str, bytes]] = []
-    cfg_done = threading.Event()
-    cfg_client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2,
-                              client_id=f"cfg-sniff-{os.getpid()}-{time.time_ns()}")
-    cfg_subscribed = threading.Event()
-    def on_cfg_connect(c, _u, _f, _rc, _props):
-        c.subscribe(cfg_topic, qos=1)
-    def on_cfg_subscribe(_c, _u, _mid, _rcs, _props):
-        cfg_subscribed.set()
-    def on_cfg(_c, _u, msg):
-        cfg_msgs.append((msg.topic, msg.payload))
-        if msg.topic == cfg_topic:
-            cfg_done.set()
-    cfg_client.on_connect   = on_cfg_connect
-    cfg_client.on_subscribe = on_cfg_subscribe
-    cfg_client.on_message   = on_cfg
-    cfg_client.connect("127.0.0.1", broker_port, keepalive=10)
-    cfg_client.loop_start()
-    cfg_subscribed.wait(timeout=4)
-    cfg_done.wait(timeout=4)
+    # cfg_client is already subscribed (see above). Wait for the live
+    # publish from HAPublisher.start() — bumped to 8 s because amqtt can
+    # delay first message under contention.
+    cfg_done.wait(timeout=8)
     check("image discovery config retained on broker",
           len(cfg_msgs) >= 1)
     if cfg_msgs:
