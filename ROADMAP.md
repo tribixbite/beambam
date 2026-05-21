@@ -300,13 +300,14 @@ phase staging.
   remains a valid alias via a `from beambam.mqtt import ...`
   re-export. Suite: 934 passed, 7 skipped (live-printer gated).
 - [~] **Phase 5a** — `cmd_*` control verbs → `beambam/cli/control.py` +
-  `beambam/cli/_helpers.py`. Partially done over two batches: pause,
-  resume, stop, gcode, home, level, set-temp, chamber-light, reboot,
-  jog, record, timelapse, resolution moved (13 of 17 listed). Still
-  in monolith: fod-check, ams-load, ams-unload (need `_xcam_cmd`
-  refactor) + files (uses ftps + Creds machinery — separate pass).
-  Bridge cmd_* count down 74 → 36; the original ~57-handler target
-  has been beaten by the parallel Phase 5b cloud-handler migration.
+  `beambam/cli/_helpers.py`. Three batches landed: pause, resume,
+  stop, gcode, home, level, set-temp, chamber-light, reboot, jog,
+  record, timelapse, resolution, fod-check, ams-load, ams-unload —
+  16 of 17 verbs migrated. `_xcam_cmd` helper relocated alongside.
+  Only `cmd_files` remains in the monolith (FTPS / Creds wiring
+  deeply coupled to bridge I/O helpers — separate pass). Bridge
+  cmd_* count down 74 → 33; original ~57-handler target beaten well
+  ahead of schedule by the parallel Phase 5b cloud-handler migration.
 - [ ] **Phase 5b** — all `cmd_cloud_*` → `beambam/cli/cloud.py`.
   ~2,000 LoC moved. Target post-phase: ~27 handlers in monolith.
 - [ ] **Phase 5c** — read-only commands (`status`, `health`, `watch`,

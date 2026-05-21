@@ -74,7 +74,12 @@ BRIDGE = REPO / "x2d_bridge.py"
 #        moved into beambam.cli.control. `_reboot_payload` helper +
 #        `_REBOOT_GCODE` constant stay in x2d_bridge so existing test
 #        imports keep working — cmd_reboot lazy-thunks into them.
-_MAX_CMD_HANDLERS_IN_BRIDGE = 36
+#   33 — Phase 5a batch 3: fod-check, ams-load, ams-unload moved into
+#        beambam.cli.control. `_xcam_cmd` helper relocated into
+#        beambam.cli._helpers (re-exported from x2d_bridge for back-
+#        compat). Only cmd_files remains from the original Phase 5a
+#        list — its FTPS/Creds wiring is too entangled to move cleanly.
+_MAX_CMD_HANDLERS_IN_BRIDGE = 33
 
 
 def _count_cmd_handlers() -> int:

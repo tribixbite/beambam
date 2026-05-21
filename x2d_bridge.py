@@ -2881,36 +2881,9 @@ def _publish_one(args: argparse.Namespace, payload: dict) -> int:
 # beambam/cli/_helpers.py (Phase 5b). Re-exported at the top.
 
 
-def _xcam_cmd(module_name: str, on_off: bool, halt_print_sensitivity: str | None = None) -> dict:
-    """Build an `{"xcam": {"command": "xcam_control_set", ...}}` payload.
-    Used to toggle camera-driven detectors that the X2D / H2D / N7 firmware
-    runs during a print. Modules supported in firmware include:
-      * fod_check                  — Foreign Object Detection on the build
-                                     plate (firmware stage 74). When on,
-                                     pre-print stage 73/74 runs; if junk is
-                                     detected on the plate the firmware
-                                     halts the print start (print_halt=true).
-      * buildplate_marker_detector — verify plate is properly seated
-      * first_layer_inspector      — AI-driven first-layer fault scan
-      * printing_monitor           — general AI monitoring (spaghetti etc.)
-      * spaghetti_detector         — alias of printing_monitor on older fw
-      * pileup_detector            — purge-chute pile-up detection
-      * clump_detector             — nozzle clumping detection
-      * airprint_detector          — air-printing (extruder skip) detection
-      * plate_offset_switch        — toggle plate-offset bed-leveling shortcut
-    See DevPrintOptions.cpp:451 for the canonical payload shape.
-    """
-    body = {
-        "command":     "xcam_control_set",
-        "sequence_id": _next_seq(),
-        "module_name": module_name,
-        "control":     bool(on_off),
-        "enable":      bool(on_off),    # older firmware spelling
-        "print_halt":  True,            # always honour halt-on-detect
-    }
-    if halt_print_sensitivity:
-        body["halt_print_sensitivity"] = halt_print_sensitivity
-    return {"xcam": body}
+# _xcam_cmd moved to beambam/cli/_helpers.py (Phase 5a batch 3). Imported
+# at the top of this file alongside the other helpers.
+from beambam.cli._helpers import _xcam_cmd  # noqa: E402, F401
 
 
 # cmd_pause / cmd_resume / cmd_stop moved to beambam/cli/control.py
@@ -2956,59 +2929,14 @@ from beambam.cli.control import (  # noqa: E402, F401
     cmd_record,
     cmd_timelapse,
     cmd_resolution,
+    cmd_fod_check,
+    cmd_ams_load,
+    cmd_ams_unload,
 )
 
 
-def cmd_fod_check(args: argparse.Namespace) -> int:
-    """Toggle the X2D's Foreign Object Detection on the build plate.
-
-    Mechanism: BambuStudio's xcam_control_set MQTT publish with
-    module_name=fod_check (DeviceCore/DevPrintOptions.cpp:544). When on, the
-    firmware runs Stage 73 (build-plate alignment) → Stage 74 (heatbed
-    surface foreign object detection) → Stage 75 (heatbed underside
-    detection) before every print start. If junk is detected on the plate
-    the firmware halts the print start (no leftover from the previous job
-    is allowed onto the new run).
-
-    The full stage table is in `BambuStudio/src/slic3r/GUI/DeviceManager.cpp:86`.
-    Print-options feature flag: support_build_plate_marker_detect=true with
-    type 2 on X2D / N7 / H2D (resources/printers/N7.json:44).
-    """
-    state = args.state.lower()
-    if state not in ("on", "off"):
-        sys.exit(f"fod-check state must be on/off, got: {state}")
-    payload = _xcam_cmd("fod_check", state == "on")
-    return _publish_one(args, payload)
-
-
-def cmd_ams_unload(args: argparse.Namespace) -> int:
-    # MachineObject::command_ams_change_filament with !load — DeviceManager.cpp:1537
-    payload = _print_cmd(
-        "ams_change_filament",
-        curr_temp=int(args.curr_temp),
-        tar_temp=int(args.tar_temp),
-        ams_id=int(args.ams),
-        target=255,    # 255 == unload sentinel
-        slot_id=255,
-    )
-    return _publish_one(args, payload)
-
-
-def cmd_ams_load(args: argparse.Namespace) -> int:
-    # MachineObject::command_ams_change_filament with load — DeviceManager.cpp:1537
-    ams_id = int(args.ams)
-    slot_id = int(args.slot)
-    tray_id = ams_id * 4 + slot_id
-    target = ams_id if tray_id == 0 else tray_id
-    payload = _print_cmd(
-        "ams_change_filament",
-        curr_temp=int(args.curr_temp),
-        tar_temp=int(args.tar_temp),
-        ams_id=ams_id,
-        target=target,
-        slot_id=slot_id,
-    )
-    return _publish_one(args, payload)
+# cmd_fod_check / cmd_ams_unload / cmd_ams_load moved to
+# beambam/cli/control.py (Phase 5a batch 3).
 
 
 # cmd_jog moved to beambam/cli/control.py (Phase 5a batch 2).

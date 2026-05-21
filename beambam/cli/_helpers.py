@@ -55,3 +55,37 @@ def _camera_cmd(command: str, **extra: Any) -> dict:
     """
     body = {"command": command, "sequence_id": _next_seq(), **extra}
     return {"camera": body}
+
+
+def _xcam_cmd(module_name: str, on_off: bool,
+              halt_print_sensitivity: str | None = None) -> dict:
+    """Build an `{"xcam": {"command": "xcam_control_set", ...}}` payload.
+
+    Used to toggle camera-driven detectors that the X2D / H2D / N7
+    firmware runs during a print. Modules supported in firmware include:
+      * fod_check                  — Foreign Object Detection on the build
+                                     plate (firmware stage 74). When on,
+                                     pre-print stage 73/74 runs; if junk is
+                                     detected on the plate the firmware
+                                     halts the print start (print_halt=true).
+      * buildplate_marker_detector — verify plate is properly seated
+      * first_layer_inspector      — AI-driven first-layer fault scan
+      * printing_monitor           — general AI monitoring (spaghetti etc.)
+      * spaghetti_detector         — alias of printing_monitor on older fw
+      * pileup_detector            — purge-chute pile-up detection
+      * clump_detector             — nozzle clumping detection
+      * airprint_detector          — air-printing (extruder skip) detection
+      * plate_offset_switch        — toggle plate-offset bed-leveling shortcut
+    See DevPrintOptions.cpp:451 for the canonical payload shape.
+    """
+    body: dict[str, Any] = {
+        "command":     "xcam_control_set",
+        "sequence_id": _next_seq(),
+        "module_name": module_name,
+        "control":     bool(on_off),
+        "enable":      bool(on_off),    # older firmware spelling
+        "print_halt":  True,            # always honour halt-on-detect
+    }
+    if halt_print_sensitivity:
+        body["halt_print_sensitivity"] = halt_print_sensitivity
+    return {"xcam": body}
