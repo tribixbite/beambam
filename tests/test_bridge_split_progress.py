@@ -57,7 +57,15 @@ BRIDGE = REPO / "x2d_bridge.py"
 #        cloud-presets moved into beambam.cli.cloud
 #   54 — Phase 5b: cloud-feed, cloud-like, cloud-comments,
 #        cloud-comment-reply moved into beambam.cli.cloud
-_MAX_CMD_HANDLERS_IN_BRIDGE = 54
+#   49 — Phase 5b complete-ish: cloud-pause, cloud-resume, cloud-stop,
+#        cloud-gcode, cloud-chamber-light moved into beambam.cli.cloud
+#        (via lazy thunks back into x2d_bridge for the cloud-MQTT
+#        publish helper). The 4 large cloud handlers (login,
+#        pull/print-design, get-access-code, print, publish, state,
+#        printers, status) still live in the monolith — they pull in
+#        too many bridge internals to move cleanly without dragging
+#        the daemon machinery with them. Tracked separately.
+_MAX_CMD_HANDLERS_IN_BRIDGE = 49
 
 
 def _count_cmd_handlers() -> int:

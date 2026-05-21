@@ -380,6 +380,69 @@ def cmd_cloud_presets(args: argparse.Namespace) -> int:
     return 0
 
 
+def _resolve_serial_or_exit(args: argparse.Namespace) -> str:
+    """Lazy import — x2d_bridge defines _resolve_cloud_serial. Avoids
+    pulling x2d_bridge into module-load scope."""
+    from x2d_bridge import _resolve_cloud_serial
+    serial = _resolve_cloud_serial(args)
+    if not serial:
+        sys.exit("--serial required")
+    return serial
+
+
+def _cloud_publish(serial: str, payload: dict, timeout: float = 10.0) -> int:
+    """Lazy proxy to x2d_bridge._cloud_publish_payload (cloud MQTT
+    helpers stay in the monolith until later phase work)."""
+    from x2d_bridge import _cloud_publish_payload
+    return _cloud_publish_payload(serial, payload, timeout)
+
+
+def cmd_cloud_pause(args: argparse.Namespace) -> int:
+    from beambam.cli._helpers import _print_cmd
+    return _cloud_publish(_resolve_serial_or_exit(args),
+                           _print_cmd("pause", param=""), args.timeout)
+
+
+def cmd_cloud_resume(args: argparse.Namespace) -> int:
+    from beambam.cli._helpers import _print_cmd
+    return _cloud_publish(_resolve_serial_or_exit(args),
+                           _print_cmd("resume", param=""), args.timeout)
+
+
+def cmd_cloud_stop(args: argparse.Namespace) -> int:
+    from beambam.cli._helpers import _print_cmd
+    return _cloud_publish(_resolve_serial_or_exit(args),
+                           _print_cmd("stop", param=""), args.timeout)
+
+
+def cmd_cloud_gcode(args: argparse.Namespace) -> int:
+    from beambam.cli._helpers import _print_cmd
+    gcode = args.gcode if args.gcode.endswith("\n") else args.gcode + "\n"
+    return _cloud_publish(_resolve_serial_or_exit(args),
+                           _print_cmd("gcode_line", param=gcode),
+                           args.timeout)
+
+
+def cmd_cloud_chamber_light(args: argparse.Namespace) -> int:
+    """Cloud equivalent of cmd_chamber_light. Same payload shape."""
+    from beambam.cli._helpers import _system_cmd
+    state = args.state.lower()
+    if state not in ("on", "off", "flashing"):
+        sys.exit(f"chamber-light state must be on/off/flashing, "
+                  f"got: {state}")
+    payload = _system_cmd(
+        "ledctrl",
+        led_node="chamber_light",
+        led_mode=state,
+        led_on_time=int(args.on_time),
+        led_off_time=int(args.off_time),
+        loop_times=int(args.loops),
+        interval_time=int(args.interval),
+    )
+    return _cloud_publish(_resolve_serial_or_exit(args), payload,
+                           args.timeout)
+
+
 def cmd_cloud_feed(args: argparse.Namespace) -> int:
     """MakerWorld 'For You' recommendation feed."""
     import random

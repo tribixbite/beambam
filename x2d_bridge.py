@@ -145,11 +145,14 @@ from beambam.ftps import download_file, list_files, upload_file  # noqa: E402,F4
 # Print start
 # ---------------------------------------------------------------------------
 
-_SEQ_COUNTER = 0
-def _next_seq() -> str:
-    global _SEQ_COUNTER
-    _SEQ_COUNTER += 1
-    return str(_SEQ_COUNTER)
+# _next_seq / _print_cmd / _system_cmd / _camera_cmd moved to
+# beambam/cli/_helpers.py (Phase 5b infrastructure). Re-exported here.
+from beambam.cli._helpers import (  # noqa: E402
+    _next_seq,
+    _print_cmd,
+    _system_cmd,
+    _camera_cmd,
+)
 
 
 def _md5_of(local_path: Path) -> str:
@@ -2874,25 +2877,8 @@ def _publish_one(args: argparse.Namespace, payload: dict) -> int:
     return 0
 
 
-def _print_cmd(command: str, **extra) -> dict:
-    """Build a `{"print": {"command":..., "sequence_id":..., **extra}}`."""
-    body = {"command": command, "sequence_id": _next_seq(), **extra}
-    return {"print": body}
-
-
-def _system_cmd(command: str, **extra) -> dict:
-    body = {"command": command, "sequence_id": _next_seq(), **extra}
-    return {"system": body}
-
-
-def _camera_cmd(command: str, **extra) -> dict:
-    """Build a `{"camera": {"command":..., "sequence_id":..., **extra}}`.
-    Used for ipcam_record_set / ipcam_timelapse / ipcam_resolution_set —
-    all unsigned MQTT publishes to device/<sn>/request. See
-    BambuStudio DeviceManager.cpp:2027-2080.
-    """
-    body = {"command": command, "sequence_id": _next_seq(), **extra}
-    return {"camera": body}
+# _print_cmd / _system_cmd / _camera_cmd now live in
+# beambam/cli/_helpers.py (Phase 5b). Re-exported at the top.
 
 
 def _xcam_cmd(module_name: str, on_off: bool, halt_print_sensitivity: str | None = None) -> dict:
@@ -5318,44 +5304,16 @@ def _resolve_cloud_serial(args: argparse.Namespace) -> str | None:
     return None
 
 
-def cmd_cloud_pause(args: argparse.Namespace) -> int:
-    serial = _resolve_cloud_serial(args) or sys.exit("--serial required")
-    return _cloud_publish_payload(serial, _print_cmd("pause", param=""), args.timeout)
-
-
-def cmd_cloud_resume(args: argparse.Namespace) -> int:
-    serial = _resolve_cloud_serial(args) or sys.exit("--serial required")
-    return _cloud_publish_payload(serial, _print_cmd("resume", param=""), args.timeout)
-
-
-def cmd_cloud_stop(args: argparse.Namespace) -> int:
-    serial = _resolve_cloud_serial(args) or sys.exit("--serial required")
-    return _cloud_publish_payload(serial, _print_cmd("stop", param=""), args.timeout)
-
-
-def cmd_cloud_gcode(args: argparse.Namespace) -> int:
-    serial = _resolve_cloud_serial(args) or sys.exit("--serial required")
-    gcode = args.gcode if args.gcode.endswith("\n") else args.gcode + "\n"
-    return _cloud_publish_payload(serial, _print_cmd("gcode_line", param=gcode),
-                                  args.timeout)
-
-
-def cmd_cloud_chamber_light(args: argparse.Namespace) -> int:
-    """Cloud equivalent of cmd_chamber_light. Same payload shape."""
-    serial = _resolve_cloud_serial(args) or sys.exit("--serial required")
-    state = args.state.lower()
-    if state not in ("on", "off", "flashing"):
-        sys.exit(f"chamber-light state must be on/off/flashing, got: {state}")
-    payload = _system_cmd(
-        "ledctrl",
-        led_node="chamber_light",
-        led_mode=state,
-        led_on_time=int(args.on_time),
-        led_off_time=int(args.off_time),
-        loop_times=int(args.loops),
-        interval_time=int(args.interval),
-    )
-    return _cloud_publish_payload(serial, payload, args.timeout)
+# cmd_cloud_pause / resume / stop / gcode / chamber_light moved to
+# beambam/cli/cloud.py (Phase 5b). They thunk through _cloud_publish
+# which lazily calls back into _cloud_publish_payload here.
+from beambam.cli.cloud import (  # noqa: E402, F401
+    cmd_cloud_pause,
+    cmd_cloud_resume,
+    cmd_cloud_stop,
+    cmd_cloud_gcode,
+    cmd_cloud_chamber_light,
+)
 
 
 # cmd_cloud_history / cmd_cloud_task / cmd_cloud_messages /
