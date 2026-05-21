@@ -55,6 +55,11 @@ def add_subparser(sub: "argparse._SubParsersAction") -> argparse.ArgumentParser:
                         "or BambuBedType int 1..5")
     p.add_argument("--keep-graft", action="store_true",
                    help="Keep the intermediate grafted 3mf for debugging")
+    p.add_argument("--orient", default="original",
+                   choices=("original", "flat", "tall", "auto"),
+                   help="Pre-slice mesh orientation: original / flat "
+                        "(largest-area face on the bed) / tall (longest "
+                        "bbox axis aligned with +Z) / auto (= flat).")
     p.set_defaults(fn=cmd_slice)
     return p
 
@@ -75,6 +80,8 @@ def cmd_slice(args: argparse.Namespace) -> int:
         new_argv += ["--bed", args.bed]
     if args.keep_graft:
         new_argv += ["--keep-graft"]
+    if getattr(args, "orient", "original") != "original":
+        new_argv += ["--orient", args.orient]
     try:
         sys.argv = new_argv
         return x2d_slice.main()

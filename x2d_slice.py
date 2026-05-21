@@ -632,7 +632,8 @@ def graft_stl_into_template(template: Path, stl: Path, out: Path,
                               scale: float = 1.0, color: str | None = None,
                               bed_type: str | None = None,
                               copies: int = 1,
-                              colors: list[str] | None = None) -> None:
+                              colors: list[str] | None = None,
+                              orient: str = "original") -> None:
     """Copy template 3MF, replace its 3D geometry with the STL's, and write
     to `out`. Preserves project_settings, machine, filament, etc.
 
@@ -652,6 +653,14 @@ def graft_stl_into_template(template: Path, stl: Path, out: Path,
     multi-part prints downstream.
     """
     vlist, tris = parse_stl(stl)
+    if orient and orient != "original":
+        from beambam.orient import orient_mesh
+        before_min_z = min(v[2] for v in vlist) if vlist else 0.0
+        vlist = orient_mesh(vlist, tris, orient)
+        after_min_z = min(v[2] for v in vlist) if vlist else 0.0
+        print(f"[x2d_slice] applied --orient {orient} "
+              f"(min Z {before_min_z:.2f} → {after_min_z:.2f})",
+              file=sys.stderr)
     print(f"[x2d_slice] parsed STL: {len(vlist)} verts, {len(tris)} triangles "
           f"(scale={scale}, color={color or 'unchanged'}, copies={copies})",
           file=sys.stderr)
@@ -793,6 +802,12 @@ def main() -> int:
                         "the BambuBedType enum integer 1..5 (5 = SuperTack).")
     p.add_argument("--keep-graft", action="store_true",
                    help="keep the intermediate grafted 3mf for debugging")
+    p.add_argument("--orient", default="original",
+                   choices=("original", "flat", "tall", "auto"),
+                   help="Pre-slice mesh orientation: original (no-op, "
+                        "default), flat (largest-area face on the bed), "
+                        "tall (longest bbox axis aligned with +Z), or "
+                        "auto (same as flat for now).")
     args = p.parse_args()
 
     # Resolve scale from whichever flag the user picked.
@@ -866,7 +881,8 @@ def main() -> int:
         graft_stl_into_template(args.template, args.stl, graft,
                                  scale=args.scale, color=color_hex,
                                  bed_type=bed_type, copies=int(args.copies),
-                                 colors=colors_list)
+                                 colors=colors_list,
+                                 orient=args.orient)
         if args.keep_graft:
             kept = args.out.with_suffix(".graft.3mf")
             shutil.copy2(graft, kept)

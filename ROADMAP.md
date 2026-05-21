@@ -183,8 +183,18 @@ Remaining endpoints from the catalog worth wiring:
   pre-validates that the grid fits the 256×256 mm X2D build volume.
 - [x] **`--scale-pct 75`** convenience flag (commit 678a0df).
 - [x] **`--mm <height>`** absolute-size scaling (commit 678a0df).
-- [ ] **`--orient {auto|flat|tall|original}`** auto-orient the model so the
-  flattest face is on the build plate (or tallest dimension is Z).
+- [x] **`--orient {auto|flat|tall|original}`** (this round) —
+  pre-slice mesh rotation. `flat`/`auto` finds the largest-area
+  triangle's normal and aligns it with -Z (face flat on the bed);
+  `tall` rotates the longest bbox axis onto +Z; `original` is a
+  no-op (default). Pure-Python math in `beambam/orient.py` —
+  Rodrigues' rotation formula on the in-memory vertex list parsed by
+  `parse_stl()` — so no numpy dependency hits `uvx beambam`. 21 unit
+  tests in `tests/test_orient.py` (vector primitives, rotation matrix
+  identity/90°/180° cases, largest-face detection, bbox-axis,
+  end-to-end on synthetic meshes, case-insensitivity, vertex-count
+  invariant). Wired into both `x2d_slice.py` and the `beambam slice`
+  subcommand.
 - [x] **`--colors c1,c2,c3,c4` / `--color-by-region map.json`** (commit
   41deb0f) — multi-AMS-slot provisioning. Expands every parallel
   `filament_*` list + `flush_volumes_matrix` (N²) +
