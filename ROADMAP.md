@@ -58,6 +58,90 @@ Ordered by user-visible impact. Pick any 3-5 for the next release cut.
 - [ ] `beambam print --dry-run` — auto-run analyze before send; refuse on flush > N grams
 - [ ] `beambam fw-update` — cloud-driven firmware update (needs Bambu Cloud auth)
 
+### Cloud API surface (additive — read-only catalog from 76-endpoint research)
+Shipped in commit 2015b20: cloud-history / cloud-task / cloud-messages /
+cloud-tickets / cloud-feed / cloud-firmware / cloud-filaments /
+cloud-search-suggest. Remaining endpoints from the catalog worth wiring:
+- [ ] `cloud-project [list|show <id>]` — `/v1/iot-service/api/user/project`
+  paginated project list + per-project full record. Returns the .3mf bundle
+  signed-S3 URL — analog of cloud-task but project-level.
+- [ ] `cloud-design <id>` — `/v1/design-service/design/{id}` MakerWorld design
+  details (title, creator, instances, tags, like/download counts).
+- [ ] `cloud-design-remixes <id>` — `/v1/design-service/design/{id}/remixed`
+  the remix tree for a model.
+- [ ] `cloud-like <designId>` — POST `/v1/design-service/design/{id}/like`
+  (write — needs explicit opt-in flag).
+- [ ] `cloud-favorites [list]` — `/v1/design-service/my/favorites/listlite`
+  caller's favorite designs (light-weight ID list).
+- [ ] `cloud-presets [list]` — `/v1/iot-service/api/slicer/setting?public=false`
+  user's saved slicer presets.
+- [ ] `cloud-ttcode <serial>` — `/v1/iot-service/api/user/ttcode` returns
+  ThroughTek P2P codes; would enable cloud-native camera streaming without
+  the existing LAN MJPEG path.
+- [ ] `cloud-device-info <serial>` — `/v1/iot-service/api/user/device/info`
+  full device specs + firmware metadata.
+- [ ] `cloud-spool {add|update|delete}` — `/v1/design-user-service/my/filament/v2`
+  CRUD for the spool inventory (extends the read-only `cloud-filaments`
+  we already ship).
+- [ ] `cloud-app-config` — `/v1/operation-service/configuration` global
+  feature-flag manifest (exposes pre-release flags Bambu has provisioned).
+
+### Slicer power-features
+- [ ] **`--copies N` / `--quantity N`** in `x2d_slice` — duplicate the model
+  N times on the plate via Bambu's `<part>` instance multiplier. Wires
+  through `cmd_slice_print` so `beambam print stl.stl --copies 4` works.
+- [ ] **`--scale-pct 75`** convenience flag (currently `--scale 0.75` works
+  but `--scale-pct 75` reads more naturally for the CLI).
+- [ ] **`--mm <height>`** absolute-size scaling — auto-compute the scale
+  factor that makes the model's bounding-box Z equal to <height>mm.
+- [ ] **`--orient {auto|flat|tall|original}`** auto-orient the model so the
+  flattest face is on the build plate (or tallest dimension is Z).
+- [ ] **`--color-by-region <map.json>`** — per-AMS-slot colour assignment
+  driven by a JSON map of mesh region → filament index. Extends today's
+  `--color` (single global colour) for multi-colour prints.
+
+### Search → slice → upload pipelines
+Today: `beambam fetch <url>` downloads from MakerWorld / Printables /
+Thingiverse. Today's gaps: no search, no automatic chain to slice +
+upload, no per-source auth re-use.
+- [ ] **`beambam mw-search <query>`** — MakerWorld search via
+  `/v1/search-service/select/design/nav?navKey=…` (or the search endpoint
+  schwarztim's bambu-mcp docs at `/v1/design-service/search?query=…`).
+  Returns a paginated table of (designId, title, creator, likes, downloads).
+- [ ] **`beambam printables-search <query>`** — Printables GraphQL search;
+  same output shape.
+- [ ] **`beambam thingiverse-search <query>`** — Thingiverse REST search
+  (needs the 2026 browser-cookie auth that lands per #34).
+- [ ] **`beambam print-search <source> <query> [--copies N --scale X]`** —
+  the meta-command: search → user picks a hit → fetch → slice → upload to
+  the configured printer. The whole point of the FRE.
+
+### First-run experience (FRE) for `uvx beambam`
+- [ ] **Device-code OAuth flow** for cloud-login. Currently `beambam cloud-login`
+  asks for email + password (potentially with 2FA prompt). For `uvx beambam`
+  fresh-OS users, password entry into a terminal is a hostile UX — Bambu's
+  cloud accepts a device-code-style flow (POST `/v1/user-service/user/sendemail/code`
+  → user clicks link on phone → returns ticket → `/v1/user-service/user/ticket/{ticket}`
+  exchanges for tokens). Implement under `cloud-login --device-code` and
+  promote to default on next major.
+- [ ] **`beambam doctor --fix`** — auto-detect missing prerequisites
+  (no `~/.x2d/credentials`, no `~/.x2d/cloud_session.json`, no `bambu-studio`
+  binary in PATH for slicing) and offer to install/configure.
+- [ ] **Dynamic help / command discovery** — argparse already produces a
+  flat help table but it's long. Group by section (LAN, Cloud, Slicing,
+  MakerWorld, Daemon, Doctor) and add `beambam help <topic>` aliasing
+  to `beambam <topic> --help`. Stretch: argcomplete + a `beambam tldr`
+  showing the 5 most-used commands.
+- [ ] **`beambam init --cloud-only`** — current `init` wizard requires
+  a LAN-reachable printer; add a path for users who only want cloud-mode
+  control (skips discovery, just runs the OAuth login).
+
+### FCM snapshot harvester ([HANDY_DATA_AUDIT_PART2.md](runtime/handy_extract/HANDY_DATA_AUDIT_PART2.md))
+- [ ] Promote `runtime/handy_extract/fcm_snapshot_harvest.py` to a daemon
+  subcommand `beambam fcm-harvest --daemon --interval 60`.
+- [ ] Serve route on the bridge daemon: `GET /history/<print_id>.jpg` reads
+  from `~/.x2d/snapshots/`.
+
 ### Refactor (boring but unblocks v2.0 surface)
 - [ ] **Bridge split phase 4** — `X2DClient` (~250 lines) → `beambam.mqtt`. Blocked on
   extracting the `_metric_inc` helper out of x2d_bridge.py first. See

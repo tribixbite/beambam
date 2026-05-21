@@ -152,14 +152,66 @@ def parse_stl(path: Path) -> tuple[list[tuple[float, float, float]], list[tuple[
     return vlist, tris
 
 
-def build_3mf_object(vlist, tris, scale: float = 1.0) -> str:
+def _bbox_xy(vlist) -> tuple[float, float, float, float]:
+    """Return (min_x, max_x, min_y, max_y) of the vertex list."""
+    if not vlist:
+        return 0.0, 0.0, 0.0, 0.0
+    xs = [v[0] for v in vlist]
+    ys = [v[1] for v in vlist]
+    return min(xs), max(xs), min(ys), max(ys)
+
+
+def _bbox_z(vlist) -> tuple[float, float]:
+    """Return (min_z, max_z) of the vertex list."""
+    if not vlist:
+        return 0.0, 0.0
+    zs = [v[2] for v in vlist]
+    return min(zs), max(zs)
+
+
+def _grid_layout(copies: int, w: float, d: float,
+                 plate_w: float = 256.0, plate_d: float = 256.0,
+                 margin: float = 5.0) -> list[tuple[float, float]]:
+    """Tile `copies` instances of a w×d footprint on a plate_w × plate_d
+    plate with `margin` mm of gap around each. Returns the (dx, dy)
+    translation per instance — the first instance keeps the model's
+    native origin (dx=dy=0), subsequent instances are nudged on the grid.
+
+    Plate default is the X2D's 256×256 build volume. If the requested
+    grid doesn't fit, raises ValueError so the caller can ask the user
+    to reduce --copies or --scale."""
+    if copies <= 1:
+        return [(0.0, 0.0)]
+    import math
+    cols = max(1, int(math.ceil(math.sqrt(copies))))
+    rows = max(1, int(math.ceil(copies / cols)))
+    cell_w = w + margin
+    cell_d = d + margin
+    needed_w = cols * cell_w + margin
+    needed_d = rows * cell_d + margin
+    if needed_w > plate_w or needed_d > plate_d:
+        raise ValueError(
+            f"can't fit {copies} copies of {w:.0f}×{d:.0f}mm on a "
+            f"{plate_w:.0f}×{plate_d:.0f}mm plate (need {needed_w:.0f}×{needed_d:.0f}). "
+            f"Reduce --copies or --scale.")
+    return [((n % cols) * cell_w, (n // cols) * cell_d) for n in range(copies)]
+
+
+def build_3mf_object(vlist, tris, scale: float = 1.0, copies: int = 1) -> str:
     """Generate a single-object 3D/Objects/object_1.model XML in the 3MF
     schema. Returns the XML as a string ready to write into the zip.
 
     `scale` is applied to vertex coordinates directly — BS CLI doesn't
     honour the build-item transform during slicing, only during GUI
     placement. Vertex-level scaling is the only path that actually
-    changes the print volume."""
+    changes the print volume.
+
+    Note: `copies` is accepted for the function signature but the actual
+    instance multiplier lives in `3D/3dmodel.model` (wrapper build block)
+    and `Metadata/model_settings.config` (plate model_instance list);
+    this file is purely the mesh source. See _patch_wrapper_for_copies()
+    and _patch_model_settings_for_copies()."""
+    _ = copies  # kept for back-compat with earlier graft call site
     s = float(scale)
     sio = []
     sio.append('<?xml version="1.0" encoding="UTF-8" standalone="no" ?>\n')
@@ -180,6 +232,96 @@ def build_3mf_object(vlist, tris, scale: float = 1.0) -> str:
     sio.append('  <build>\n    <item objectid="1" transform="1 0 0 0 1 0 0 0 1 0 0 0"/>\n  </build>\n')
     sio.append("</model>\n")
     return "".join(sio)
+
+
+def _patch_wrapper_for_copies(xml_bytes: bytes, copies: int, vlist, scale: float) -> bytes:
+    """Patch `3D/3dmodel.model`'s <build> block so it lists N <item>
+    entries (one per copy). Each is a clone of the existing first item
+    with its translation slot rewritten so copies tile on the plate.
+
+    Layout follows _grid_layout() — first copy keeps the template's
+    original (dx, dy), subsequent copies are nudged on the grid."""
+    if copies <= 1:
+        return xml_bytes
+    import re as _re
+    text = xml_bytes.decode("utf-8", errors="replace")
+
+    # Extract the existing <item .../> — preserve its objectid, UUID, etc.
+    m = _re.search(r"(<item[^/]+/>)", text)
+    if not m:
+        return xml_bytes
+    proto = m.group(1)
+    # Parse the existing transform's translation slot (last 3 of 12 numbers).
+    tm = _re.search(r'transform="([^"]+)"', proto)
+    if not tm:
+        return xml_bytes
+    base_nums = tm.group(1).split()
+    if len(base_nums) != 12:
+        return xml_bytes
+    try:
+        base_floats = [float(x) for x in base_nums]
+    except ValueError:
+        return xml_bytes
+    base_dx, base_dy, base_dz = base_floats[9], base_floats[10], base_floats[11]
+
+    # Compute per-copy nudges from the bbox.
+    min_x, max_x, min_y, max_y = _bbox_xy(vlist)
+    w = (max_x - min_x) * scale
+    d = (max_y - min_y) * scale
+    placements = _grid_layout(copies, w, d)
+
+    # Build N items by patching the proto's transform + adding 1-based UUIDs.
+    new_items = []
+    for idx, (dx, dy) in enumerate(placements):
+        nums = base_floats[:9] + [base_dx + dx, base_dy + dy, base_dz]
+        new_transform = " ".join(repr(x) for x in nums)
+        # Replace transform="..." in proto; also rewrite the UUID so each
+        # item is unique (the slicer dedupes by UUID).
+        item = _re.sub(r'transform="[^"]+"', f'transform="{new_transform}"', proto)
+        # Each item needs a fresh UUID; replace the last hex segment with idx.
+        item = _re.sub(
+            r'p:UUID="([0-9a-f]{8})-([0-9a-f]{4})-([0-9a-f]{4})-([0-9a-f]{4})-([0-9a-f]{12})"',
+            lambda m_: f'p:UUID="{idx+1:08x}-{m_.group(2)}-{m_.group(3)}-{m_.group(4)}-{m_.group(5)}"',
+            item, count=1,
+        )
+        new_items.append(item)
+    # Replace just the FIRST <item/> with all N
+    replacement = "\n  ".join(new_items)
+    text = text.replace(proto, replacement, 1)
+    return text.encode("utf-8")
+
+
+def _patch_model_settings_for_copies(xml_bytes: bytes, copies: int, vlist, scale: float) -> bytes:
+    """Patch `Metadata/model_settings.config` so its <plate> block has N
+    <model_instance> entries. The first instance keeps the template's
+    fields; subsequent instances increment `instance_id` + bump
+    `identify_id` so the slicer tells them apart."""
+    if copies <= 1:
+        return xml_bytes
+    import re as _re
+    text = xml_bytes.decode("utf-8", errors="replace")
+    # Find the existing <model_instance>...</model_instance>
+    m = _re.search(r"(<model_instance>.*?</model_instance>)", text, _re.DOTALL)
+    if not m:
+        return xml_bytes
+    proto = m.group(1)
+    # Parse the existing identify_id so subsequent copies bump from there.
+    id_m = _re.search(r'identify_id"\s+value="(\d+)"', proto)
+    base_identify = int(id_m.group(1)) if id_m else 1
+
+    new_instances = []
+    for idx in range(copies):
+        inst = _re.sub(
+            r'instance_id"\s+value="\d+"',
+            f'instance_id" value="{idx}"', proto, count=1,
+        )
+        inst = _re.sub(
+            r'identify_id"\s+value="\d+"',
+            f'identify_id" value="{base_identify + idx}"', inst, count=1,
+        )
+        new_instances.append(inst)
+    text = text.replace(proto, "\n    ".join(new_instances), 1)
+    return text.encode("utf-8")
 
 
 def patch_model_settings_for_scale(xml_bytes: bytes, scale: float) -> bytes:
@@ -364,20 +506,30 @@ def patch_project_settings_for_bed(json_bytes: bytes, bed_type: str) -> bytes:
 
 def graft_stl_into_template(template: Path, stl: Path, out: Path,
                               scale: float = 1.0, color: str | None = None,
-                              bed_type: str | None = None) -> None:
+                              bed_type: str | None = None,
+                              copies: int = 1) -> None:
     """Copy template 3MF, replace its 3D geometry with the STL's, and write
     to `out`. Preserves project_settings, machine, filament, etc.
 
     If `scale` != 1, bakes it into the build-item transform. If `color`
     is provided (e.g. "#FF0000"), patches the filament colour in
     project_settings.config so the slicer assigns it to the primary
-    filament tray.
+    filament tray. If `copies` > 1, emits that many instance entries on
+    a grid (see _grid_layout).
     """
     vlist, tris = parse_stl(stl)
     print(f"[x2d_slice] parsed STL: {len(vlist)} verts, {len(tris)} triangles "
-          f"(scale={scale}, color={color or 'unchanged'})", file=sys.stderr)
+          f"(scale={scale}, color={color or 'unchanged'}, copies={copies})",
+          file=sys.stderr)
 
-    new_xml = build_3mf_object(vlist, tris, scale=scale)
+    new_xml = build_3mf_object(vlist, tris, scale=scale, copies=copies)
+    # Pre-validate the grid for copies>1 so the user gets a clean error
+    # before we touch any output files.
+    if int(copies) > 1:
+        _min_x, _max_x, _min_y, _max_y = _bbox_xy(vlist)
+        _grid_layout(int(copies),
+                     (_max_x - _min_x) * float(scale),
+                     (_max_y - _min_y) * float(scale))
 
     with zipfile.ZipFile(template, "r") as zin:
         names = zin.namelist()
@@ -399,12 +551,18 @@ def graft_stl_into_template(template: Path, stl: Path, out: Path,
             for name in names:
                 if name == target:
                     zout.writestr(name, new_xml)
+                elif name == "3D/3dmodel.model" and int(copies) > 1:
+                    data = zin.read(name)
+                    data = _patch_wrapper_for_copies(data, int(copies), vlist, float(scale))
+                    zout.writestr(name, data)
                 elif name == "Metadata/model_settings.config":
                     data = zin.read(name)
                     if scale != 1.0:
                         data = patch_model_settings_for_scale(data, scale)
                     if color:
                         data = patch_model_settings_for_color(data, color)
+                    if int(copies) > 1:
+                        data = _patch_model_settings_for_copies(data, int(copies), vlist, float(scale))
                     zout.writestr(name, data)
                 elif name == "Metadata/project_settings.config":
                     data = zin.read(name)
@@ -445,8 +603,21 @@ def main() -> int:
                    help=f"reference 3mf with embedded X2D profile (default: {DEFAULT_TEMPLATE})")
     p.add_argument("--plate", type=int, default=0, help="plate to slice (0 = all)")
     p.add_argument("--scale", type=float, default=1.0,
-                   help="uniform scale factor applied to the STL before slicing "
-                        "(baked into the 3MF build-item transform; 1.0 = original)")
+                   help="uniform scale factor (1.0 = original). Mutually "
+                        "exclusive with --scale-pct / --mm.")
+    p.add_argument("--scale-pct", type=float, default=None,
+                   help="scale as a percentage (75 = 0.75x, 200 = 2x). More "
+                        "readable than --scale for human input.")
+    p.add_argument("--mm", type=float, default=None,
+                   help="auto-scale so the model's Z (height) is this many mm. "
+                        "Useful when you know the target physical size — beats "
+                        "fiddling with --scale.")
+    p.add_argument("--copies", "--quantity", "-n", type=int, default=1,
+                   dest="copies",
+                   help="how many copies of the model to lay out on the plate "
+                        "(default 1). Copies tile on a grid; if they don't fit "
+                        "in the 256×256 mm X2D build volume you'll get a "
+                        "clear ValueError. Wires through cmd_slice_print.")
     p.add_argument("--color",
                    help="primary filament color: either #RRGGBB hex or a Bambu "
                         "color name (e.g. 'Gold', 'PLA Silk Gold', 'GFA05 Gold'). "
@@ -459,6 +630,25 @@ def main() -> int:
     p.add_argument("--keep-graft", action="store_true",
                    help="keep the intermediate grafted 3mf for debugging")
     args = p.parse_args()
+
+    # Resolve scale from whichever flag the user picked.
+    scale = float(args.scale)
+    if args.scale_pct is not None:
+        if args.scale != 1.0:
+            print("warning: both --scale and --scale-pct given; --scale-pct wins", file=sys.stderr)
+        scale = args.scale_pct / 100.0
+    if args.mm is not None:
+        # Need the STL bbox to compute the scale factor that hits target Z.
+        if not args.stl.exists():
+            print(f"input not found: {args.stl}", file=sys.stderr); return 2
+        _vl, _tr = parse_stl(args.stl)
+        _zmin, _zmax = _bbox_z(_vl)
+        cur_z = _zmax - _zmin
+        if cur_z <= 0:
+            print("can't auto-scale: STL has zero Z extent", file=sys.stderr); return 2
+        scale = float(args.mm) / cur_z
+        print(f"[x2d_slice] --mm {args.mm} on Z={cur_z:.2f}mm → scale={scale:.4f}", file=sys.stderr)
+    args.scale = scale  # downstream calls below read args.scale
 
     if not args.stl.exists():
         print(f"input not found: {args.stl}", file=sys.stderr)
@@ -479,7 +669,7 @@ def main() -> int:
         graft = Path(td) / "graft.gcode.3mf"
         graft_stl_into_template(args.template, args.stl, graft,
                                  scale=args.scale, color=color_hex,
-                                 bed_type=bed_type)
+                                 bed_type=bed_type, copies=int(args.copies))
         if args.keep_graft:
             kept = args.out.with_suffix(".graft.3mf")
             shutil.copy2(graft, kept)

@@ -3486,6 +3486,12 @@ def cmd_slice_print(args: argparse.Namespace) -> int:
                 cmd.extend(["--template", str(args.template)])
             if args.scale and args.scale != 1.0:
                 cmd.extend(["--scale", str(args.scale)])
+            if getattr(args, "scale_pct", None) is not None:
+                cmd.extend(["--scale-pct", str(args.scale_pct)])
+            if getattr(args, "mm", None) is not None:
+                cmd.extend(["--mm", str(args.mm)])
+            if getattr(args, "copies", 1) and int(args.copies) != 1:
+                cmd.extend(["--copies", str(int(args.copies))])
             if args.color:
                 cmd.extend(["--color", args.color])
             rc = subprocess.call(cmd)
@@ -5891,6 +5897,15 @@ def main() -> int:
     sp.add_argument("--scale", type=float, default=1.0,
                     help="Uniform scale factor applied to STL (forwards to "
                          "x2d_slice.py --scale; ignored for 3MF input)")
+    sp.add_argument("--scale-pct", type=float, default=None,
+                    help="Scale as a percentage (75 = 0.75×). More readable "
+                         "than --scale for typed input.")
+    sp.add_argument("--mm", type=float, default=None,
+                    help="Auto-scale STL so its Z-extent equals this many mm.")
+    sp.add_argument("--copies", "--quantity", "-n", type=int, default=1,
+                    dest="copies",
+                    help="How many copies of the model to tile on the plate. "
+                         "Forwards to x2d_slice.py --copies; ignored for 3MF input.")
     sp.add_argument("--color",
                     help="Primary filament color #RRGGBB (forwards to "
                          "x2d_slice.py --color; ignored for 3MF input)")
