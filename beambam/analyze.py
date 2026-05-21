@@ -249,7 +249,7 @@ def _parse_filament_sequence(json_bytes: bytes, plate_idx: int = 1) -> dict[str,
     }
 
 
-def _count_gcode_toolchanges(gcode_bytes: bytes) -> dict[str, int]:
+def _count_gcode_toolchanges(gcode_bytes: bytes) -> dict[str, Any]:
     """Count T0..T9 toolchange directives + M620 flush cycles in the actual
     gcode. Doesn't parse — just regexes line starts.
 

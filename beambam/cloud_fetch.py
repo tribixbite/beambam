@@ -174,10 +174,11 @@ def format_devices(devices: list[dict[str, Any]]) -> str:
         return "no printers bound to this Bambu Cloud account"
     lines = [f"{len(devices)} bound printer(s):"]
     for d in devices:
+        code = d.get('dev_access_code') or ""
         lines.append(
             f"  [{d.get('dev_id')}] {d.get('name')} "
             f"model={d.get('dev_product_name')} "
-            f"version={d.get('dev_access_code')[:4]}…  "
+            f"version={code[:4]}…  "
             f"online={d.get('online')}"
         )
     return "\n".join(lines)
