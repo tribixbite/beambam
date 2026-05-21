@@ -310,13 +310,13 @@ phase staging.
   ahead of schedule by the parallel Phase 5b cloud-handler migration.
 - [ ] **Phase 5b** — all `cmd_cloud_*` → `beambam/cli/cloud.py`.
   ~2,000 LoC moved. Target post-phase: ~27 handlers in monolith.
-- [~] **Phase 5c** — read-only commands (`status`, `health`, `watch`,
-  `tail`, `notify`, `printers`, `fetch`) → `beambam/cli/info.py`.
-  Three batches landed: status + printers (batch 1), health + watch
-  (batch 2), tail + notify with the `_TailDispatcher` class +
-  `_tail_print` helper (batch 3). 6 of 7 verbs migrated. Remaining:
-  fetch — the large multi-host URL parser (MakerWorld / Printables /
-  Thingiverse / direct STL); separate batch.
+- [x] **Phase 5c** — read-only commands → `beambam/cli/info.py`.
+  Four batches closed: status + printers, health + watch, tail (with
+  `_TailDispatcher` + `_tail_print`) + notify, fetch. All 7 listed
+  verbs migrated. `_TailDispatcher` + `_tail_print` re-exported from
+  x2d_bridge so existing test imports keep working. `cmd_fetch` lazy-
+  thunks back into x2d_bridge for the `PACKAGE_VERSION` + `X2D_ROOT_PATH`
+  constants. Bridge cmd_* count after Phase 5c: 26.
 - [ ] **Phase 5d** — daemon cluster (`cmd_daemon`, `cmd_serve`,
   `cmd_camera`, `cmd_webrtc`, `cmd_ha_publish`, `_serve_http`) →
   `beambam/cli/daemon.py`. Largest single sub-phase (~1,500 LoC).

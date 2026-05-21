@@ -490,6 +490,299 @@ def cmd_notify(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_fetch(args: argparse.Namespace) -> int:
+    """Download a model from MakerWorld / Printables / Thingiverse — or
+    any direct STL/3MF URL — into ~/Downloads/x2d-models/ and optionally
+    open it in BambuStudio (#98 in IMPROVEMENTS.md).
+
+    URL parsers:
+      * MakerWorld: https://makerworld.com/en/models/<NUMERIC_ID>* —
+        fetches the page, finds the "instant download" 3mf URL.
+      * Printables: https://www.printables.com/model/<NUMERIC_ID>-<slug>* —
+        fetches the JSON API endpoint, picks the first "files/file_models" download URL.
+      * Thingiverse: https://www.thingiverse.com/thing:<NUMERIC_ID>* —
+        downloads from /thing:<id>/zip and unpacks STLs into the dir.
+      * Direct .stl / .3mf / .obj / .step URLs: just curl them.
+    """
+    import json as _json
+    import os
+    import re
+    import subprocess
+    import sys
+    import urllib.parse
+    import urllib.request
+    from urllib.request import Request, urlopen
+
+    # Bridge-internal constants kept in x2d_bridge so a single source of
+    # truth survives (PACKAGE_VERSION is wired up from pyproject; the
+    # root path comes from the env override).
+    from x2d_bridge import PACKAGE_VERSION, X2D_ROOT_PATH
+
+    out_dir = Path(args.out_dir).expanduser()
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    UA = ("Mozilla/5.0 (Linux; Android 14; SM-S938U) AppleWebKit/537.36 "
+          "(KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36")
+
+    def http_get(u: str, accept: str = "*/*", timeout: int = 30,
+                 extra_headers: dict[str, str] | None = None) -> bytes:
+        hdrs = {"User-Agent": UA, "Accept": accept}
+        if extra_headers:
+            hdrs.update(extra_headers)
+        req = Request(u, headers=hdrs)
+        with urlopen(req, timeout=timeout) as r:
+            return r.read()
+
+    def save(name: str, data: bytes) -> Path:
+        p = out_dir / name
+        p.write_bytes(data)
+        print(f"[fetch] saved {len(data)//1024} KiB → {p}",
+              file=sys.stderr)
+        return p
+
+    url = args.url.strip()
+    pu = urllib.parse.urlparse(url)
+    host = pu.netloc.lower()
+    path = pu.path
+
+    saved: list[Path] = []
+
+    if any(url.lower().endswith(ext)
+           for ext in (".stl", ".3mf", ".obj", ".step", ".stp")):
+        # Direct file URL — easy path.
+        name = Path(urllib.parse.unquote(path)).name or "model.stl"
+        saved.append(save(name,
+                          http_get(url, accept="application/octet-stream")))
+
+    elif "makerworld" in host:
+        # MakerWorld: extract the design ID; the 2026 backend rewrote the
+        # API surface. The old /api/v1/design/design-detail endpoint is
+        # gone (404). Use /api/v1/design-service/design/<id> for metadata.
+        # NOTE: MakerWorld's public API does NOT expose a 3mf download URL
+        # for arbitrary designs — the bbsl bucket needs MakerWorld web
+        # cookies. We fetch metadata + cover and surface a clear "manual
+        # download required" message for the 3mf itself. For richer
+        # access use `beambam cloud-fetch --info <id>` / `--instances <id>`.
+        m = re.search(r"/models/(\d+)", path)
+        if not m:
+            sys.exit(f"can't extract MakerWorld design ID from {url!r}")
+        mid = m.group(1)
+        api = f"https://makerworld.com/api/v1/design-service/design/{mid}"
+        meta = _json.loads(http_get(api, accept="application/json"))
+        title = meta.get("title") or f"makerworld-{mid}"
+        cover = meta.get("coverUrl") or meta.get("coverPortrait")
+        if cover:
+            cover_name = f"{title.replace('/', '_').strip()}.cover.png"
+            saved.append(save(cover_name,
+                              http_get(cover, accept="image/*")))
+        instance_count = len(meta.get("instances") or [])
+        print(f"[fetch] MakerWorld design {mid} \"{title}\" — "
+              f"{instance_count} sliced instances. The 3mf itself "
+              f"can't be downloaded via public API (CDN requires "
+              f"MakerWorld web cookies). Open\n"
+              f"  https://makerworld.com/en/models/{mid}\n"
+              f"in a browser and click \"Download\" to get the "
+              f".gcode.3mf.\n"
+              f"Run `beambam cloud-fetch --instances {mid}` to see "
+              f"all\nslicer profiles before deciding which to "
+              f"download.", file=sys.stderr)
+
+    elif "printables" in host:
+        m = re.search(r"/model/(\d+)", path)
+        if not m:
+            sys.exit(f"can't extract Printables model ID from {url!r}")
+        pid_ = m.group(1)
+        # Printables uses a public GraphQL endpoint (2026 surface). The
+        # legacy REST /v2/models/<id>/files returns 404 since the 2026
+        # backend rewrite. Query.print(id:) returns stls + otherFiles with
+        # filePreviewPath; the real file URL is the same directory minus
+        # the "_preview.png" suffix, joined under files.printables.com.
+        gql_q = ("query($id:ID!){print(id:$id){id name slug "
+                 "stls{id name fileSize filePreviewPath} "
+                 "otherFiles{id name fileSize filePreviewPath "
+                 "fileFormat}}}")
+        try:
+            body = _json.dumps(
+                {"query": gql_q, "variables": {"id": pid_}}
+            ).encode()
+            req = urllib.request.Request(
+                "https://api.printables.com/graphql/",
+                data=body,
+                headers={
+                    "Content-Type": "application/json",
+                    "User-Agent": f"beambam/{PACKAGE_VERSION}",
+                })
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                gql = _json.loads(resp.read())
+            prt = (gql.get("data") or {}).get("print") or {}
+            entries = []
+            entries += [(s, ".stl") for s in (prt.get("stls") or [])]
+            entries += [(s, "") for s in (prt.get("otherFiles") or [])]
+            for entry, fallback_ext in entries:
+                preview = entry.get("filePreviewPath") or ""
+                name = entry.get("name") or ""
+                # name may already include extension (otherFiles); stls
+                # don't always carry it on the API but always do in path.
+                if name and not any(
+                    name.lower().endswith(e)
+                    for e in (".stl", ".3mf", ".obj",
+                              ".step", ".stp")):
+                    name += fallback_ext
+                if not name or not preview:
+                    continue
+                # preview path:
+                #   "media/prints/<PID>/stls/<UID>/<stem>_preview.png"
+                # real path:
+                #   "media/prints/<PID>/stls/<UID>/<name>"
+                p = Path(preview)
+                dir_ = "/".join(p.parts[:-1])
+                file_url = f"https://files.printables.com/{dir_}/{name}"
+                try:
+                    saved.append(save(name, http_get(
+                        file_url,
+                        accept="application/octet-stream")))
+                    if not args.all:
+                        break
+                except Exception as e:
+                    print(f"[fetch] {file_url} → {e}", file=sys.stderr)
+        except Exception as e:
+            print(f"[fetch] Printables GraphQL failed: {e}",
+                  file=sys.stderr)
+        if not saved:
+            sys.exit(f"no STL/3MF download URL found for Printables "
+                     f"{pid_} — model may be premium-only or the "
+                     f"GraphQL schema has shifted again. Workaround: "
+                     f"open in browser, save the download URL, and "
+                     f"pass it directly to `fetch`.")
+
+    elif "thingiverse" in host:
+        m = re.search(r"thing:(\d+)", path)
+        if not m:
+            sys.exit(f"can't extract Thingiverse model ID from "
+                     f"{url!r}")
+        tid = m.group(1)
+        # Thingiverse gated public-API + /download:NNN behind auth in
+        # 2026. Three input modes, in priority order:
+        #   1) THINGIVERSE_TOKEN — official Bearer token from
+        #      https://www.thingiverse.com/apps/create (free).
+        #   2) THINGIVERSE_COOKIE — raw Cookie header from a logged-in
+        #      browser session. Use this if you've signed in on the
+        #      same machine: copy the Cookie value from devtools
+        #      Network tab on any thingiverse.com request.
+        #   3) No auth → public-API will 401 and we surface a clear
+        #      error.
+        ti_token  = os.environ.get("THINGIVERSE_TOKEN", "").strip()
+        ti_cookie = os.environ.get("THINGIVERSE_COOKIE", "").strip()
+        api = f"https://api.thingiverse.com/things/{tid}/files"
+        try:
+            extra = {}
+            if ti_token:  extra["Authorization"] = f"Bearer {ti_token}"
+            if ti_cookie: extra["Cookie"] = ti_cookie
+            files_meta = _json.loads(http_get(
+                api, accept="application/json",
+                extra_headers=extra or None))
+            for entry in files_meta:
+                dl = (entry.get("download_url")
+                      or entry.get("public_url"))
+                name = entry.get(
+                    "name",
+                    f"thingiverse-{tid}-{entry.get('id', 'x')}.stl")
+                if dl and name.lower().endswith(
+                        (".stl", ".3mf", ".obj", ".step", ".stp")):
+                    saved.append(save(name, http_get(
+                        dl, accept="application/octet-stream",
+                        extra_headers=(
+                            {"Cookie": ti_cookie} if ti_cookie
+                            else None))))
+                    if not args.all:
+                        break
+        except Exception as e:
+            print(f"[fetch] Thingiverse API failed: {e}",
+                  file=sys.stderr)
+        if not saved:
+            # Page scrape (still works for some legacy models)
+            page_url = f"https://www.thingiverse.com/thing:{tid}"
+            try:
+                page = http_get(
+                    page_url,
+                    extra_headers=(
+                        {"Cookie": ti_cookie} if ti_cookie else None)
+                ).decode("utf-8", errors="replace")
+            except Exception as e:
+                print(f"[fetch] page fetch failed: {e}",
+                      file=sys.stderr)
+                page = ""
+            for fpat in (
+                r'href="(https://cdn\.thingiverse\.com/[^"]+'
+                r'\.(?:stl|3mf|obj))"',
+                r'href="(/download:\d+)"',
+            ):
+                for fm in re.finditer(fpat, page):
+                    fu = fm.group(1)
+                    if fu.startswith("/"):
+                        fu = "https://www.thingiverse.com" + fu
+                    name = Path(urllib.parse.unquote(
+                        urllib.parse.urlparse(fu).path)).name or "model.stl"
+                    if not any(name.lower().endswith(e)
+                               for e in (".stl", ".3mf", ".obj")):
+                        name += ".stl"
+                    try:
+                        saved.append(save(name, http_get(
+                            fu, accept="application/octet-stream",
+                            extra_headers=(
+                                {"Cookie": ti_cookie} if ti_cookie
+                                else None))))
+                    except Exception as e:
+                        print(f"[fetch] {fu} → {e}",
+                              file=sys.stderr)
+                    if not args.all:
+                        break
+                if saved:
+                    break
+        if not saved:
+            sys.exit(
+                f"no STL/3MF links found for Thingiverse {tid}.\n"
+                f"Thingiverse requires authentication for downloads "
+                f"as of 2026 — set ONE of:\n"
+                f"  THINGIVERSE_TOKEN=<bearer>   "
+                f"(get one at thingiverse.com/apps/create, free)\n"
+                f"  THINGIVERSE_COOKIE='session=...'   "
+                f"(copy Cookie header from a logged-in browser)\n"
+                f"Alternatively: open in browser, save the .stl/.3mf, "
+                f"and pass the local file path to BambuStudio directly.")
+    else:
+        sys.exit(f"unsupported URL host {host!r} — supported: "
+                 f"direct STL/3MF/OBJ links, makerworld.com, "
+                 f"printables.com, thingiverse.com")
+
+    if args.json:
+        print(_json.dumps([str(p) for p in saved], indent=2))
+    else:
+        for p in saved:
+            print(p)
+
+    if args.open:
+        bs_bin = X2D_ROOT_PATH / "bs-bionic" / "build" / "src" / "bambu-studio"
+        if not bs_bin.exists():
+            print(f"[fetch] bambu-studio not at {bs_bin} — skipping --open",
+                  file=sys.stderr)
+        else:
+            # Spawn BS with the file(s) on argv. If BS is already running,
+            # this will start a NEW instance — wxApp single-instance mode
+            # would forward, but BS has it disabled. The user gets a 2nd window.
+            subprocess.Popen(
+                [str(bs_bin)] + [str(p) for p in saved],
+                env={**os.environ,
+                     "DISPLAY": os.environ.get("DISPLAY", ":1")},
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+            print(f"[fetch] launched bambu-studio with {len(saved)} "
+                  f"file(s)", file=sys.stderr)
+    return 0
+
+
 def cmd_printers(_args: argparse.Namespace) -> int:
     """List every [printer] / [printer:NAME] section in ~/.x2d/credentials.
 

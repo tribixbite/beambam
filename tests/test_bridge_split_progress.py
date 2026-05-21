@@ -92,7 +92,12 @@ BRIDGE = REPO / "x2d_bridge.py"
 #        Class + helper are re-exported from x2d_bridge so the
 #        existing tail unit tests (`from x2d_bridge import
 #        _TailDispatcher, _tail_print`) keep working unchanged.
-_MAX_CMD_HANDLERS_IN_BRIDGE = 27
+#   26 — Phase 5c batch 4: cmd_fetch (250-LoC multi-host URL parser
+#        for MakerWorld / Printables / Thingiverse / direct STL/3MF)
+#        moved into beambam.cli.info. Lazy-thunks back into x2d_bridge
+#        for PACKAGE_VERSION + X2D_ROOT_PATH. Phase 5c CLOSED — all
+#        7 listed read-only handlers now live in beambam.cli.info.
+_MAX_CMD_HANDLERS_IN_BRIDGE = 26
 
 
 def _count_cmd_handlers() -> int:
