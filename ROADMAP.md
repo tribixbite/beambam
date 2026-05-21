@@ -53,7 +53,14 @@ Ordered by user-visible impact. Pick any 3-5 for the next release cut.
 - [ ] `beambam reboot` — soft reboot via M-code or signed control payload
 - [ ] `beambam plate {select,skip}` — multi-plate operations on the current file
 - [ ] `beambam tail` — stream HMS errors + state changes as a live log
-- [ ] `beambam upgrade` — pip self-upgrade + post-upgrade migration prompts
+- [x] `beambam upgrade` — pip self-upgrade. Queries PyPI JSON API for
+  the latest stable (filters yanked + pre-releases unless `--pre`),
+  diffs against `importlib.metadata.version("beambam")`, then invokes
+  `<python> -m pip install --upgrade beambam`. Special-cases:
+  source-checkout (no install), dev-ahead (local > PyPI), uvx-managed
+  venv (prints `uvx --refresh-package` hint). `--check` for dry-run.
+  21 unit tests in `tests/test_upgrade.py`; live-verified against real
+  PyPI (1.2.0 latest).
 - [x] `beambam install-completion {bash,zsh,fish}` — shell tab-completion
   via a static, zero-dep generator (commits: this round). Subcommand-set
   snapshot from the live argparse tree; `--install` writes to
@@ -126,8 +133,9 @@ Remaining endpoints from the catalog worth wiring:
 - [x] **`beambam print-search <query>`** (commit 0115af6) — interactive
   picker: search MW → numbered list → user picks → chain into
   cloud-print-design. `--pick N` for non-interactive selection.
-- [ ] **`beambam printables-search <query>`** — Printables GraphQL search;
-  same output shape as cloud-search.
+- [x] **`beambam printables-search <query>`** (commit 50aa9d9) —
+  Printables GraphQL search via anonymous `searchPrints2`; same output
+  shape as cloud-search.
 - [ ] **`beambam thingiverse-search <query>`** — Thingiverse REST search
   (needs the 2026 browser-cookie auth that lands per #34).
 - [ ] **`beambam print-search --source <printables|thingiverse>`** —
@@ -153,8 +161,8 @@ Remaining endpoints from the catalog worth wiring:
 - [x] Promoted `runtime/handy_extract/fcm_snapshot_harvest.py` to bridge
   subcommand `beambam fcm-harvest --device <ip:port> [--daemon --interval 60]`
   (commit 75cba23).
-- [ ] Serve route on the bridge daemon: `GET /history/<print_id>.jpg` reads
-  from `~/.x2d/snapshots/`.
+- [x] Serve route on the bridge daemon: `GET /history/<print_id>.jpg`
+  (commit 50aa9d9) reads from `~/.x2d/snapshots/`.
 
 ### Refactor (boring but unblocks v2.0 surface)
 - [ ] **Bridge split phase 4** — `X2DClient` (~250 lines) → `beambam.mqtt`. Blocked on

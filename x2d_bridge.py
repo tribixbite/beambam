@@ -743,7 +743,8 @@ def _serve_http(bind: str,
                 clients: dict | None = None,
                 web_dir: Path | None = None,
                 queue_mgr=None,
-                timelapse_rec=None) -> None:
+                timelapse_rec=None,
+                get_hub: Callable[[str], "StateHub | None"] | None = None) -> None:
     """Multi-printer HTTP server (item #36).
 
     `get_state` and `get_last_ts` now take a printer name (empty string
@@ -894,34 +895,69 @@ def _serve_http(bind: str,
             self.wfile.write(body)
 
         def _serve_state_events(self, printer: str) -> None:
-            """Server-Sent Events stream pushing the printer's state JSON
-            every 1s and a `: ping\\n\\n` keepalive every 15s."""
+            """Server-Sent Events stream of printer state pushes.
+
+            When a StateHub is wired in for this printer (daemon mode),
+            the handler subscribes to the hub and writes each push as a
+            `data:` line the moment it arrives — no 1Hz polling, no
+            content-equality comparison. A `: keepalive` comment fires
+            every 15 s of idle so intermediate proxies don't drop the
+            connection.
+
+            Without a hub (one-shot HTTP without a daemon, tests), the
+            handler falls back to the legacy 1 s polling path."""
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream; charset=utf-8")
             self.send_header("Cache-Control", "no-cache, no-transform")
             self.send_header("X-Accel-Buffering", "no")
             self.send_header("Connection", "close")
             self.end_headers()
+            hub = get_hub(printer) if get_hub is not None else None
             try:
                 self.wfile.write(b"retry: 2000\n\n")
                 self.wfile.flush()
-                last_sent: str | None = None
-                ticks_since_send = 0
-                while True:
-                    state = get_state(printer)
-                    body = json.dumps({"printer": printer,
-                                        "state":   state or {},
-                                        "ts":      time.time()},
-                                       separators=(",", ":"))
-                    if body != last_sent or ticks_since_send >= 15:
-                        line = f"data: {body}\n\n".encode("utf-8")
-                        self.wfile.write(line)
-                        self.wfile.flush()
-                        last_sent = body
-                        ticks_since_send = 0
-                    else:
-                        ticks_since_send += 1
-                    time.sleep(1.0)
+                if hub is not None:
+                    sub = hub.subscribe()
+                    try:
+                        # last_state is replayed by subscribe() when set,
+                        # so a fresh client gets current state in the
+                        # first event rather than waiting for the next
+                        # MQTT push.
+                        while True:
+                            state = sub.get(timeout=15.0)
+                            if state is None:
+                                # Idle 15 s → keepalive comment. Doesn't
+                                # show up as an SSE message client-side,
+                                # but keeps proxies happy.
+                                self.wfile.write(b": keepalive\n\n")
+                                self.wfile.flush()
+                                continue
+                            body = json.dumps({"printer": printer,
+                                                "state":   state or {},
+                                                "ts":      time.time()},
+                                               separators=(",", ":"))
+                            self.wfile.write(f"data: {body}\n\n".encode("utf-8"))
+                            self.wfile.flush()
+                    finally:
+                        hub.unsubscribe(sub)
+                else:
+                    last_sent: str | None = None
+                    ticks_since_send = 0
+                    while True:
+                        state = get_state(printer)
+                        body = json.dumps({"printer": printer,
+                                            "state":   state or {},
+                                            "ts":      time.time()},
+                                           separators=(",", ":"))
+                        if body != last_sent or ticks_since_send >= 15:
+                            line = f"data: {body}\n\n".encode("utf-8")
+                            self.wfile.write(line)
+                            self.wfile.flush()
+                            last_sent = body
+                            ticks_since_send = 0
+                        else:
+                            ticks_since_send += 1
+                        time.sleep(1.0)
             except (BrokenPipeError, ConnectionResetError, OSError):
                 # Client disconnected or socket failed — exit cleanly so
                 # the worker thread terminates.
@@ -7144,6 +7180,9 @@ def main() -> int:
 
     from beambam.install_completion import add_subparser as _install_compl_subparser
     _install_compl_subparser(sub, root_parser=p)
+
+    from beambam.upgrade import add_subparser as _upgrade_subparser
+    _upgrade_subparser(sub)
 
     an = sub.add_parser(
         "analyze",
