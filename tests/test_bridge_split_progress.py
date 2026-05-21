@@ -132,7 +132,11 @@ BRIDGE = REPO / "x2d_bridge.py"
 #        snapshot harvester) moved into beambam.cli.info. Both are
 #        read-only utility handlers; lazy-import X2D_ROOT_PATH for
 #        the harvester-script path.
-_MAX_CMD_HANDLERS_IN_BRIDGE = 12
+#   10 — Phase 5b batch 12: cmd_printables_search + cmd_print_search +
+#        _print_search_printables helper moved into beambam.cli.cloud.
+#        These are catalog-search handlers — they belong with the
+#        cloud-search/browse/design family already there.
+_MAX_CMD_HANDLERS_IN_BRIDGE = 10
 
 
 def _count_cmd_handlers() -> int:
