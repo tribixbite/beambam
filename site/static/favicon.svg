@@ -1,32 +1,16 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
-    <!-- Tiny ghost-benchy. Same identity as the OG mascot, simplified
-         for 16×16/32×32 favicon rendering: smokestack + cabin + hull
-         with wavy ghost tail + two big white eyes. -->
+    <!-- Tiny ghost mascot, matching the AI-generated OG hero.
+         Friendly amber ghost — big eyes + curly side tail + wavy bottom.
+         No benchy / boat hints; just a clean ghost on graphite. -->
     <rect width="64" height="64" rx="6" fill="#181614"/>
-
-    <!-- Smokestack -->
-    <rect x="29" y="8" width="6" height="9" fill="none" stroke="#e0a050" stroke-width="1.5"/>
-
-    <!-- Cabin -->
-    <path d="M 18,17 L 46,17 L 49,27 L 15,27 Z"
-          fill="#181614" stroke="#e0a050" stroke-width="1.5"
-          stroke-linejoin="round"/>
-
-    <!-- Hull — wavy bottom (ghost tail) -->
-    <path d="M 12,27 L 52,27 L 54,46
-             Q 54,50 50,48
-             Q 46,46 42,48
-             Q 38,50 34,48
-             Q 30,46 26,48
-             Q 22,50 18,48
-             Q 14,46 10,48
-             Q 8,46 12,46 Z"
-          fill="#181614" stroke="#e0a050" stroke-width="1.5"
-          stroke-linejoin="round"/>
-
-    <!-- Eyes — the identity. Two simple white circles. -->
-    <circle cx="25" cy="22" r="3" fill="#f7f5f1"/>
-    <circle cx="39" cy="22" r="3" fill="#f7f5f1"/>
-    <circle cx="26" cy="23" r="1.2" fill="#181614"/>
-    <circle cx="40" cy="23" r="1.2" fill="#181614"/>
+    <path d="M 32 8 C 18 8, 14 18, 14 26 L 14 44 Q 14 50, 19 48 Q 24 46, 28 49 Q 32 52, 36 49 Q 40 46, 44 48 Q 50 50, 50 44 L 50 26 C 50 18, 46 8, 32 8 Z"
+          fill="#181614" stroke="#e0a050" stroke-width="2.5" stroke-linejoin="round"/>
+    <line x1="18" y1="20" x2="46" y2="20" stroke="#e0a050" stroke-width="1" opacity="0.35"/>
+    <line x1="16" y1="28" x2="48" y2="28" stroke="#e0a050" stroke-width="1" opacity="0.35"/>
+    <line x1="16" y1="36" x2="48" y2="36" stroke="#e0a050" stroke-width="1" opacity="0.35"/>
+    <circle cx="25" cy="26" r="4.5" fill="#f7f5f1"/>
+    <circle cx="39" cy="26" r="4.5" fill="#f7f5f1"/>
+    <circle cx="26" cy="27" r="1.5" fill="#181614"/>
+    <circle cx="40" cy="27" r="1.5" fill="#181614"/>
+    <path d="M 28 34 Q 32 38, 36 34" fill="none" stroke="#e0a050" stroke-width="1.6" stroke-linecap="round"/>
 </svg>
