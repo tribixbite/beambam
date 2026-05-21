@@ -171,20 +171,20 @@ def _format_prometheus_metrics(
         for printer, state in states.items():
             if not state:
                 continue
-            # `v` walks through nested dict levels and ends as either
-            # a leaf number or None — declare Any so the int/float
-            # leaf check at the bottom narrows the type correctly
-            # (rather than being rejected as "incompatible with int").
-            v: Any = state
+            # `node` walks through nested dict levels and ends as
+            # either a leaf number or None. The walker variable is
+            # renamed from `v` so it doesn't collide with the earlier
+            # counter-loop's `v` (mypy treats them as same-scope).
+            node: Any = state
             for key in path:
-                if not isinstance(v, dict) or key not in v:
-                    v = None
+                if not isinstance(node, dict) or key not in node:
+                    node = None
                     break
-                v = v[key]
-            if v is None or not isinstance(v, (int, float)):
+                node = node[key]
+            if node is None or not isinstance(node, (int, float)):
                 continue
             lines.append(
-                f'x2d_{gname}{{printer="{printer}"}} {v}')
+                f'x2d_{gname}{{printer="{printer}"}} {node}')
 
     # AMS slot humidity (per slot) — common scrape target
     lines.append("# HELP x2d_ams_humidity AMS slot humidity rating "
