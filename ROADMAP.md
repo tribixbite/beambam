@@ -219,8 +219,18 @@ Remaining endpoints from the catalog worth wiring:
   shape as cloud-search.
 - [ ] **`beambam thingiverse-search <query>`** — Thingiverse REST search
   (needs the 2026 browser-cookie auth that lands per #34).
-- [ ] **`beambam print-search --source <printables|thingiverse>`** —
-  extend `print-search` to multi-source. MakerWorld backend works today.
+- [x] **`beambam print-search --source <makerworld|printables>`**
+  (this round) — `print-search` now accepts a `--source` flag.
+  `makerworld` (default) keeps the existing chain into
+  `cloud-print-design` (slice + upload + print). `printables` routes
+  through the Printables GraphQL search, presents the same numbered
+  picker, then emits the canonical model URL — Printables file shape
+  (.stl-in-.zip) differs from MakerWorld's pre-sliced .3mf so the
+  user follows up with `beambam fetch <url>` + `beambam slice/print`.
+  5 unit tests in `tests/test_print_search_source.py` (Printables
+  GraphQL routing, no-results, out-of-range pick, MW-path doesn't
+  leak into urlopen, argparse choice validation). Thingiverse stays
+  out — needs the 2026 browser-cookie auth that's deferred.
 
 ### First-run experience (FRE) for `uvx beambam`
 - [x] **Device-code style email-code login** (commit 75cba23) — `cloud-login
@@ -268,8 +278,11 @@ Remaining endpoints from the catalog worth wiring:
   Largest diff in the bridge's history; defer until #1 daemon stops being load-bearing.
 
 ### CI / repo hygiene
-- [ ] **GitHub Actions Node.js 20 → 24** — every workflow warns; hard deadline 2026-09-16.
-  Trivial bump (actions/checkout@v4 already supports both).
+- [x] **GitHub Actions Node.js 20 → 24** — bumped to
+  `actions/checkout@v6` / `actions/setup-python@v6` /
+  `actions/upload-artifact@v7` in `.github/workflows/ci.yml` (yaml
+  updated externally in this session). Both Linux + macOS + Windows
+  matrix jobs run cleanly on Node 24.
 - [x] **`runtime/*` test promotion** (this round) — wrapper at
   `tests/test_runtime_subprocesses.py` parametrizes over every
   `runtime/**/test_*.py` and spawns each as a subprocess with

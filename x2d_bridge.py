@@ -5998,17 +5998,93 @@ def cmd_printables_search(args: argparse.Namespace) -> int:
     return 0
 
 
+def _print_search_printables(args: argparse.Namespace) -> int:
+    """Printables backend for `print-search --source printables`.
+
+    Queries Printables' anonymous GraphQL, shows the same numbered
+    picker as the MakerWorld flow, then prints the canonical model URL
+    for the picked entry. Pipeline does NOT chain into a print —
+    Printables files are .stl-in-.zip; the user follows up with
+    `beambam fetch <url>` then `beambam slice/print` manually.
+    """
+    import urllib.request as _ur
+    import urllib.error as _ue
+    body = json.dumps({
+        "query": "query($q:String!,$l:Int,$o:Int){searchPrints2(query:$q,limit:$l,offset:$o)"
+                 "{items{id name slug likesCount downloadCount user{publicUsername}}}}",
+        "variables": {"q": args.query, "l": int(args.limit),
+                       "o": int(getattr(args, "offset", 0) or 0)},
+    }).encode("utf-8")
+    req = _ur.Request("https://api.printables.com/graphql/", data=body, headers={
+        "Content-Type": "application/json",
+        "User-Agent": "beambam-cli/1.x",
+    }, method="POST")
+    try:
+        with _ur.urlopen(req, timeout=15) as r:
+            resp = json.loads(r.read())
+    except _ue.HTTPError as e:
+        print(f"Printables API failed HTTP {e.code}: "
+              f"{e.read().decode('utf-8', 'replace')[:200]}",
+              file=sys.stderr); return 1
+    except Exception as e:                                  # noqa: BLE001
+        print(f"Printables API failed: {e}", file=sys.stderr); return 1
+    items = (resp.get("data") or {}).get("searchPrints2", {}).get("items") or []
+    if not items:
+        print(f"no Printables results for {args.query!r}"); return 1
+    print(f"\n{len(items)} match(es) for {args.query!r} on Printables:\n")
+    for i, it in enumerate(items, 1):
+        slug = it.get("slug", "")
+        likes = it.get("likesCount", 0)
+        dls = it.get("downloadCount", 0)
+        u = (it.get("user") or {}).get("publicUsername", "?")
+        title = it.get("name", "")
+        print(f"  {i:>2}. id={it['id']:<8}  likes={likes:<5} dls={dls:<6}  "
+              f"by {u[:18]:<18}  {title[:40]}")
+    if args.pick:
+        idx = int(args.pick) - 1
+    else:
+        try:
+            line = input(f"\nPick a number 1..{len(items)} (blank to cancel): ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print("\naborted"); return 1
+        if not line:
+            print("cancelled"); return 0
+        try:
+            idx = int(line) - 1
+        except ValueError:
+            print(f"invalid pick: {line!r}"); return 2
+    if idx < 0 or idx >= len(items):
+        print(f"out of range: {idx+1}"); return 2
+    chosen = items[idx]
+    url = f"https://www.printables.com/model/{chosen['id']}-{chosen.get('slug', '')}"
+    print(f"\n→ Picked: {chosen.get('name', '')}\n  {url}")
+    if args.dry_run_pick:
+        return 0
+    print("\nNext steps (Printables files are .stl-in-.zip):")
+    print(f"  beambam fetch {url}")
+    print(f"  beambam slice <stl> --out model.gcode.3mf")
+    print(f"  beambam print model.gcode.3mf")
+    return 0
+
+
 def cmd_print_search(args: argparse.Namespace) -> int:
-    """Interactive: MakerWorld search → user picks → slice → upload → print.
+    """Interactive: MakerWorld OR Printables search → user picks → action.
 
     `beambam print-search "pokeball" --copies 4 --scale-pct 75 --color Gold`
+    `beambam print-search "pokeball" --source printables`
 
     Steps:
-      1. cloud-search the query
+      1. search the chosen catalogue
       2. show numbered table of top N hits
       3. prompt user for selection (1..N, blank = cancel)
-      4. chain into cloud-print-design with the user's slice options
+      4. MakerWorld: chain into cloud-print-design (slice+upload+print).
+         Printables: print the canonical model URL — user follows up with
+         `beambam fetch <url>` then `beambam slice/print` manually
+         (Printables files are .stl-in-.zip; the file pipeline differs
+         from MW's pre-sliced .3mf).
     """
+    if getattr(args, "source", "makerworld") == "printables":
+        return _print_search_printables(args)
     import cloud_client, subprocess
     cli = cloud_client.CloudClient.load_or_anonymous()
     if cli.session.empty:
@@ -7377,7 +7453,17 @@ def main() -> int:
              "The whole-pipeline FRE win. Pass --copies/--scale-pct/--color/--slot "
              "the same way as slice-print.")
     cli_ps.add_argument("query", help="Search query string")
+    cli_ps.add_argument("--source", default="makerworld",
+                        choices=("makerworld", "printables"),
+                        help="Which catalogue to search. `makerworld` "
+                             "(default) chains into cloud-print-design "
+                             "with full slice+upload+print. `printables` "
+                             "shows the picker and emits the URL — chain "
+                             "via `beambam fetch` + `beambam slice/print` "
+                             "manually (file shape differs from MW).")
     cli_ps.add_argument("--limit", type=int, default=10, help="How many hits to show")
+    cli_ps.add_argument("--offset", type=int, default=0,
+                        help="Pagination offset (Printables only — MW uses --limit)")
     cli_ps.add_argument("--pick", type=int, default=None,
                         help="Skip the interactive prompt; pick this index (1..N)")
     cli_ps.add_argument("--dry-run-pick", action="store_true",
