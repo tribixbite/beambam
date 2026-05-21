@@ -30,6 +30,7 @@ import json
 import threading
 import time
 from pathlib import Path
+from typing import Any
 
 
 def _is_loopback(host: str) -> bool:
@@ -170,7 +171,11 @@ def _format_prometheus_metrics(
         for printer, state in states.items():
             if not state:
                 continue
-            v = state
+            # `v` walks through nested dict levels and ends as either
+            # a leaf number or None — declare Any so the int/float
+            # leaf check at the bottom narrows the type correctly
+            # (rather than being rejected as "incompatible with int").
+            v: Any = state
             for key in path:
                 if not isinstance(v, dict) or key not in v:
                     v = None
