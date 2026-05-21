@@ -658,6 +658,57 @@ class CloudClient:
             f"/v1/iot-service/api/user/ttcode?dev_id={urllib.parse.quote(dev_id)}")
 
     # ------------------------------------------------------------------
+    # MakerWorld design + search endpoints (read-only)
+    # ------------------------------------------------------------------
+
+    def get_design(self, design_id: int | str) -> dict:
+        """Full design record: title, slug, creator, instances list, tags,
+        like/download/print counts, cover URLs. The .3mf bundle download
+        URL is in `instances[*].downloadUrl` (signed S3, 1h)."""
+        return self._authed_get(f"/v1/design-service/design/{design_id}")
+
+    def get_design_remixes(self, design_id: int | str) -> dict:
+        """Remixes (derivative works) of a design. `{total, hits}` shape."""
+        return self._authed_get(f"/v1/design-service/design/{design_id}/remixed")
+
+    def get_favorites(self) -> dict:
+        """User's MakerWorld favorites lists. Each list has id, title,
+        cover, count of designs in it. Use the list id with a follow-up
+        call to fetch its contents (TODO endpoint)."""
+        return self._authed_get("/v1/design-service/my/favorites/listlite")
+
+    def get_liked_designs(self) -> dict:
+        """Designs the user has liked. `{total, hits: [...]}`."""
+        return self._authed_get("/v1/design-service/my/design/like")
+
+    def get_slicer_presets(self, version: str = "01.10.00.69",
+                           public: bool = False) -> dict:
+        """User's cloud-synced slicer presets (print + filament + printer).
+        `public=false` returns only the user's private settings; `true`
+        includes Bambu's shipped public ones."""
+        return self._authed_get(
+            f"/v1/iot-service/api/slicer/setting?public={'true' if public else 'false'}"
+            f"&version={urllib.parse.quote(version)}")
+
+    def browse_designs_by_nav(self, nav_key: str = "Trending",
+                              limit: int = 20, offset: int = 0) -> dict:
+        """Browse MakerWorld designs by nav key. Standard nav keys (from
+        homepage_nav): Following, Foryou, Trending, Household,
+        Toys & Games, Art & Design, Tools, Education, Hobby & DIY, Sports &
+        Outdoors, Fashion, Replacement Parts. Each entry is a design hit."""
+        return self._authed_get(
+            f"/v1/search-service/select/design/nav?navKey={urllib.parse.quote(nav_key)}"
+            f"&limit={int(limit)}&offset={int(offset)}")
+
+    def search_designs(self, query: str, limit: int = 20, offset: int = 0) -> dict:
+        """MakerWorld full-text search. Returns `{total, hits}` where
+        each hit has id, title, cover, designCreator, likeCount,
+        downloadCount, etc. Same shape as browse_designs_by_nav()."""
+        return self._authed_get(
+            f"/v1/search-service/select/design?query={urllib.parse.quote(query)}"
+            f"&limit={int(limit)}&offset={int(offset)}")
+
+    # ------------------------------------------------------------------
     # Cloud-side MQTT broker — for cloud-mediated print control + state
     # streaming. Uses the same JWT we got from login().
     #
