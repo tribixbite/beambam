@@ -173,15 +173,16 @@ def cmd_cloud_login(args: argparse.Namespace) -> int:
         if not serial:
             continue
         # Reuse cmd_cloud_get_access_code's logic by faking an args
-        # namespace.
-        class _GACArgs:
-            pass
-        gac_args = _GACArgs()
-        gac_args.serial = serial
-        gac_args.timeout = 10.0
-        gac_args.persist = True
-        gac_args.ip = ip
-        gac_args.section = ""  # default to printer:<serial>
+        # namespace. `argparse.Namespace` accepts arbitrary kwargs as
+        # attributes — same effect as the older empty-class trick,
+        # but typed (mypy can see the fields).
+        gac_args = argparse.Namespace(
+            serial=serial,
+            timeout=10.0,
+            persist=True,
+            ip=ip,
+            section="",  # default to printer:<serial>
+        )
         try:
             rc = cmd_cloud_get_access_code(gac_args)
             if rc == 0:
