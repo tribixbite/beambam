@@ -87,7 +87,12 @@ BRIDGE = REPO / "x2d_bridge.py"
 #        beambam.cli.info. cmd_health is a one-shot TCP+MQTT+AMS
 #        diagnostic; cmd_watch is a polling status loop. Both are
 #        zero-coupling reads.
-_MAX_CMD_HANDLERS_IN_BRIDGE = 29
+#   27 — Phase 5c batch 3: cmd_tail (with _TailDispatcher class +
+#        _tail_print helper) + cmd_notify moved into beambam.cli.info.
+#        Class + helper are re-exported from x2d_bridge so the
+#        existing tail unit tests (`from x2d_bridge import
+#        _TailDispatcher, _tail_print`) keep working unchanged.
+_MAX_CMD_HANDLERS_IN_BRIDGE = 27
 
 
 def _count_cmd_handlers() -> int:

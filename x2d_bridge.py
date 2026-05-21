@@ -1437,12 +1437,17 @@ def _serve_http(bind: str,
 # CLI entry
 # ---------------------------------------------------------------------------
 
-# cmd_status / cmd_health / cmd_watch moved to beambam/cli/info.py
-# (Phase 5c). Re-exported.
+# cmd_status / cmd_health / cmd_watch / cmd_tail / cmd_notify moved to
+# beambam/cli/info.py (Phase 5c). Re-exported along with the
+# _TailDispatcher class + _tail_print helper used by tail's unit tests.
 from beambam.cli.info import (  # noqa: E402, F401
     cmd_status,
     cmd_health,
     cmd_watch,
+    cmd_tail,
+    cmd_notify,
+    _TailDispatcher,
+    _tail_print,
 )
 
 
@@ -3388,258 +3393,12 @@ def cmd_slice_print(args: argparse.Namespace) -> int:
 # alongside cmd_health / cmd_status / cmd_printers below.
 
 
-# `tail` streams events derived from the printer's MQTT push stream
-# (state transitions, progress milestones, HMS code add/clear) as a
-# live log — push-based, not poll-based. Distinct from `watch` (which
-# polls request_state every N seconds and prints one full-status line)
-# in two ways: (a) events surface within ms of the printer's push
-# rather than once per polling interval, and (b) only deltas are
-# emitted, so the log stays terse.
-class _TailDispatcher:
-    """Pure diff engine for `beambam tail`. Keeps the previous-push
-    snapshot and exposes `events_for(state)` returning a list of
-    (category, message, level) tuples for what changed since the last
-    call. Pulled outside `cmd_tail` so unit tests can drive it directly
-    without spinning up MQTT, threads, or signal handlers."""
-
-    def __init__(self, *, no_progress: bool = False, no_hms: bool = False,
-                 every_state: bool = False) -> None:
-        self.no_progress = no_progress
-        self.no_hms      = no_hms
-        self.every_state = every_state
-        self._prev_state:   str | None = None
-        self._prev_layer:   int        = -1
-        self._prev_percent: int        = -1
-        self._prev_hms:     set[str]   = set()
-
-    @staticmethod
-    def _hms_code(h: dict) -> str:
-        """Render an HMS dict as `AAAA_BBBB_CCCC_DDDD` hex matching the
-        canonical form HMS_DESCRIPTIONS uses + the Bambu error-page URLs.
-
-        Two firmware variants seen in the wild:
-          * `{a,b,c,d}` — four 16-bit ints, one per hex group
-          * `{attr,code}` — two 32-bit ints; split each into
-            high/low 16-bit halves
-        """
-        if all(k in h for k in ("a", "b", "c", "d")):
-            return "_".join(f"{int(h.get(k, 0)):04X}"
-                            for k in ("a", "b", "c", "d"))
-        if "attr" in h and "code" in h:
-            try:
-                attr = int(h["attr"])
-                code = int(h["code"])
-            except (TypeError, ValueError):
-                # Already-formatted strings? Pass through but normalise
-                # the join so downstream lookup against HMS_DESCRIPTIONS
-                # works in the common case.
-                return f"{h.get('attr','')}_{h.get('code','')}".strip("_")
-            return (
-                f"{(attr >> 16) & 0xFFFF:04X}_{attr & 0xFFFF:04X}"
-                f"_{(code >> 16) & 0xFFFF:04X}_{code & 0xFFFF:04X}"
-            )
-        return ""
-
-    def events_for(self, state: dict) -> list[tuple[str, str, str]]:
-        from beambam.doctor import decode_hms
-        out: list[tuple[str, str, str]] = []
-        p = state.get("print", {}) or {}
-
-        gs = p.get("gcode_state")
-        if gs and gs != self._prev_state:
-            if self._prev_state is None:
-                out.append(("state", f"observed {gs}", "info"))
-            else:
-                lvl = "fail" if gs == "FAILED" else "info"
-                out.append(("state", f"{self._prev_state} -> {gs}", lvl))
-            self._prev_state = gs
-
-        if not self.no_progress:
-            pct = int(p.get("mc_percent", 0) or 0)
-            if pct >= 0 and self._prev_percent >= 0:
-                step = (pct // 10) - (self._prev_percent // 10)
-                if step >= 1 and pct < 100:
-                    out.append(("progress", f"{pct}%", "info"))
-                elif pct == 100 and self._prev_percent < 100:
-                    out.append(("progress", "100% — print finished", "ok"))
-            self._prev_percent = pct
-
-        if self.every_state:
-            layer = int(p.get("layer_num", 0) or 0)
-            total = int(p.get("total_layer_num", 0) or 0)
-            if layer != self._prev_layer and layer > 0:
-                out.append(("layer", f"L{layer}/{total}", "info"))
-                self._prev_layer = layer
-
-        if not self.no_hms:
-            hms_now: set[str] = set()
-            for h in (p.get("hms") or []):
-                code = self._hms_code(h)
-                if code:
-                    hms_now.add(code)
-            for code in sorted(hms_now - self._prev_hms):
-                out.append(("hms", f"{code}: {decode_hms(code)}", "fail"))
-            for code in sorted(self._prev_hms - hms_now):
-                out.append(("hms", f"{code} cleared", "ok"))
-            self._prev_hms = hms_now
-
-        return out
+# _TailDispatcher / _tail_print / cmd_tail moved to beambam/cli/info.py
+# (Phase 5c batch 3). Re-exported below alongside the other info verbs
+# so tests using `from x2d_bridge import _TailDispatcher` keep working.
 
 
-def _tail_print(events: list[tuple[str, str, str]],
-                *, as_json: bool) -> None:
-    """Render a list of dispatcher events as either ndjson lines or
-    the human-readable [HH:MM:SS] ICON CATEGORY MESSAGE format."""
-    import time as _time
-    icons = {"info": "·", "warn": "⚠", "fail": "✗", "ok": "✓"}
-    if as_json:
-        ts = _time.time()
-        for category, message, level in events:
-            print(json.dumps({"ts": ts, "category": category,
-                              "level": level, "message": message},
-                              separators=(",", ":")), flush=True)
-        return
-    ts_str = _time.strftime("%H:%M:%S")
-    for category, message, level in events:
-        icon = icons.get(level, "·")
-        print(f"[{ts_str}] {icon} {category:<8} {message}", flush=True)
-
-
-def cmd_tail(args: argparse.Namespace) -> int:
-    from threading import Event as _Event
-
-    creds = Creds.resolve(args)
-    disp = _TailDispatcher(no_progress=args.no_progress,
-                           no_hms=args.no_hms,
-                           every_state=args.every_state)
-
-    def _on_state(state: dict) -> None:
-        events = disp.events_for(state)
-        if events:
-            _tail_print(events, as_json=args.json)
-
-    cli = X2DClient(creds, on_state=_on_state)
-    try:
-        cli.connect(timeout=8.0)
-    except Exception as e:
-        print(f"[tail] connect failed: {e}", file=sys.stderr)
-        return 2
-    # Force an initial push so we don't have to wait up to ~30 s for
-    # the printer's next periodic push.
-    try:
-        cli.publish({"pushing": {"sequence_id": _next_seq(),
-                                  "command": "pushall"}})
-    except Exception as e:
-        print(f"[tail] initial pushall failed: {e}", file=sys.stderr)
-
-    if not args.json:
-        print(f"[tail] connected to {creds.ip}; streaming events… "
-              f"(Ctrl-C to exit)", file=sys.stderr)
-    stop = _Event()
-    try:
-        # Idle the main thread; events come in via the on_state callback
-        # on the paho client thread. wait() releases the GIL so Ctrl-C
-        # is responsive.
-        stop.wait()
-    except KeyboardInterrupt:
-        if not args.json:
-            print("\n[tail] stopped", file=sys.stderr)
-    finally:
-        try:
-            cli.disconnect()
-        except Exception:
-            pass
-    return 0
-
-
-# x2d/termux #88 — `notify` runs `watch` semantics in the background and
-# fires a termux-notification when the print state transitions to FINISH /
-# IDLE / FAILED. Lets the phone notify the user without keeping the GUI
-# open. termux-api package required (`pkg install termux-api`).
-def cmd_notify(args: argparse.Namespace) -> int:
-    import shutil
-    import subprocess as _sp
-    import time as _time
-
-    if not shutil.which("termux-notification"):
-        print("termux-notification not found — install `termux-api` package",
-              file=sys.stderr)
-        return 1
-
-    creds = Creds.resolve(args)
-    cli = X2DClient(creds)
-    cli.connect(timeout=8.0)
-
-    poll_interval = max(5, int(args.interval))
-    last_state = None
-    last_layer = -1
-    notified_complete = False
-
-    print(f"[{_time.strftime('%H:%M:%S')}] notify started — polling every {poll_interval}s")
-    try:
-        while True:
-            try:
-                state = cli.request_state(timeout=8.0)
-            except Exception as e:
-                print(f"[{_time.strftime('%H:%M:%S')}] error: {e}",
-                      file=sys.stderr)
-                _time.sleep(poll_interval)
-                continue
-
-            ps = state.get("print", {})
-            gs = ps.get("gcode_state", "?")
-            layer = int(ps.get("layer_num", 0) or 0)
-            total = int(ps.get("total_layer_num", 0) or 0)
-            mc_pct = int(ps.get("mc_percent", 0) or 0)
-
-            changed = (gs != last_state)
-            milestone = (args.layer_milestone > 0 and total > 0
-                         and layer >= last_layer + args.layer_milestone)
-
-            if changed:
-                title = f"X2D: {gs}"
-                msg = ""
-                if gs == "RUNNING" and total > 0:
-                    msg = f"Layer {layer}/{total} ({mc_pct}%)"
-                elif gs == "FINISH":
-                    msg = f"Print complete ({total} layers)"
-                    notified_complete = True
-                elif gs == "FAILED":
-                    msg = f"Print failed at layer {layer}/{total}"
-                elif gs == "PAUSE":
-                    msg = f"Paused at layer {layer}/{total}"
-                else:
-                    msg = f"State: {gs}"
-                _sp.run(["termux-notification",
-                         "--id", "x2d_print",
-                         "--title", title,
-                         "--content", msg,
-                         "--ongoing"] if gs == "RUNNING" else
-                        ["termux-notification",
-                         "--id", "x2d_print",
-                         "--title", title,
-                         "--content", msg],
-                        check=False)
-                print(f"[{_time.strftime('%H:%M:%S')}] notified: {title} — {msg}")
-
-            elif milestone and gs == "RUNNING":
-                _sp.run(["termux-notification",
-                         "--id", "x2d_print",
-                         "--title", f"X2D: layer {layer}/{total}",
-                         "--content", f"{mc_pct}% complete",
-                         "--ongoing"],
-                        check=False)
-                last_layer = layer
-
-            last_state = gs
-            if notified_complete and args.exit_on_finish:
-                break
-            _time.sleep(poll_interval)
-    except KeyboardInterrupt:
-        print("\n[notify] stopped")
-    finally:
-        cli.disconnect()
-    return 0
+# cmd_notify moved to beambam/cli/info.py (Phase 5c batch 3).
 
 
 def cmd_camera(args: argparse.Namespace) -> int:
