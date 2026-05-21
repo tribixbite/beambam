@@ -43,22 +43,19 @@ except _metadata.PackageNotFoundError:
 
 # Public re-exports. Implementations live in the top-level modules until
 # the src/ layout refactor lands (task #3).
-from x2d_bridge import (  # noqa: E402
-    Creds,
-    BAMBU_CERT_ID,
-    sign_payload,
-    upload_file,
-    download_file,
-    list_files,
-    main as cli,
-)
-from cloud_client import CloudClient, CloudError  # noqa: E402
+from beambam.config import Creds  # noqa: E402
+from beambam.mqtt import BAMBU_CERT_ID, X2DClient, sign_payload  # noqa: E402
+from beambam.ftps import download_file, list_files, upload_file  # noqa: E402
 from beambam.printer import Printer  # noqa: E402
+from x2d_bridge import main as cli  # noqa: E402
+
+from cloud_client import CloudClient, CloudError  # noqa: E402
 
 __all__ = [
     "__version__",
     "Printer",
     "Creds",
+    "X2DClient",
     "CloudClient",
     "CloudError",
     "BAMBU_CERT_ID",
