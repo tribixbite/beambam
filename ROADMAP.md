@@ -54,7 +54,13 @@ Ordered by user-visible impact. Pick any 3-5 for the next release cut.
 - [ ] `beambam plate {select,skip}` — multi-plate operations on the current file
 - [ ] `beambam tail` — stream HMS errors + state changes as a live log
 - [ ] `beambam upgrade` — pip self-upgrade + post-upgrade migration prompts
-- [ ] `beambam install-completion {bash,zsh,fish}` — shell tab-completion via argcomplete
+- [x] `beambam install-completion {bash,zsh,fish}` — shell tab-completion
+  via a static, zero-dep generator (commits: this round). Subcommand-set
+  snapshot from the live argparse tree; `--install` writes to
+  `~/.local/share/bash-completion/completions/beambam` / `~/.zfunc/_beambam` /
+  `~/.config/fish/completions/beambam.fish`. Bash live-verified
+  `beambam cl<Tab>` → 34 `cloud-*` subcommands. 15 unit tests in
+  `tests/test_install_completion.py`.
 - [ ] `beambam print --dry-run` — auto-run analyze before send; refuse on flush > N grams
 - [ ] `beambam fw-update` — cloud-driven firmware update (needs Bambu Cloud auth)
 
