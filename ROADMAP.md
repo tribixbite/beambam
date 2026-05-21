@@ -216,9 +216,17 @@ Remaining endpoints from the catalog worth wiring:
 ### CI / repo hygiene
 - [ ] **GitHub Actions Node.js 20 → 24** — every workflow warns; hard deadline 2026-09-16.
   Trivial bump (actions/checkout@v4 already supports both).
-- [ ] **`runtime/*` test promotion** — most `runtime/{ha,mcp,webui,timelapse,queue}/
-  test_*.py` are standalone scripts (not pytest-collected). Refactor to pytest +
-  add to `testpaths`.
+- [x] **`runtime/*` test promotion** (this round) — wrapper at
+  `tests/test_runtime_subprocesses.py` parametrizes over every
+  `runtime/**/test_*.py` and spawns each as a subprocess with
+  `PYTHONPATH=repo`, asserting exit 0 (with stdout/stderr attached on
+  failure). 17 scripts discovered: 13 run + pass in CI (assistant,
+  colorsync, ha × 3, mcp, queue × 2, timelapse × 2, webui × 3); 4
+  skipped via `_SKIP_REASONS` (webrtc needs aiortc, mcp live client
+  needs a real daemon, network_shim needs the locally-built .so,
+  phase2 smoke is too heavy for CI). Path forward for full conversion
+  to `def test_*` assert-style stays open; the wrapper just buys CI
+  coverage immediately.
 - [ ] **Delete the stranded `tribixbite/beambam-boo` repo** — needs `gh auth refresh
   -s delete_repo` then `gh repo delete tribixbite/beambam-boo --yes`. User-only.
 
