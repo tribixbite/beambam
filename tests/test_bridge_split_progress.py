@@ -146,7 +146,14 @@ BRIDGE = REPO / "x2d_bridge.py"
 #        `<topic> --help`) moved into beambam.cli.info. Self-contained
 #        — only argparse + sys deps; uses `args._root_parser` threaded
 #        in by add_subparser at main()-time.
-_MAX_CMD_HANDLERS_IN_BRIDGE = 7
+#    5 — Phase 5d batch 2: scaffold beambam.cli.daemon with cmd_webrtc
+#        (delegates to runtime.webrtc.server) + cmd_ha_publish (one
+#        HAPublisher per credentials section). Both are long-running
+#        background services that park on SIGINT/SIGTERM. The biggest
+#        daemons (cmd_camera, cmd_serve, cmd_daemon) still need their
+#        supporting class hierarchies (ServeServer, etc.) hoisted out
+#        of the monolith before they can move cleanly.
+_MAX_CMD_HANDLERS_IN_BRIDGE = 5
 
 
 def _count_cmd_handlers() -> int:
