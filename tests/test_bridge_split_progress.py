@@ -104,7 +104,13 @@ BRIDGE = REPO / "x2d_bridge.py"
 #        for back-compat. Remaining cloud handlers in monolith are
 #        the heavy ones (login, state, pull/print-design,
 #        get-access-code, print, publish) tied to bridge internals.
-_MAX_CMD_HANDLERS_IN_BRIDGE = 21
+#   20 — Phase 5b batch 7: cmd_cloud_state moved into beambam.cli.cloud
+#        along with the three cloud-MQTT helpers it depends on:
+#        _cloud_mqtt_connect, _cloud_publish_payload,
+#        _resolve_cloud_serial. The cloud-control verbs that used to
+#        lazy-thunk back into x2d_bridge for these helpers now call
+#        them directly inside cloud.py — same module, no indirection.
+_MAX_CMD_HANDLERS_IN_BRIDGE = 20
 
 
 def _count_cmd_handlers() -> int:

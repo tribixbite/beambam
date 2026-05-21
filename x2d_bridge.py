@@ -4092,106 +4092,8 @@ from beambam.cli.cloud import cmd_cloud_logout  # noqa: E402, F401
 # cert is never invoked.
 # ---------------------------------------------------------------------------
 
-def _cloud_mqtt_connect(serial: str, cli) -> "mqtt.Client":
-    """Connect to Bambu's cloud broker using the logged-in JWT.
-    Returns a paho.mqtt.client.Client connected + ready to subscribe/publish.
-    Caller is responsible for client.loop_stop() + disconnect() on exit."""
-    import cloud_client  # noqa: WPS433 — keep cloud_client a soft import
-    user, pwd = cli.mqtt_credentials()
-    host = cli.mqtt_broker()
-    client_id = f"x2d-bridge-{os.getpid()}-{int(time.time())}"
-    c = mqtt.Client(
-        callback_api_version=mqtt.CallbackAPIVersion.VERSION2,
-        client_id=client_id,
-        clean_session=True,
-    )
-    c.username_pw_set(user, pwd)
-    # Standard TLS — Bambu's brokers serve Let's-Encrypt-rooted certs,
-    # so the system trust store is sufficient. No per-installation cert.
-    c.tls_set_context(ssl.create_default_context())
-    c.connect(host, cloud_client.MQTT_PORT, keepalive=60)
-    return c
-
-
-def cmd_cloud_state(args: argparse.Namespace) -> int:
-    """Subscribe to the printer's cloud report topic and dump the first
-    (or all, with --follow) state messages received. Useful for remote
-    monitoring even when the printer isn't on the same LAN."""
-    import cloud_client
-    cli = cloud_client.CloudClient.load_or_anonymous()
-    if cli.session.empty:
-        print("not logged in — run `x2d_bridge.py cloud-login` first",
-              file=sys.stderr)
-        return 1
-    serial = args.serial or os.environ.get("X2D_SERIAL")
-    if not serial:
-        try:
-            devices = cli.get_bound_devices()
-        except Exception as e:
-            print(f"can't list bound devices: {e}", file=sys.stderr)
-            return 1
-        if len(devices) == 1:
-            serial = devices[0].get("dev_id") or devices[0].get("device_id")
-        else:
-            print("multiple printers bound — pick one with --serial. "
-                  "list via `x2d_bridge.py cloud-printers`.",
-                  file=sys.stderr)
-            return 1
-    if not serial:
-        print("no printer serial available", file=sys.stderr)
-        return 1
-
-    topic_report  = f"device/{serial}/report"
-    topic_request = f"device/{serial}/request"
-
-    state_seen: dict = {}
-    pushall_done = _threading.Event()
-
-    def on_connect(c, userdata, flags, rc, properties=None):
-        if rc != 0:
-            print(f"[cloud-state] MQTT connect failed rc={rc}", file=sys.stderr)
-            return
-        c.subscribe(topic_report, qos=0)
-        # Trigger a pushall so the printer publishes its full state.
-        c.publish(topic_request, json.dumps({
-            "pushing": {"command": "pushall", "sequence_id": _next_seq(),
-                        "version": 1, "push_target": 1}
-        }))
-
-    def on_message(c, userdata, msg):
-        try:
-            payload = json.loads(msg.payload.decode("utf-8"))
-        except Exception:
-            payload = {"_raw": msg.payload.decode("utf-8", errors="replace")}
-        if args.follow:
-            print(json.dumps({"topic": msg.topic, "payload": payload}, indent=2))
-        else:
-            state_seen.update(payload)
-            if any(k in payload for k in ("print", "system", "info")):
-                pushall_done.set()
-
-    c = _cloud_mqtt_connect(serial, cli)
-    c.on_connect = on_connect
-    c.on_message = on_message
-    c.loop_start()
-    try:
-        if args.follow:
-            print(f"[cloud-state] following {topic_report} — Ctrl-C to stop",
-                  file=sys.stderr)
-            while True:
-                time.sleep(1)
-        else:
-            if not pushall_done.wait(timeout=args.timeout):
-                print(f"[cloud-state] timeout — no state in {args.timeout}s",
-                      file=sys.stderr)
-                return 1
-            print(json.dumps(state_seen, indent=2))
-    except KeyboardInterrupt:
-        pass
-    finally:
-        c.loop_stop()
-        c.disconnect()
-    return 0
+# _cloud_mqtt_connect + cmd_cloud_state moved to beambam/cli/cloud.py
+# (Phase 5b batch 7). Re-exported alongside the cloud-MQTT helpers below.
 
 
 # ---------------------------------------------------------------------------
@@ -4384,55 +4286,14 @@ def _http_cloud_publish(serial: str, payload: dict,
         c.disconnect()
 
 
-def _cloud_publish_payload(serial: str, payload: dict, timeout: float = 10.0) -> int:
-    """Internal helper used by every cloud-side print-control CLI.
-    Connects to Bambu's cloud broker, publishes one message, exits.
-    Returns 0 on broker ack, 1 on error."""
-    import cloud_client
-    cli = cloud_client.CloudClient.load_or_anonymous()
-    if cli.session.empty:
-        print("not logged in — run `x2d_bridge.py cloud-login` first",
-              file=sys.stderr)
-        return 1
-    topic_request = f"device/{serial}/request"
-    c = _cloud_mqtt_connect(serial, cli)
-    published = _threading.Event()
-    def on_publish(client, userdata, mid, reason_code=None, properties=None):
-        published.set()
-    c.on_publish = on_publish
-    c.loop_start()
-    try:
-        info = c.publish(topic_request, json.dumps(payload), qos=1)
-        info.wait_for_publish(timeout=timeout)
-        if not published.wait(timeout=timeout):
-            print(f"[cloud] no broker ack in {timeout}s", file=sys.stderr)
-            return 1
-        print(json.dumps({"published": True, "topic": topic_request,
-                          "payload": payload}, indent=2))
-    finally:
-        c.loop_stop()
-        c.disconnect()
-    return 0
-
-
-def _resolve_cloud_serial(args: argparse.Namespace) -> str | None:
-    """Mirror of cmd_cloud_state's auto-discovery: --serial wins, else
-    X2D_SERIAL env, else if exactly one printer is bound to the
-    account use that; else None."""
-    serial = getattr(args, "serial", None) or os.environ.get("X2D_SERIAL")
-    if serial:
-        return serial
-    try:
-        import cloud_client
-        cli = cloud_client.CloudClient.load_or_anonymous()
-        if cli.session.empty:
-            return None
-        devs = cli.get_bound_devices()
-        if len(devs) == 1:
-            return devs[0].get("dev_id") or devs[0].get("device_id")
-    except Exception:
-        pass
-    return None
+# _cloud_publish_payload + _resolve_cloud_serial moved to
+# beambam/cli/cloud.py (Phase 5b batch 7). Re-exported below.
+from beambam.cli.cloud import (  # noqa: E402, F401
+    _cloud_mqtt_connect,
+    _cloud_publish_payload,
+    _resolve_cloud_serial,
+    cmd_cloud_state,
+)
 
 
 # cmd_cloud_pause / resume / stop / gcode / chamber_light moved to
