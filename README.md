@@ -17,6 +17,9 @@ doesn't ship to (aarch64 Linux / Termux / Android phones / macOS / WSL).
 > work); the package was renamed to `beambam` in v1.1.0 to reflect that
 > the bridge supports every Bambu model, not just the X2D.
 
+Roadmap: see [`ROADMAP.md`](ROADMAP.md) for v1.3.0 candidates + the
+long-tail backlog. Per-release notes in [`CHANGELOG.md`](CHANGELOG.md).
+
 ## What is this
 
 **Three things in one repo:**
