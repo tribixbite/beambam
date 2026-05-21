@@ -1,4 +1,16 @@
 #!/usr/bin/env python3
+# BRIDGE-SPLIT MILESTONE (commit 404352f, 2026-05-21):
+# Zero `def cmd_*` handlers remain in this file — every CLI command
+# now lives under beambam/cli/{cloud,control,daemon,info,lan}.py and
+# is re-exported below for back-compat. What's still here:
+#   * argparse construction in `main()` (~700 LoC; Phase 5e batch 2)
+#   * ServeServer class + supporting _OpError / _PrinterSession /
+#     _ConnHandler / 25 _op_* functions (~1500 LoC; Phase 5e batch 3)
+#   * _serve_http function + HTTP helpers (~580 LoC; Phase 5e batch 4)
+#   * module-level constants (X2D_ROOT_PATH, PACKAGE_VERSION,
+#     _WEB_DIR_DEFAULT, LOG_QUEUE, _ACCESS_LOG_PATH, etc.)
+# When all three are extracted, x2d_bridge.py becomes a thin shim that
+# only does `from beambam.cli import main; sys.exit(main())`.
 """x2d_bridge — local LAN client / status daemon for Bambu Lab X2D, P2S,
 and other Bambu printers that require RSA-SHA256 signed MQTT messages
 (Jan-2025+ firmware).
