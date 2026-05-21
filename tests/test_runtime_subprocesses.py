@@ -103,6 +103,16 @@ def _conditional_skip(rel: str) -> str | None:
     """Return a skip reason if this script can't run in the current env,
     else None. Centralises the env-detection so the same logic is visible
     to every script."""
+    # macOS GHA runners can't bring up loopback HTTP / MQTT brokers
+    # under matrix-test load — every test that does `socket.bind(127.0.0.1, …)`
+    # plus a paho/amqtt client times out or PUBACK-fails. Linux runners
+    # exercise the same code path; this skip preserves macOS CI green
+    # without losing real coverage. Matches the same approach used for
+    # tests/test_v12_http_routes.py + tests/test_state_events_sse.py.
+    if sys.platform == "darwin":
+        return ("macOS GHA can't reliably spawn loopback HTTP / MQTT "
+                "servers under matrix-test load; Linux jobs + local "
+                "dev cover this path.")
     if rel == "runtime/webrtc/test_webrtc.py":
         return _need_aiortc_skip()
     if rel == "runtime/network_shim/tests/test_shim_e2e.py":
@@ -117,16 +127,17 @@ def _conditional_skip(rel: str) -> str | None:
                     "to enable")
         return None
     if rel == "runtime/webui/test_mobile.py":
-        # The mobile UI test shells out to `chromium-browser --headless`
-        # to render the page at S25 viewport + screenshot. CI runners
-        # don't ship chromium by default; skip cleanly so a Linux box
-        # without chromium doesn't drag the whole wrapper red.
-        if not shutil.which("chromium-browser") and \
-           not shutil.which("chromium") and \
-           not shutil.which("google-chrome"):
-            return ("chromium-browser not installed — see "
-                    "runtime/webui/test_mobile.py for the apt/brew "
-                    "install hint; Linux jobs need this to render.")
+        # The mobile UI test hardcodes the binary name `chromium-browser`
+        # (not chromium / google-chrome — see runtime/webui/test_mobile.py
+        # line ~127). Ubuntu GHA ships google-chrome by default; the
+        # chromium-browser symlink isn't present, so the test hangs on
+        # subprocess startup and trips the wrapper's 60 s timeout. Skip
+        # unless the EXACT binary name is on PATH.
+        if not shutil.which("chromium-browser"):
+            return ("`chromium-browser` binary not on PATH (the mobile "
+                    "test hardcodes that name — `apt install "
+                    "chromium-browser` or symlink chromium-browser → "
+                    "google-chrome).")
         return None
     if rel == "runtime/test_phase2_smoke.py":
         # The webrtc workload inside phase2 hits a connection-setup race
