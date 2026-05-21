@@ -490,6 +490,55 @@ def cmd_notify(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_analyze(args: argparse.Namespace) -> int:
+    """`beambam analyze <file.3mf>` — wraps beambam.analyze.cli_main().
+    Pure-read inspection of a sliced .gcode.3mf (layer count, AMS
+    mapping, filament IDs, etc.). No printer interaction."""
+    from beambam.analyze import cli_main
+    return cli_main(args.file, json_out=getattr(args, "json_out", False))
+
+
+def cmd_fcm_harvest(args: argparse.Namespace) -> int:
+    """Pull finish-snapshot JPGs from a rooted Bambu Handy install.
+
+    Bambu pushes a Firebase Cloud Messaging notification on every print
+    completion, and Handy stashes them in
+    `/data/data/bbl.intl.bambulab.com/shared_prefs/io.flutter.plugins.firebase.messaging.xml`.
+    Each notification body contains a pre-signed AWS S3 URL to the
+    finish-snapshot JPG — 1-hour signed-URL TTL. This subcommand pulls
+    the XML over ADB, finds new entries, fetches their JPGs (while still
+    valid), and stores them in ~/.x2d/snapshots/<print_id>.{jpg,json}.
+
+    Modes:
+      --once          (default) single sweep
+      --daemon        loop forever
+      --interval N    daemon poll period seconds (default 60)
+      --backfill      attempt every URL even if it appears expired
+
+    Requires a rooted device with `su` available. See
+    runtime/handy_extract/HANDY_DATA_AUDIT.md for the full data-flow."""
+    import subprocess
+    import sys
+    # Just shell out to the standalone harvester so we keep the code
+    # in one place and don't duplicate the harvester logic.
+    from x2d_bridge import X2D_ROOT_PATH
+    script = (X2D_ROOT_PATH / "runtime" / "handy_extract"
+              / "fcm_snapshot_harvest.py")
+    if not script.exists():
+        sys.exit(f"harvester missing at {script}")
+    cmd = ["python3", str(script), "--device", args.device]
+    if args.daemon:
+        cmd.append("--daemon")
+        cmd.extend(["--interval", str(args.interval)])
+    else:
+        cmd.append("--once")
+    if args.backfill:
+        cmd.append("--backfill")
+    if args.verbose:
+        cmd.append("--verbose")
+    return subprocess.call(cmd)
+
+
 def cmd_fetch(args: argparse.Namespace) -> int:
     """Download a model from MakerWorld / Printables / Thingiverse — or
     any direct STL/3MF URL — into ~/Downloads/x2d-models/ and optionally

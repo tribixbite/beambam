@@ -1447,6 +1447,8 @@ from beambam.cli.info import (  # noqa: E402, F401
     cmd_tail,
     cmd_notify,
     cmd_fetch,
+    cmd_analyze,
+    cmd_fcm_harvest,
     _TailDispatcher,
     _tail_print,
 )
@@ -4446,42 +4448,7 @@ from beambam.cli.cloud import (  # noqa: E402, F401
 )
 
 
-def cmd_fcm_harvest(args: argparse.Namespace) -> int:
-    """Pull finish-snapshot JPGs from a rooted Bambu Handy install.
-
-    Bambu pushes a Firebase Cloud Messaging notification on every print
-    completion, and Handy stashes them in
-    `/data/data/bbl.intl.bambulab.com/shared_prefs/io.flutter.plugins.firebase.messaging.xml`.
-    Each notification body contains a pre-signed AWS S3 URL to the
-    finish-snapshot JPG — 1-hour signed-URL TTL. This subcommand pulls
-    the XML over ADB, finds new entries, fetches their JPGs (while still
-    valid), and stores them in ~/.x2d/snapshots/<print_id>.{jpg,json}.
-
-    Modes:
-      --once          (default) single sweep
-      --daemon        loop forever
-      --interval N    daemon poll period seconds (default 60)
-      --backfill      attempt every URL even if it appears expired
-
-    Requires a rooted device with `su` available. See
-    runtime/handy_extract/HANDY_DATA_AUDIT.md for the full data-flow."""
-    import subprocess
-    # Just shell out to the standalone harvester so we keep the code in one
-    # place and don't duplicate the harvester logic into x2d_bridge.
-    script = X2D_ROOT_PATH / "runtime" / "handy_extract" / "fcm_snapshot_harvest.py"
-    if not script.exists():
-        sys.exit(f"harvester missing at {script}")
-    cmd = ["python3", str(script), "--device", args.device]
-    if args.daemon:
-        cmd.append("--daemon")
-        cmd.extend(["--interval", str(args.interval)])
-    else:
-        cmd.append("--once")
-    if args.backfill:
-        cmd.append("--backfill")
-    if args.verbose:
-        cmd.append("--verbose")
-    return subprocess.call(cmd)
+# cmd_fcm_harvest moved to beambam/cli/info.py (Phase 5c batch 5).
 
 
 # cmd_cloud_app_config moved to beambam/cli/cloud.py (Phase 5b).
@@ -4501,10 +4468,7 @@ from beambam.cli.cloud import (  # noqa: E402, F401
 )
 
 
-def cmd_analyze(args: argparse.Namespace) -> int:
-    """`beambam analyze <file.3mf>` — wraps beambam.analyze.cli_main()."""
-    from beambam.analyze import cli_main
-    return cli_main(args.file, json_out=getattr(args, "json_out", False))
+# cmd_analyze moved to beambam/cli/info.py (Phase 5c batch 5).
 
 
 def _package_version() -> str:

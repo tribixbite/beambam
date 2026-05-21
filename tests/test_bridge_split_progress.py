@@ -127,7 +127,12 @@ BRIDGE = REPO / "x2d_bridge.py"
 #        in beambam.cli.cloud. Monolith only has the LAN-print/serve/
 #        daemon handlers left (Phase 5d) plus main() argparse builder
 #        (Phase 5e).
-_MAX_CMD_HANDLERS_IN_BRIDGE = 14
+#   12 — Phase 5c batch 5: cmd_analyze (3MF inspection wrapper) +
+#        cmd_fcm_harvest (subprocess wrapper for the Handy FCM
+#        snapshot harvester) moved into beambam.cli.info. Both are
+#        read-only utility handlers; lazy-import X2D_ROOT_PATH for
+#        the harvester-script path.
+_MAX_CMD_HANDLERS_IN_BRIDGE = 12
 
 
 def _count_cmd_handlers() -> int:
