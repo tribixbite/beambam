@@ -6393,6 +6393,9 @@ def main() -> int:
     from beambam.slice import add_subparser as _slice_subparser
     _slice_subparser(sub)
 
+    from beambam.find import add_subparser as _find_subparser
+    _find_subparser(sub)
+
     an = sub.add_parser(
         "analyze",
         help="Dissect a .gcode.3mf — filament/nozzle assignment, per-phase "
