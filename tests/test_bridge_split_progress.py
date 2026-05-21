@@ -142,7 +142,11 @@ BRIDGE = REPO / "x2d_bridge.py"
 #        beambam.config; the wrong path had been latent across info.py
 #        handlers since Phase 5c — caught here because cmd_files has
 #        actual test coverage that triggers the lazy import.)
-_MAX_CMD_HANDLERS_IN_BRIDGE = 8
+#    7 — Phase 5c batch 6: cmd_help (argparse-internal alias for
+#        `<topic> --help`) moved into beambam.cli.info. Self-contained
+#        — only argparse + sys deps; uses `args._root_parser` threaded
+#        in by add_subparser at main()-time.
+_MAX_CMD_HANDLERS_IN_BRIDGE = 7
 
 
 def _count_cmd_handlers() -> int:

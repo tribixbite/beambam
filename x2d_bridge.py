@@ -1449,6 +1449,7 @@ from beambam.cli.info import (  # noqa: E402, F401
     cmd_fetch,
     cmd_analyze,
     cmd_fcm_harvest,
+    cmd_help,
     _TailDispatcher,
     _tail_print,
 )
@@ -4394,32 +4395,7 @@ def _build_epilog() -> str:
     return "\n".join(lines)
 
 
-def cmd_help(args: argparse.Namespace) -> int:
-    """`beambam help <topic>` — alias for `beambam <topic> --help`.
-
-    Equivalent to invoking the subcommand with `--help`. Implemented by
-    delegating to argparse on the topic's subparser so the resulting
-    text matches `beambam <topic> --help` exactly (no risk of drift).
-    """
-    parser = args._root_parser  # injected by add_subparser below
-    if not parser:
-        print("internal error: root parser not threaded", file=sys.stderr)
-        return 2
-    # Find the topic subparser via the _SubParsersAction.
-    for action in parser._actions:
-        if isinstance(action, argparse._SubParsersAction):
-            sub = action.choices.get(args.topic)
-            if sub is None:
-                avail = sorted(action.choices.keys())
-                print(f"unknown topic {args.topic!r}\n", file=sys.stderr)
-                print(f"available topics: {', '.join(avail)}",
-                      file=sys.stderr)
-                return 1
-            sub.print_help()
-            return 0
-    print("internal error: no subparsers action on root parser",
-          file=sys.stderr)
-    return 2
+# cmd_help moved to beambam/cli/info.py (Phase 5c batch 6).
 
 
 def main() -> int:
