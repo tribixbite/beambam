@@ -55,6 +55,20 @@ import ssl
 import sys
 import time
 from dataclasses import dataclass
+
+
+# Force UTF-8 stdout / stderr on platforms whose default codec can't
+# encode the non-ASCII characters in our help text + emoji status
+# glyphs (e.g. → ✓ ✗ in `beambam doctor` output). On Windows the default
+# is cp1252 which crashes with UnicodeEncodeError. Python 3.7+ supports
+# stream.reconfigure(); we no-op on older interpreters / on streams
+# that aren't real TTY wrappers (pytest capture etc.).
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="backslashreplace")
+    except (AttributeError, OSError):
+        pass
+del _stream
 import ftplib
 from ftplib import FTP_TLS
 from pathlib import Path
