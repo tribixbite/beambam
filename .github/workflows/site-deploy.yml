@@ -1,8 +1,15 @@
-name: Deploy to GitHub Pages
+name: Deploy beambam.boo (site/)
+
+# SvelteKit landing + docs site lives in site/ — this workflow only
+# fires when files under site/** change, keeping the Python package
+# CI (ci.yml) and release pipeline (release.yml) decoupled.
 
 on:
   push:
     branches: [main]
+    paths:
+      - 'site/**'
+      - '.github/workflows/site-deploy.yml'
   workflow_dispatch:
 
 permissions:
@@ -17,6 +24,9 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: site
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
@@ -26,7 +36,7 @@ jobs:
       - run: bun run build
       - uses: actions/upload-pages-artifact@v3
         with:
-          path: build/
+          path: site/build/
 
   deploy:
     needs: build
