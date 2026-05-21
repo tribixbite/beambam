@@ -288,10 +288,13 @@ ROADMAP versions claimed are stale; see
 [BRIDGE_SPLIT_PLAN.md](docs/BRIDGE_SPLIT_PLAN.md) for the rewritten
 phase staging.
 
-- [ ] **Phase 4** — move `X2DClient` + `_metric_inc` into `beambam.mqtt`
-  (single commit, ~30–45 min, no live-printer required). Deletes the
-  `__getattr__` lazy-import shim and removes ~260 LoC from
-  `x2d_bridge.py`.
+- [x] **Phase 4** (this round) — moved `X2DClient` + the metrics
+  helpers (`metric_inc` / `metric_global_inc` / `metrics_snapshot`,
+  exposed under both clean + underscore-prefixed names) into
+  `beambam.mqtt`. Deleted the `__getattr__` lazy-import shim;
+  removed ~260 LoC from `x2d_bridge.py`. `x2d_bridge.X2DClient`
+  remains a valid alias via a `from beambam.mqtt import ...`
+  re-export. Suite: 934 passed, 7 skipped (live-printer gated).
 - [ ] **Phase 5a** — `cmd_*` control verbs (pause / resume / stop /
   reboot / gcode / home / level / set-temp / chamber-light / jog /
   fod-check / ams-load / ams-unload / record / timelapse / resolution
