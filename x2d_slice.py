@@ -235,27 +235,38 @@ def build_3mf_object(vlist, tris, scale: float = 1.0, copies: int = 1) -> str:
 
 
 def _patch_wrapper_for_copies(xml_bytes: bytes, copies: int, vlist, scale: float) -> bytes:
-    """Patch `3D/3dmodel.model`'s <build> block so it lists N <item>
-    entries (one per copy). Each is a clone of the existing first item
-    with its translation slot rewritten so copies tile on the plate.
+    """Patch `3D/3dmodel.model` so it carries N **separate** <object>
+    entries (ids 2..N+1), each pointing at the same underlying mesh via
+    a <component> with a unique transform offset, and N matching <item>
+    entries in <build>.
 
-    Layout follows _grid_layout() — first copy keeps the template's
-    original (dx, dy), subsequent copies are nudged on the grid."""
+    BS CLI dedupes <model_instance> entries by `object_id` during 3MF
+    parse (Format/bbs_3mf.cpp:4806 — `obj_inst_map.emplace(object_id, ...)`
+    silently drops duplicates), so the "1 object, N model_instances"
+    pattern that BS GUI uses internally is NOT honored by the CLI slicer.
+    Multi-OBJECT is. Each copy becomes its own ModelObject in BS's data
+    model and slices as a real separate instance."""
     if copies <= 1:
         return xml_bytes
     import re as _re
     text = xml_bytes.decode("utf-8", errors="replace")
 
-    # Extract the existing <item .../> — preserve its objectid, UUID, etc.
-    m = _re.search(r"(<item[^/]+/>)", text)
-    if not m:
+    # Capture the existing <object id="2">...</object> as a template.
+    obj_m = _re.search(r'(<object\s+id="(\d+)"[^>]*>.*?</object>)', text, _re.DOTALL)
+    if not obj_m:
         return xml_bytes
-    proto = m.group(1)
-    # Parse the existing transform's translation slot (last 3 of 12 numbers).
-    tm = _re.search(r'transform="([^"]+)"', proto)
-    if not tm:
+    obj_proto = obj_m.group(1)
+    base_obj_id = int(obj_m.group(2))
+
+    # Capture the existing <item/> as a template.
+    item_m = _re.search(r'(<item[^/]+/>)', text)
+    if not item_m:
         return xml_bytes
-    base_nums = tm.group(1).split()
+    item_proto = item_m.group(1)
+    item_tm = _re.search(r'transform="([^"]+)"', item_proto)
+    if not item_tm:
+        return xml_bytes
+    base_nums = item_tm.group(1).split()
     if len(base_nums) != 12:
         return xml_bytes
     try:
@@ -264,63 +275,98 @@ def _patch_wrapper_for_copies(xml_bytes: bytes, copies: int, vlist, scale: float
         return xml_bytes
     base_dx, base_dy, base_dz = base_floats[9], base_floats[10], base_floats[11]
 
-    # Compute per-copy nudges from the bbox.
+    # Compute per-copy XY nudges from the bbox.
     min_x, max_x, min_y, max_y = _bbox_xy(vlist)
     w = (max_x - min_x) * scale
     d = (max_y - min_y) * scale
     placements = _grid_layout(copies, w, d)
 
-    # Build N items by patching the proto's transform + adding 1-based UUIDs.
+    # 1) Emit N <object> entries — first keeps original id, rest are
+    #    base+1, base+2, ... base+(N-1). Each gets a fresh UUID.
+    new_objs = []
+    for idx in range(copies):
+        new_id = base_obj_id + idx
+        obj_clone = _re.sub(r'<object\s+id="\d+"',
+                            f'<object id="{new_id}"', obj_proto, count=1)
+        # Bump the object's UUID so BS treats it as distinct
+        obj_clone = _re.sub(
+            r'p:UUID="([0-9a-f]{8})-',
+            lambda mc, _i=idx: f'p:UUID="{(int(mc.group(1), 16) + _i) & 0xFFFFFFFF:08x}-',
+            obj_clone, count=1,
+        )
+        new_objs.append(obj_clone)
+    text = text.replace(obj_proto, "\n  ".join(new_objs), 1)
+
+    # 2) Emit N <build><item> entries — each refs the matching object_id
+    #    + gets its own grid-tiled translation.
     new_items = []
     for idx, (dx, dy) in enumerate(placements):
+        new_obj_id = base_obj_id + idx
         nums = base_floats[:9] + [base_dx + dx, base_dy + dy, base_dz]
         new_transform = " ".join(repr(x) for x in nums)
-        # Replace transform="..." in proto; also rewrite the UUID so each
-        # item is unique (the slicer dedupes by UUID).
-        item = _re.sub(r'transform="[^"]+"', f'transform="{new_transform}"', proto)
-        # Each item needs a fresh UUID; replace the last hex segment with idx.
+        item = _re.sub(r'objectid="\d+"',
+                       f'objectid="{new_obj_id}"', item_proto, count=1)
+        item = _re.sub(r'transform="[^"]+"',
+                       f'transform="{new_transform}"', item, count=1)
         item = _re.sub(
-            r'p:UUID="([0-9a-f]{8})-([0-9a-f]{4})-([0-9a-f]{4})-([0-9a-f]{4})-([0-9a-f]{12})"',
-            lambda m_: f'p:UUID="{idx+1:08x}-{m_.group(2)}-{m_.group(3)}-{m_.group(4)}-{m_.group(5)}"',
+            r'p:UUID="([0-9a-f]{8})-',
+            lambda mc, _i=idx: f'p:UUID="{(int(mc.group(1), 16) + _i + 1) & 0xFFFFFFFF:08x}-',
             item, count=1,
         )
         new_items.append(item)
-    # Replace just the FIRST <item/> with all N
-    replacement = "\n  ".join(new_items)
-    text = text.replace(proto, replacement, 1)
+    text = text.replace(item_proto, "\n   ".join(new_items), 1)
     return text.encode("utf-8")
 
 
 def _patch_model_settings_for_copies(xml_bytes: bytes, copies: int, vlist, scale: float) -> bytes:
-    """Patch `Metadata/model_settings.config` so its <plate> block has N
-    <model_instance> entries. The first instance keeps the template's
-    fields; subsequent instances increment `instance_id` + bump
-    `identify_id` so the slicer tells them apart."""
+    """Patch `Metadata/model_settings.config` so the <plate> block holds
+    N `<object id="...">` entries (one per copy) PLUS N matching
+    `<model_instance>` entries pointing at distinct object_ids.
+
+    obj_inst_map is keyed by object_id at parse time (bbs_3mf.cpp:4806)
+    so distinct object_ids are required — same-id duplicates silently
+    drop. This pairs with the multi-object structure
+    _patch_wrapper_for_copies emits in 3D/3dmodel.model."""
     if copies <= 1:
         return xml_bytes
     import re as _re
     text = xml_bytes.decode("utf-8", errors="replace")
-    # Find the existing <model_instance>...</model_instance>
-    m = _re.search(r"(<model_instance>.*?</model_instance>)", text, _re.DOTALL)
-    if not m:
+    # Capture the existing <object id="N">...</object> block from the cfg
+    obj_m = _re.search(r'(<object\s+id="(\d+)">.*?</object>)', text, _re.DOTALL)
+    if not obj_m:
         return xml_bytes
-    proto = m.group(1)
-    # Parse the existing identify_id so subsequent copies bump from there.
-    id_m = _re.search(r'identify_id"\s+value="(\d+)"', proto)
+    obj_proto = obj_m.group(1)
+    base_obj_id = int(obj_m.group(2))
+
+    # Capture the <model_instance> template
+    inst_m = _re.search(r"(<model_instance>.*?</model_instance>)", text, _re.DOTALL)
+    if not inst_m:
+        return xml_bytes
+    inst_proto = inst_m.group(1)
+    id_m = _re.search(r'identify_id"\s+value="(\d+)"', inst_proto)
     base_identify = int(id_m.group(1)) if id_m else 1
 
-    new_instances = []
+    # 1) Emit N <object> blocks
+    new_objs = []
     for idx in range(copies):
-        inst = _re.sub(
-            r'instance_id"\s+value="\d+"',
-            f'instance_id" value="{idx}"', proto, count=1,
-        )
-        inst = _re.sub(
-            r'identify_id"\s+value="\d+"',
-            f'identify_id" value="{base_identify + idx}"', inst, count=1,
-        )
-        new_instances.append(inst)
-    text = text.replace(proto, "\n    ".join(new_instances), 1)
+        new_id = base_obj_id + idx
+        clone = _re.sub(r'<object\s+id="\d+">',
+                        f'<object id="{new_id}">', obj_proto, count=1)
+        new_objs.append(clone)
+    text = text.replace(obj_proto, "\n  ".join(new_objs), 1)
+
+    # 2) Emit N <model_instance> blocks — each refs a different object_id.
+    new_insts = []
+    for idx in range(copies):
+        new_obj_id = base_obj_id + idx
+        inst = _re.sub(r'object_id"\s+value="\d+"',
+                       f'object_id" value="{new_obj_id}"', inst_proto, count=1)
+        inst = _re.sub(r'instance_id"\s+value="\d+"',
+                       f'instance_id" value="0"', inst, count=1)
+        inst = _re.sub(r'identify_id"\s+value="\d+"',
+                       f'identify_id" value="{base_identify + idx}"', inst, count=1)
+        new_insts.append(inst)
+    text = text.replace(inst_proto, "\n    ".join(new_insts), 1)
     return text.encode("utf-8")
 
 
