@@ -83,7 +83,7 @@ class _ImplicitFTPTLS(FTP_TLS):
             value = self.context.wrap_socket(value, server_hostname=self.host)
         self._sock = value
 
-    def ntransfercmd(self, cmd, rest=None):  # type: ignore[override]
+    def ntransfercmd(self, cmd, rest=None):
         conn, size = FTP_TLS.ntransfercmd(self, cmd, rest)
         if self._prot_p:
             conn = self.context.wrap_socket(
@@ -93,7 +93,7 @@ class _ImplicitFTPTLS(FTP_TLS):
             )
         return conn, size
 
-    def storbinary(self, cmd, fp, blocksize=32768, callback=None, rest=None):  # type: ignore[override]
+    def storbinary(self, cmd, fp, blocksize=32768, callback=None, rest=None):
         self.voidcmd("TYPE I")
         conn = self.transfercmd(cmd, rest)
         try:
@@ -113,7 +113,7 @@ class _ImplicitFTPTLS(FTP_TLS):
             conn.close()
         return self.voidresp()
 
-    def retrbinary(self, cmd, callback, blocksize=8192, rest=None):  # type: ignore[override]
+    def retrbinary(self, cmd, callback, blocksize=8192, rest=None):
         self.voidcmd("TYPE I")
         conn = self.transfercmd(cmd, rest)
         try:
@@ -131,7 +131,7 @@ class _ImplicitFTPTLS(FTP_TLS):
             conn.close()
         return self.voidresp()
 
-    def retrlines(self, cmd, callback=None):  # type: ignore[override]
+    def retrlines(self, cmd, callback=None):
         self.voidcmd("TYPE A")
         conn = self.transfercmd(cmd)
         try:
@@ -168,7 +168,7 @@ class _FTP_TLS_Reuse(FTP_TLS):
     bypasses _ImplicitFTPTLS' sock-setter chain (which double-wraps on
     Python 3.12+ → INVALID_ALERT). PASV data channel inherits the
     control TLS session per Bambu's `ssl_session_reuse=YES` requirement."""
-    def ntransfercmd(self, cmd, rest=None):  # type: ignore[override]
+    def ntransfercmd(self, cmd, rest=None):
         conn, size = FTP.ntransfercmd(self, cmd, rest)
         if self._prot_p:
             conn = self.context.wrap_socket(
