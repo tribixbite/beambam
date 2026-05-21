@@ -212,6 +212,174 @@ def cmd_cloud_filaments(args: argparse.Namespace) -> int:
     return 0
 
 
+def _format_design_hits(hits: list, header: str = "") -> None:
+    """Pretty-print a list of MakerWorld design hits. Used by search,
+    browse-by-nav, favorites, liked."""
+    if header:
+        print(header)
+    if not hits:
+        print("  (none)"); return
+    for h in hits:
+        d = h.get("design") or h
+        did = str(d.get("id") or d.get("designId") or "")
+        title = str(d.get("title") or d.get("designTitle") or "")
+        creator = ((d.get("designCreator") or {}).get("name", "")
+                   or d.get("creatorName", ""))
+        likes = int(d.get("likeCount") or d.get("likes") or 0)
+        downloads = int(d.get("downloadCount") or d.get("downloads") or 0)
+        print(f"  {did:<8} likes={likes:<5} dls={downloads:<6}  "
+              f"by {creator[:18]:<18}  {title[:50]}")
+
+
+def cmd_cloud_search(args: argparse.Namespace) -> int:
+    """MakerWorld full-text search."""
+    import cloud_client
+    cli = cloud_client.CloudClient.load_or_anonymous()
+    if cli.session.empty:
+        print("not logged in", file=sys.stderr); return 1
+    try:
+        r = cli.search_designs(args.query, limit=int(args.limit),
+                                offset=int(args.offset))
+    except cloud_client.CloudError as e:
+        print(f"cloud API failed: {e}", file=sys.stderr); return 1
+    if args.json:
+        print(json.dumps(r, indent=2, default=str)); return 0
+    _format_design_hits(r.get("hits") or [],
+                        header=f"{r.get('total', 0)} match(es) for "
+                               f"{args.query!r}:")
+    return 0
+
+
+def cmd_cloud_browse(args: argparse.Namespace) -> int:
+    """Browse MakerWorld by nav key (Trending / Foryou / Household / …)."""
+    import cloud_client
+    cli = cloud_client.CloudClient.load_or_anonymous()
+    if cli.session.empty:
+        print("not logged in", file=sys.stderr); return 1
+    try:
+        r = cli.browse_designs_by_nav(args.nav, limit=int(args.limit),
+                                       offset=int(args.offset))
+    except cloud_client.CloudError as e:
+        print(f"cloud API failed: {e}", file=sys.stderr); return 1
+    if args.json:
+        print(json.dumps(r, indent=2, default=str)); return 0
+    _format_design_hits(r.get("hits") or [],
+                        header=f"{r.get('total', 0)} designs in "
+                               f"nav={args.nav!r}:")
+    return 0
+
+
+def cmd_cloud_design(args: argparse.Namespace) -> int:
+    """Full design record for a MakerWorld design ID."""
+    import cloud_client
+    cli = cloud_client.CloudClient.load_or_anonymous()
+    if cli.session.empty:
+        print("not logged in", file=sys.stderr); return 1
+    try:
+        r = cli.get_design(args.design_id)
+    except cloud_client.CloudError as e:
+        print(f"cloud API failed: {e}", file=sys.stderr); return 1
+    if args.json:
+        print(json.dumps(r, indent=2, default=str)); return 0
+    print(f"Design ID    : {r.get('id')}")
+    print(f"Title        : {r.get('title')}")
+    print(f"Slug         : {r.get('slug')}")
+    creator = r.get("designCreator") or {}
+    print(f"Creator      : {creator.get('name')} (uid {creator.get('uid')})")
+    print(f"Stats        : likes={r.get('likeCount', 0)}  "
+          f"dls={r.get('downloadCount', 0)}  "
+          f"collections={r.get('collectionCount', 0)}  "
+          f"comments={r.get('commentCount', 0)}")
+    instances = r.get("instances") or []
+    print(f"Instances    : {len(instances)}")
+    for inst in instances[:5]:
+        print(f"  - id={inst.get('id')} title={inst.get('title',''):<40} "
+              f"configs={len(inst.get('configs') or [])}")
+    return 0
+
+
+def cmd_cloud_design_remixes(args: argparse.Namespace) -> int:
+    """Remix tree of a MakerWorld design."""
+    import cloud_client
+    cli = cloud_client.CloudClient.load_or_anonymous()
+    if cli.session.empty:
+        print("not logged in", file=sys.stderr); return 1
+    try:
+        r = cli.get_design_remixes(args.design_id)
+    except cloud_client.CloudError as e:
+        print(f"cloud API failed: {e}", file=sys.stderr); return 1
+    if args.json:
+        print(json.dumps(r, indent=2, default=str)); return 0
+    _format_design_hits(r.get("hits") or [],
+                        header=f"{r.get('total', 0)} remix(es) of "
+                               f"design {args.design_id}:")
+    return 0
+
+
+def cmd_cloud_favorites(args: argparse.Namespace) -> int:
+    """User's MakerWorld favorites lists."""
+    import cloud_client
+    cli = cloud_client.CloudClient.load_or_anonymous()
+    if cli.session.empty:
+        print("not logged in", file=sys.stderr); return 1
+    try:
+        r = cli.get_favorites()
+    except cloud_client.CloudError as e:
+        print(f"cloud API failed: {e}", file=sys.stderr); return 1
+    if args.json:
+        print(json.dumps(r, indent=2, default=str)); return 0
+    lists = r.get("hits") or []
+    print(f"{len(lists)} favorite list(s):")
+    for fl in lists:
+        print(f"  id={fl.get('id'):<10} {str(fl.get('title','')):<30}  "
+              f"status={fl.get('status')}  "
+              f"covers={len(fl.get('designCover') or [])}")
+    return 0
+
+
+def cmd_cloud_liked(args: argparse.Namespace) -> int:
+    """Designs the user has liked."""
+    import cloud_client
+    cli = cloud_client.CloudClient.load_or_anonymous()
+    if cli.session.empty:
+        print("not logged in", file=sys.stderr); return 1
+    try:
+        r = cli.get_liked_designs()
+    except cloud_client.CloudError as e:
+        print(f"cloud API failed: {e}", file=sys.stderr); return 1
+    if args.json:
+        print(json.dumps(r, indent=2, default=str)); return 0
+    _format_design_hits(r.get("hits") or [],
+                        header=f"{r.get('total', 0)} liked design(s):")
+    return 0
+
+
+def cmd_cloud_presets(args: argparse.Namespace) -> int:
+    """User's cloud-synced slicer presets (print / filament / printer)."""
+    import cloud_client
+    cli = cloud_client.CloudClient.load_or_anonymous()
+    if cli.session.empty:
+        print("not logged in", file=sys.stderr); return 1
+    try:
+        r = cli.get_slicer_presets(version=args.version,
+                                    public=bool(args.public))
+    except cloud_client.CloudError as e:
+        print(f"cloud API failed: {e}", file=sys.stderr); return 1
+    if args.json:
+        print(json.dumps(r, indent=2, default=str)); return 0
+    for kind in ("print", "filament", "printer"):
+        block = r.get(kind) or {}
+        for visibility in ("private", "public"):
+            items = block.get(visibility) or []
+            if items:
+                print(f"\n{kind} / {visibility}: {len(items)}")
+                for it in items[:20]:
+                    print(f"  {str(it.get('setting_id',''))[:24]:<24}  "
+                          f"v{it.get('version','?')}  "
+                          f"{str(it.get('name',''))[:40]}")
+    return 0
+
+
 def cmd_cloud_ttcode(args: argparse.Namespace) -> int:
     """Fetch Throughtek P2P NAT-traversal codes for cloud camera streaming.
 
@@ -325,3 +493,64 @@ def add_subparser(sub: "argparse._SubParsersAction") -> None:
         help="User's spool / filament inventory (AMS-RFID + manual entries).")
     cli_fil.add_argument("--json", action="store_true")
     cli_fil.set_defaults(fn=cmd_cloud_filaments)
+
+    cli_search = sub.add_parser(
+        "cloud-search",
+        help="Full-text search MakerWorld designs by query string.")
+    cli_search.add_argument("query", help="search query string")
+    cli_search.add_argument("--limit", type=int, default=20)
+    cli_search.add_argument("--offset", type=int, default=0)
+    cli_search.add_argument("--json", action="store_true")
+    cli_search.set_defaults(fn=cmd_cloud_search)
+
+    cli_browse = sub.add_parser(
+        "cloud-browse",
+        help="Browse MakerWorld designs by nav key (Trending / Foryou / "
+             "Household / etc.).")
+    cli_browse.add_argument("nav",
+                             help="nav key (use `cloud-search-suggest` or "
+                                  "`/v1/search-service/homepage/nav` to "
+                                  "discover)")
+    cli_browse.add_argument("--limit", type=int, default=20)
+    cli_browse.add_argument("--offset", type=int, default=0)
+    cli_browse.add_argument("--json", action="store_true")
+    cli_browse.set_defaults(fn=cmd_cloud_browse)
+
+    cli_design = sub.add_parser(
+        "cloud-design",
+        help="Show full record for a MakerWorld design ID (title, "
+             "creator, instances, like/download counts, signed S3 URL "
+             "to its .3mf bundle).")
+    cli_design.add_argument("design_id", type=int)
+    cli_design.add_argument("--json", action="store_true")
+    cli_design.set_defaults(fn=cmd_cloud_design)
+
+    cli_remix = sub.add_parser(
+        "cloud-design-remixes",
+        help="List remixes (derivative works) of a MakerWorld design.")
+    cli_remix.add_argument("design_id", type=int)
+    cli_remix.add_argument("--json", action="store_true")
+    cli_remix.set_defaults(fn=cmd_cloud_design_remixes)
+
+    cli_fav = sub.add_parser(
+        "cloud-favorites",
+        help="User's MakerWorld favorites lists.")
+    cli_fav.add_argument("--json", action="store_true")
+    cli_fav.set_defaults(fn=cmd_cloud_favorites)
+
+    cli_lk = sub.add_parser(
+        "cloud-liked",
+        help="Designs the user has liked on MakerWorld.")
+    cli_lk.add_argument("--json", action="store_true")
+    cli_lk.set_defaults(fn=cmd_cloud_liked)
+
+    cli_pre = sub.add_parser(
+        "cloud-presets",
+        help="User's cloud-synced slicer presets (print / filament / "
+             "printer profiles).")
+    cli_pre.add_argument("--version", default="01.10.00.69",
+                          help="Slicer version to use as the version filter")
+    cli_pre.add_argument("--public", action="store_true",
+                          help="Include Bambu's shipped public presets too")
+    cli_pre.add_argument("--json", action="store_true")
+    cli_pre.set_defaults(fn=cmd_cloud_presets)
