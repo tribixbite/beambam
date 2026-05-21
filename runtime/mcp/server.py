@@ -232,6 +232,80 @@ TOOLS: list[dict] = [
     _build("metrics",
            "Fetch the bridge daemon's Prometheus /metrics body.",
            lambda _a: []),  # handled specially
+
+    # ----- v1.2.0 additions ----------------------------------------------
+
+    _build("analyze",
+           "Dissect a local .gcode.3mf file: filament/nozzle assignment, "
+           "per-phase toolchanges, real flush volume in mm + grams, AMS-tray "
+           "requirements, slicer warnings, and optimization hints. "
+           "Returns structured JSON with phases, totals, hints arrays.",
+           lambda a: ["analyze", a["file"], "--json"],
+           extra_props={
+               "file": {"type": "string",
+                        "description": "Local path to a .gcode.3mf file"},
+           },
+           required=["file"]),
+
+    _build("ams_status",
+           "Pretty-printed AMS state for every loaded unit: per-tray color, "
+           "filament type, tray_info_idx, humidity level, remaining %, and "
+           "active-feed marker. Use this to answer 'what's loaded?' questions "
+           "without parsing the raw state JSON.",
+           lambda a: ["ams", "status", "--json"] + _common_creds(a)),
+
+    _build("ams_tray_info",
+           "Detailed info for a single AMS tray by global slot (unit*4 + tray, "
+           "0..15): color, filament type/sub-brand, tray_info_idx, nozzle "
+           "temp range, bed temp + type, drying temp/time, remaining %, RFID "
+           "tag UID, current state.",
+           lambda a: (["ams", "info", str(int(a["slot"])), "--no-color"]
+                       + _common_creds(a)),
+           extra_props={
+               "slot": {"type": "integer",
+                        "description": "Global slot 0..15 (unit*4 + tray)"},
+           },
+           required=["slot"]),
+
+    _build("doctor",
+           "Comprehensive printer health diagnostic — AMS humidity warnings, "
+           "active HMS error codes with descriptions, thermistor sanity, "
+           "wifi RSSI thresholds, camera state, print state surfacing. "
+           "Returns a list of {category, name, severity, detail} dicts. "
+           "Severity is one of pass/warn/fail/info.",
+           lambda a: ["doctor", "--json"] + _common_creds(a)),
+
+    _build("download",
+           "Pull a file off the printer's SD card via FTPS. Use this for "
+           "/cache/<filename>.gcode.3mf (the just-sent print), /timelapse/... "
+           "(stored videos), or any path returned by the `files` tool.",
+           lambda a: (["download", a["remote_path"], a["local_path"]]
+                       + _common_creds(a)),
+           extra_props={
+               "remote_path": {"type": "string",
+                               "description": "Path on the printer's SD"},
+               "local_path": {"type": "string",
+                              "description": "Local destination path"},
+           },
+           required=["remote_path", "local_path"]),
+
+    _build("queue_list",
+           "List the persistent print queue (~/.x2d/queue.json). Each job: "
+           "id, printer, gcode path, slot, status (pending/running/done/...), "
+           "label, enqueued/started/finished timestamps, any error message.",
+           lambda _a: ["queue", "list"]),
+
+    _build("find_printers",
+           "SSDP M-SEARCH discovery on the LAN. Returns every Bambu printer "
+           "that responds with ip / serial / model / name / signal-strength / "
+           "connection state / bound-to-cloud status.",
+           lambda a: (["find", "--timeout", str(int(a.get("timeout", 3))),
+                        "--json"]),
+           extra_props={
+               "timeout": {"type": "integer",
+                           "description": "Seconds to wait for responses "
+                                          "(default 3, max 30)"},
+           }),
 ]
 
 TOOLS_BY_NAME: dict[str, dict] = {t["name"]: t for t in TOOLS}

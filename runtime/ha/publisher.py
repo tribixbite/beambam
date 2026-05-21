@@ -220,7 +220,39 @@ def ams_entities() -> list[Entity]:
             "", "", "", "", "mdi:tray-arrow-up",
             extra={"command_topic": f"__BASE__/ams/{slot}/load",
                     "payload_press": "ON"}))
+
+    # ----- v1.2.0: multi-unit humidity warnings ------------------------
+    # One binary_sensor per AMS unit (up to 4 on X2D / H2D) — on when the
+    # firmware-reported humidity level is ≥3 (out of 4). Surfaces the same
+    # warning `beambam doctor` emits, but as a HA entity so users can
+    # automate "send notification when AMS damp" without polling.
+    for unit_idx in range(4):
+        out.append(Entity(
+            "binary_sensor",
+            f"ams_unit{unit_idx}_humidity_warn",
+            f"AMS unit {unit_idx} humidity warning",
+            "{{ 'ON' if (value_json.print.ams.ams[" + str(unit_idx) +
+            "].humidity | default('0') | int >= 3) else 'OFF' }}",
+            "", "moisture", "", "mdi:water-percent-alert"))
     return out
+
+
+# ----- v1.2.0: queue + diagnostic sensors --------------------------------
+def queue_doctor_entities() -> list[Entity]:
+    """Diagnostic sensors: queue depth + active-HMS count."""
+    return [
+        Entity(
+            "sensor", "queue_pending", "Print queue pending",
+            # State source: separate /queue endpoint, not the pushall blob.
+            # Daemon publishes queue depth into the same x2d/<serial>/state
+            # JSON under "queue_pending" — see daemon code.
+            "{{ value_json.queue_pending | default(0) }}",
+            "", "", "", "mdi:format-list-numbered"),
+        Entity(
+            "sensor", "hms_active_count", "HMS active errors",
+            "{{ value_json.print.hms | default([]) | length }}",
+            "", "", "", "mdi:alert-circle"),
+    ]
 
 
 # Switch / button / number entities.
@@ -366,11 +398,13 @@ class HAPublisher:
         self._client_id = client_id or f"x2d-ha-{clean}-{os.getpid()}"
         # Build entity list now so command-topic substitution can resolve
         # __BASE__ before any subscribe.
-        self._entities = list(SENSOR_ENTITIES) + ams_entities() + \
-                         list(CONTROL_ENTITIES) + [
-                             camera_entity(self.daemon_url + "/cam.jpg",
+        self._entities = (list(SENSOR_ENTITIES)
+                          + ams_entities()
+                          + queue_doctor_entities()    # v1.2.0
+                          + list(CONTROL_ENTITIES)
+                          + [camera_entity(self.daemon_url + "/cam.jpg",
                                             self.base_topic),
-                             mqtt_camera_entity(self.base_topic)]
+                              mqtt_camera_entity(self.base_topic)])
         self._client = mqtt.Client(
             mqtt.CallbackAPIVersion.VERSION2, self._client_id)
         if broker_username:
