@@ -153,7 +153,13 @@ BRIDGE = REPO / "x2d_bridge.py"
 #        daemons (cmd_camera, cmd_serve, cmd_daemon) still need their
 #        supporting class hierarchies (ServeServer, etc.) hoisted out
 #        of the monolith before they can move cleanly.
-_MAX_CMD_HANDLERS_IN_BRIDGE = 5
+#    4 — Phase 5d batch 4: cmd_slice_print (110 LoC end-to-end
+#        STL→slice→upload→print pipeline) moved into beambam.cli.lan.
+#        Migration unblocked by batch 3's print_job.py extraction —
+#        all deps (start_print, _validate_ams_slot,
+#        _derive_print_params_from_3mf, Creds, upload_file, X2DClient)
+#        now live in beambam.* packages, no lazy thunks needed.
+_MAX_CMD_HANDLERS_IN_BRIDGE = 4
 
 
 def _count_cmd_handlers() -> int:
