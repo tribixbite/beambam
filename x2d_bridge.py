@@ -6390,6 +6390,9 @@ def main() -> int:
     from beambam.cam import add_subparser as _cam_subparser
     _cam_subparser(sub)
 
+    from beambam.slice import add_subparser as _slice_subparser
+    _slice_subparser(sub)
+
     an = sub.add_parser(
         "analyze",
         help="Dissect a .gcode.3mf — filament/nozzle assignment, per-phase "
