@@ -6294,6 +6294,9 @@ def main() -> int:
     from beambam.doctor import add_subparser as _doctor_subparser
     _doctor_subparser(sub)
 
+    from beambam.init_wizard import add_subparser as _init_subparser
+    _init_subparser(sub)
+
     an = sub.add_parser(
         "analyze",
         help="Dissect a .gcode.3mf — filament/nozzle assignment, per-phase "
