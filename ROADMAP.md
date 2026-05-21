@@ -325,14 +325,20 @@ phase staging.
   x2d_bridge so existing test imports keep working. `cmd_fetch` lazy-
   thunks back into x2d_bridge for the `PACKAGE_VERSION` + `X2D_ROOT_PATH`
   constants. Bridge cmd_* count after Phase 5c: 26.
-- [ ] **Phase 5d** — daemon cluster (`cmd_daemon`, `cmd_serve`,
-  `cmd_camera`, `cmd_webrtc`, `cmd_ha_publish`, `_serve_http`) →
-  `beambam/cli/daemon.py`. Largest single sub-phase (~1,500 LoC).
-  Critical: keep `python3 x2d_bridge.py serve` byte-stable as an
-  entry point — the GUI shim spawns it by literal pathname.
-- [ ] **Phase 5e** — `main()` + argparse builder → `beambam/cli/__init__.py`.
-  `x2d_bridge.py` becomes a 5-line shim. Update the `beambam` /
-  `bb` console-script entries in pyproject.toml.
+- [x] **Phase 5d** — daemon cluster → `beambam/cli/daemon.py`.
+  Closed over 8 batches: webrtc + ha-publish (scaffold), LAN-print
+  machinery extracted to `beambam/print_job.py`, slice-print + print
+  + camera + serve + daemon migrated. `cmd_serve` + `cmd_daemon`
+  lazy-thunk `ServeServer` / `_serve_http` / `_WEB_DIR_DEFAULT` /
+  `LOG_QUEUE` (still in monolith — Phase 5e candidates). Bridge
+  cmd_* count after Phase 5d: **0** (zero handlers in the monolith;
+  everything is now under `beambam.cli.{cloud,control,daemon,info,
+  lan}`).
+- [~] **Phase 5e** — `main()` + argparse builder → `beambam/cli/__init__.py`.
+  Batch 1: `_COMMAND_GROUPS` catalog + `_build_epilog` helper extracted.
+  Remaining: argparse construction itself (~700 LoC) + ServeServer /
+  `_serve_http` extraction so the x2d_bridge.py can finally become
+  the 5-line shim the plan envisioned.
 - [x] **Bridge-split guard test** — `tests/test_bridge_split_progress.py`
   pins today's count (74 handlers) and fails CI if it grows. Forces
   new features into `beambam/cli/` going forward.

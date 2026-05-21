@@ -173,7 +173,14 @@ BRIDGE = REPO / "x2d_bridge.py"
 #        x2d_bridge.ServeServer until the class itself can be
 #        extracted in a later batch. Only cmd_daemon left in monolith
 #        — it depends on the ~580-LoC _serve_http function.
-_MAX_CMD_HANDLERS_IN_BRIDGE = 1
+#    0 — Phase 5d batch 8 (closes Phase 5d): cmd_daemon (200 LoC
+#        multi-printer daemon) moved into beambam.cli.daemon with
+#        lazy thunks for LOG_QUEUE, _serve_http, _WEB_DIR_DEFAULT.
+#        Bridge cmd_* count: ZERO. Every CLI handler now lives under
+#        beambam.cli.{cloud,control,daemon,info,lan}; x2d_bridge.py
+#        is just argparse construction + the ServeServer / _serve_http
+#        bodies + module-level constants + re-exports for back-compat.
+_MAX_CMD_HANDLERS_IN_BRIDGE = 0
 
 
 def _count_cmd_handlers() -> int:

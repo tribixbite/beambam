@@ -26,6 +26,246 @@ import argparse
 import sys
 
 
+def cmd_daemon(args: argparse.Namespace) -> int:
+    """Multi-printer daemon (item #36).
+
+    Spawns one X2DClient per printer section in ~/.x2d/credentials. If
+    --printer is passed, only that one is started. State,
+    last_message_ts and pushall polling are tracked per printer. The
+    HTTP server routes `?printer=NAME` to the matching client.
+    Connection failures are isolated: a single unreachable printer
+    doesn't take down the others.
+    """
+    import argparse as _argparse
+    import json
+    import signal as _signal
+    import sys
+    import time
+    from pathlib import Path
+    from threading import Event, Thread
+    from beambam.cli._helpers import _next_seq
+    from beambam.config import Creds
+    from beambam.ftps import upload_file
+    from beambam.mqtt import X2DClient
+    from beambam.print_job import (
+        _derive_print_params_from_3mf,
+        _validate_ams_slot,
+        start_print,
+    )
+    from beambam.state_hub import StateHub
+    # Lazy thunks for bridge-internal helpers that haven't moved yet:
+    #   LOG_QUEUE          — module-scope logger configured by the
+    #                        monolith (queue dispatcher warnings).
+    #   _serve_http        — the ~580-LoC HTTP daemon body that backs
+    #                        the per-printer routing layer.
+    #   _WEB_DIR_DEFAULT   — path to the built-in /web static bundle.
+    from x2d_bridge import LOG_QUEUE, _serve_http, _WEB_DIR_DEFAULT
+
+    # Determine the set of printers to drive.
+    if args.printer:
+        names_to_run: list[str] = [args.printer]
+    else:
+        names = Creds.list_names()
+        names_to_run = names if names else [""]
+    # Per-printer state cache + clients.
+    states: dict[str, dict | None] = {n: None for n in names_to_run}
+    # Per-printer pub/sub hub. Drop-oldest-on-full so a slow SSE/HA
+    # consumer can't backpressure the MQTT thread. Wired into the SSE
+    # handler so /state.events pushes are immediate (no 1 Hz polling)
+    # and a fresh client replays last_state on connect.
+    hubs: dict[str, StateHub] = {
+        n: StateHub(maxqueue=8) for n in names_to_run}
+
+    # Item #55: optional queue manager. Hooks into per-printer state
+    # callbacks so it can dispatch the next pending job when a printer
+    # goes idle.
+    # Item #56: optional timelapse recorder. Hooks per-printer state;
+    # captures /snapshot.jpg every --timelapse-interval seconds during
+    # active prints; saves under ~/.x2d/timelapses/<printer>/<job>/.
+    timelapse_rec = None
+    if getattr(args, "timelapse", False):
+        from runtime.timelapse.recorder import TimelapseRecorder
+        # Build a self-referential URL so the recorder pulls from
+        # OUR /snapshot.jpg (which itself proxies the camera daemon).
+        host_part, _, port_part = (args.http
+                                    or "127.0.0.1:8765").rpartition(":")
+        snap_host = (host_part
+                     if host_part not in ("", "0.0.0.0")
+                     else "127.0.0.1")
+        timelapse_rec = TimelapseRecorder(
+            snapshot_url=f"http://{snap_host}:{port_part}/snapshot.jpg",
+            interval_s=float(args.timelapse_interval))
+        print(f"[x2d-bridge] timelapse recorder enabled "
+              f"(every {args.timelapse_interval}s during prints)",
+              file=sys.stderr)
+
+    queue_mgr = None
+    if getattr(args, "queue", False):
+        from runtime.queue.manager import QueueManager
+        from threading import Lock as _DispatchLock
+        _dispatch_lock = _DispatchLock()
+
+        def _dispatch_job(job) -> bool:
+            """Upload the job's .gcode.3mf to the printer + start_print.
+            Runs synchronously while the queue manager waits."""
+            cli = clients.get(job.printer)
+            if cli is None:
+                LOG_QUEUE.warning(
+                    "queue dispatch: no client for printer %r",
+                    job.printer)
+                return False
+            try:
+                with _dispatch_lock:
+                    creds = cli.creds
+                    upload_file(creds, Path(job.gcode),
+                                  remote_name=Path(job.gcode).name)
+                    # Per code-review #2: queue dispatch must validate
+                    # AMS state at dispatch time — a job enqueued an
+                    # hour ago may target a slot whose spool was
+                    # swapped out since. local_path also lets
+                    # start_print() auto-derive bed_type/bed_temp so
+                    # heat profile matches the slice.
+                    queued_3mf = Path(job.gcode)
+                    derived = _derive_print_params_from_3mf(
+                        queued_3mf, filament_index=0)
+                    live = cli.request_state(timeout=15.0)
+                    _validate_ams_slot(live, int(job.slot), derived,
+                                        force=False)
+                    start_print(cli, queued_3mf.name,
+                                use_ams=True,
+                                ams_slot=int(job.slot),
+                                local_path=queued_3mf)
+                LOG_QUEUE.info(
+                    "queue dispatched %s → %s slot %d",
+                    job.label or job.gcode, job.printer, job.slot)
+                return True
+            except Exception as e:
+                LOG_QUEUE.exception(
+                    "queue dispatch failed for %s: %s",
+                    job.label or job.gcode, e)
+                return False
+
+        queue_mgr = QueueManager(dispatch_cb=_dispatch_job)
+        print(f"[x2d-bridge] queue enabled; persisted at "
+              f"{queue_mgr._path}", file=sys.stderr)
+
+    def make_on_state(name: str):
+        def on_state(state: dict) -> None:
+            states[name] = state
+            # Fan out to every subscriber of the per-printer hub.
+            # Slow consumers drop oldest entries; the MQTT thread
+            # never blocks.
+            hub = hubs.get(name)
+            if hub is not None:
+                try:
+                    hub.publish(state)
+                except Exception as e:
+                    print(f"[x2d-bridge] hub.publish({name}) "
+                          f"failed: {e}", file=sys.stderr)
+            if queue_mgr is not None:
+                try:
+                    queue_mgr.on_state(name, state)
+                except Exception as e:
+                    print(f"[x2d-bridge] queue.on_state({name}) "
+                          f"failed: {e}", file=sys.stderr)
+            if timelapse_rec is not None:
+                try:
+                    timelapse_rec.on_state(name, state)
+                except Exception as e:
+                    print(f"[x2d-bridge] timelapse.on_state({name}) "
+                          f"failed: {e}", file=sys.stderr)
+            if not args.quiet:
+                print(json.dumps({"ts": time.time(),
+                                  "printer": name,
+                                  "state": state}), flush=True)
+        return on_state
+
+    clients: dict[str, X2DClient] = {}
+    failed: list[tuple[str, str]] = []
+    for name in names_to_run:
+        try:
+            ns = _argparse.Namespace(ip=None, code=None, serial=None,
+                                      printer=(name or None))
+            creds = Creds.resolve(ns)
+            cli = X2DClient(creds, on_state=make_on_state(name))
+            cli.connect()
+            clients[name] = cli
+            print(f"[x2d-bridge] {name or '<default>'}: connected to "
+                  f"{creds.ip}", file=sys.stderr)
+        except SystemExit as e:
+            failed.append(
+                (name, f"creds resolve failed (exit {e.code})"))
+        except Exception as e:
+            failed.append((name, str(e)))
+            print(f"[x2d-bridge] {name or '<default>'}: connect "
+                  f"failed: {e} — other printers continue",
+                  file=sys.stderr)
+    if not clients:
+        print(f"[x2d-bridge] no printers reachable: {failed}",
+              file=sys.stderr)
+        return 2
+
+    def _safe_pushall(name: str, cli: X2DClient) -> None:
+        try:
+            cli.publish({"pushing": {"sequence_id": _next_seq(),
+                                      "command": "pushall"}})
+        except Exception as e:
+            print(f"[x2d-bridge] {name or '<default>'}: pushall "
+                  f"failed: {e}", file=sys.stderr)
+
+    for name, cli in clients.items():
+        _safe_pushall(name, cli)
+
+    if args.http:
+        def get_state(printer: str):
+            return states.get(printer)
+
+        def get_last_ts(printer: str):
+            cli = clients.get(printer)
+            return cli.last_message_ts if cli else 0.0
+
+        def get_hub(printer: str):
+            return hubs.get(printer)
+
+        Thread(target=_serve_http,
+               kwargs={"bind": args.http, "get_state": get_state,
+                       "get_last_ts": get_last_ts,
+                       "max_staleness": float(args.max_staleness),
+                       "auth_token": args.auth_token or None,
+                       "printer_names": list(clients.keys()),
+                       "clients": clients,
+                       "web_dir": _WEB_DIR_DEFAULT,
+                       "queue_mgr": queue_mgr,
+                       "timelapse_rec": timelapse_rec,
+                       "get_hub": get_hub},
+               daemon=True).start()
+
+    period = max(1, int(args.interval))
+    print(f"[x2d-bridge] daemon up; {len(clients)} printer(s); "
+          f"polling every {period}s. Ctrl-C / SIGTERM to quit.",
+          file=sys.stderr)
+
+    stop = Event()
+
+    def _handle_sig(signum, frame):  # noqa: ARG001
+        stop.set()
+
+    _signal.signal(_signal.SIGINT, _handle_sig)
+    _signal.signal(_signal.SIGTERM, _handle_sig)
+
+    while not stop.is_set():
+        if stop.wait(period):
+            break
+        for name, cli in clients.items():
+            _safe_pushall(name, cli)
+    for cli in clients.values():
+        try:
+            cli.disconnect()
+        except Exception:
+            pass
+    return 0
+
+
 def cmd_serve(args: argparse.Namespace) -> int:
     """Run the UNIX-socket daemon that the libbambu_networking.so shim
     talks to. See runtime/network_shim/PROTOCOL.md for the wire format.
