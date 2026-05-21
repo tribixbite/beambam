@@ -32,6 +32,16 @@ import remix_3mf  # noqa: WPS433
 FIXTURE = Path(__file__).resolve().parent.parent / "rumi_frame.gcode.3mf"
 TMP_ROOT = Path(os.environ.get("TMPDIR", "/tmp"))
 
+# rumi_frame.gcode.3mf is a local-only artifact (gitignored). Skip the
+# whole module when it isn't present so CI passes on clean clones.
+import pytest                                              # noqa: E402
+
+if not FIXTURE.exists():
+    pytest.skip(
+        f"fixture missing: {FIXTURE} (sliced from rumi_frame.stl; not "
+        f"in git)", allow_module_level=True,
+    )
+
 
 def _read_overrides(path: Path) -> dict[int, dict[str, str]]:
     with zipfile.ZipFile(path, "r") as zf:

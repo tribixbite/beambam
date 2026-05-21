@@ -84,17 +84,10 @@ def __getattr__(name: str) -> Any:
     return value
 
 
-__all__ = [
-    "__version__",
-    "Printer",
-    "Creds",
-    "X2DClient",
-    "CloudClient",
-    "CloudError",
-    "BAMBU_CERT_ID",
-    "sign_payload",
-    "upload_file",
-    "download_file",
-    "list_files",
-    "cli",
-]
+# NOTE: __all__ intentionally lists only names defined at module level
+# (Creds, Printer). The lazy re-exports above (X2DClient, sign_payload,
+# upload_file, etc.) work via __getattr__ but ruff F822 flags them as
+# "undefined in __all__". Keep both: __all__ is the "from beambam import *"
+# surface (Creds + Printer); the lazy names are addressable as `beambam.X`
+# directly but skip the * import expansion.
+__all__ = ["Creds", "Printer", "__version__"]

@@ -76,6 +76,10 @@ dev = [
     "ruff>=0.6",
     "mypy>=1.10",
     "hatchling>=1.18",
+    # Frame STL generator + analyze + thumbnails need these in CI tests
+    "numpy",
+    "numpy-stl",
+    "Pillow",
 ]
 
 [project.urls]
