@@ -3910,6 +3910,137 @@ def cmd_watch(args: argparse.Namespace) -> int:
     return 0
 
 
+# `tail` streams events derived from the printer's MQTT push stream
+# (state transitions, progress milestones, HMS code add/clear) as a
+# live log — push-based, not poll-based. Distinct from `watch` (which
+# polls request_state every N seconds and prints one full-status line)
+# in two ways: (a) events surface within ms of the printer's push
+# rather than once per polling interval, and (b) only deltas are
+# emitted, so the log stays terse.
+def cmd_tail(args: argparse.Namespace) -> int:
+    import time as _time
+    from threading import Event as _Event
+    from beambam.doctor import decode_hms
+
+    creds = Creds.resolve(args)
+    prev = {
+        "gcode_state": None,
+        "layer":       -1,
+        "percent":     -1,
+        "hms_set":     set(),
+    }
+
+    def _hms_code(h: dict) -> str:
+        """Render an HMS dict as `aaaa_bbbb_cccc_dddd` hex string,
+        matching the canonical form used by HMS_DESCRIPTIONS and the
+        Bambu HMS error page URLs."""
+        # Newer firmware uses 'a'/'b'/'c'/'d' int fields; older used
+        # 'attr'/'code' strings. Cover both.
+        if all(k in h for k in ("a", "b", "c", "d")):
+            return "_".join(f"{int(h.get(k, 0)):04X}" for k in ("a", "b", "c", "d"))
+        return "_".join(str(h.get(k, "")) for k in ("attr", "code")).strip("_")
+
+    def _emit(category: str, message: str, *,
+              level: str = "info") -> None:
+        ts_unix = _time.time()
+        ts_str  = _time.strftime("%H:%M:%S")
+        if args.json:
+            line = json.dumps({"ts":       ts_unix,
+                               "category": category,
+                               "level":    level,
+                               "message":  message},
+                              separators=(",", ":"))
+            print(line, flush=True)
+            return
+        icon = {"info": "·", "warn": "⚠", "fail": "✗",
+                "ok":   "✓"}.get(level, "·")
+        print(f"[{ts_str}] {icon} {category:<8} {message}", flush=True)
+
+    def _on_state(state: dict) -> None:
+        p = state.get("print", {}) or {}
+
+        # gcode_state transitions
+        gs = p.get("gcode_state")
+        if gs and gs != prev["gcode_state"]:
+            if prev["gcode_state"] is None:
+                _emit("state", f"observed {gs}")
+            else:
+                lvl = "fail" if gs in ("FAILED",) else "info"
+                _emit("state", f"{prev['gcode_state']} -> {gs}",
+                      level=lvl)
+            prev["gcode_state"] = gs
+
+        # progress milestones — every 10 % during a print
+        if not args.no_progress:
+            pct = int(p.get("mc_percent", 0) or 0)
+            # Only emit when we cross a 10-pct bucket boundary upward.
+            # `-1` initial state ensures the first push doesn't fire
+            # a spurious "0%" line on a fresh idle printer.
+            if pct >= 0 and prev["percent"] >= 0:
+                step = (pct // 10) - (prev["percent"] // 10)
+                if step >= 1 and pct < 100:
+                    _emit("progress", f"{pct}%")
+                elif pct == 100 and prev["percent"] < 100:
+                    _emit("progress", "100% — print finished", level="ok")
+            prev["percent"] = pct
+
+        # layer changes (chatty — opt-in via --every-state)
+        if args.every_state:
+            layer = int(p.get("layer_num", 0) or 0)
+            total = int(p.get("total_layer_num", 0) or 0)
+            if layer != prev["layer"] and layer > 0:
+                _emit("layer", f"L{layer}/{total}")
+                prev["layer"] = layer
+
+        # HMS — diff the current set against the previous to find new
+        # codes (fail) and cleared codes (ok). Always shown unless
+        # explicitly disabled.
+        if not args.no_hms:
+            hms_now: set[str] = set()
+            for h in (p.get("hms") or []):
+                code = _hms_code(h)
+                if code:
+                    hms_now.add(code)
+            for code in (hms_now - prev["hms_set"]):
+                _emit("hms", f"{code}: {decode_hms(code)}", level="fail")
+            for code in (prev["hms_set"] - hms_now):
+                _emit("hms", f"{code} cleared", level="ok")
+            prev["hms_set"] = hms_now
+
+    cli = X2DClient(creds, on_state=_on_state)
+    try:
+        cli.connect(timeout=8.0)
+    except Exception as e:
+        print(f"[tail] connect failed: {e}", file=sys.stderr)
+        return 2
+    # Force an initial push so we don't have to wait up to ~30 s for
+    # the printer's next periodic push.
+    try:
+        cli.publish({"pushing": {"sequence_id": _next_seq(),
+                                  "command": "pushall"}})
+    except Exception as e:
+        print(f"[tail] initial pushall failed: {e}", file=sys.stderr)
+
+    if not args.json:
+        print(f"[tail] connected to {creds.ip}; streaming events… "
+              f"(Ctrl-C to exit)", file=sys.stderr)
+    stop = _Event()
+    try:
+        # Idle the main thread; events come in via the on_state callback
+        # which runs on the paho client thread. wait() releases the GIL
+        # so Ctrl-C is responsive.
+        stop.wait()
+    except KeyboardInterrupt:
+        if not args.json:
+            print("\n[tail] stopped", file=sys.stderr)
+    finally:
+        try:
+            cli.disconnect()
+        except Exception:
+            pass
+    return 0
+
+
 # x2d/termux #88 — `notify` runs `watch` semantics in the background and
 # fires a termux-notification when the print state transitions to FINISH /
 # IDLE / FAILED. Lets the phone notify the user without keeping the GUI
@@ -6398,6 +6529,7 @@ _COMMAND_GROUPS: list[tuple[str, list[tuple[str, str]]]] = [
         ("config",         "Edit ~/.x2d/credentials"),
         ("health",         "Latency + reachability probes"),
         ("watch",          "Live-stream state changes"),
+        ("tail",           "Stream events (state + HMS + progress) push-driven"),
         ("notify",         "Test push-notification path"),
         ("find",           "Discover printers via SSDP"),
         ("whoami",         "Show current user / region"),
@@ -6758,6 +6890,28 @@ def main() -> int:
     w.add_argument("--once", action="store_true",
                    help="Print one status line and exit (good for scripts)")
     w.set_defaults(fn=cmd_watch)
+
+    t = sub.add_parser(
+        "tail",
+        help="Stream printer events (state transitions, progress "
+             "milestones every 10%%, HMS code add/clear) as a live "
+             "log — push-based; events surface within ms of the "
+             "printer's MQTT push. Distinct from `watch` (polling). "
+             "Ctrl-C to exit.",
+    )
+    t.add_argument("--every-state", action="store_true",
+                   help="Also emit a line on every layer change "
+                        "(chatty — off by default)")
+    t.add_argument("--no-progress", action="store_true",
+                   help="Suppress the progress-milestone lines "
+                        "(useful with --json piped to a script)")
+    t.add_argument("--no-hms", action="store_true",
+                   help="Suppress HMS error-code add/clear lines")
+    t.add_argument("--json", action="store_true",
+                   help="Emit one ndjson object per event instead of "
+                        "the human-readable format. Schema: "
+                        "{ts, category, level, message}.")
+    t.set_defaults(fn=cmd_tail)
 
     n = sub.add_parser(
         "notify",
@@ -7282,6 +7436,9 @@ def main() -> int:
 
     from beambam.upgrade import add_subparser as _upgrade_subparser
     _upgrade_subparser(sub)
+
+    from beambam.plate import add_subparser as _plate_subparser
+    _plate_subparser(sub)
 
     an = sub.add_parser(
         "analyze",

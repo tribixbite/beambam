@@ -80,7 +80,15 @@ Ordered by user-visible impact. Pick any 3-5 for the next release cut.
 
 ### New commands (each ~1-2 hr, well-scoped)
 - [ ] `beambam reboot` — soft reboot via M-code or signed control payload
-- [ ] `beambam plate {select,skip}` — multi-plate operations on the current file
+- [x] `beambam plate {list,select,skip}` (this round) — multi-plate
+  operations on a .gcode.3mf. `list` enumerates plates with weight /
+  time / objects / filaments (human table or `--json`). `select N
+  --out file2.3mf` writes a new 3MF containing only plate N (strips
+  per-plate assets from the zip + rewrites slice_info.config +
+  model_settings.config). `skip N --out file2.3mf` writes a new 3MF
+  with plate N removed (refuses if N is the only plate). 32 unit tests
+  in `tests/test_plate.py` against the bundled rumi fixture (1-plate)
+  + synthetic 2-plate 3MFs.
 - [ ] `beambam tail` — stream HMS errors + state changes as a live log
 - [x] `beambam upgrade` — pip self-upgrade. Queries PyPI JSON API for
   the latest stable (filters yanked + pre-releases unless `--pre`),
