@@ -5789,6 +5789,99 @@ def cmd_cloud_filaments(args: argparse.Namespace) -> int:
     return 0
 
 
+def _spool_body_from_args(args: argparse.Namespace) -> dict:
+    """Distil --vendor/--type/--name/--id/--color/--weight into the
+    spool-record dict Bambu's API expects. Skips None fields so the
+    server only sees what the user explicitly passed (matters for
+    UPDATE where you might want to change just one attribute)."""
+    raw = {
+        "filamentVendor": args.vendor,
+        "filamentType":   args.type,
+        "filamentName":   args.name,
+        "filamentId":     args.filament_id,
+        "color":          args.color,
+        "weight":         args.weight,
+        "createType":     "manual",  # WRITE-side defaults to manual entries
+    }
+    return {k: v for k, v in raw.items() if v is not None}
+
+
+def _require_allow_write(args: argparse.Namespace, what: str) -> int | None:
+    """Guard that flips write-side cloud ops behind `--allow-write`. Returns
+    an exit code to bubble up, or None if the caller should proceed."""
+    if not getattr(args, "allow_write", False):
+        print(
+            f"refusing to {what} without --allow-write\n"
+            f"This mutates account-side state on Bambu Cloud — re-run "
+            f"with --allow-write to confirm.",
+            file=sys.stderr)
+        return 1
+    return None
+
+
+def cmd_cloud_spool_add(args: argparse.Namespace) -> int:
+    """`cloud-spool add` — POST a new spool entry."""
+    import cloud_client
+    rc = _require_allow_write(args, "add a spool")
+    if rc is not None:
+        return rc
+    cli = cloud_client.CloudClient.load_or_anonymous()
+    if cli.session.empty:
+        print("not logged in", file=sys.stderr); return 1
+    body = _spool_body_from_args(args)
+    try:
+        r = cli.add_spool(body)
+    except cloud_client.CloudError as e:
+        print(f"cloud API failed: {e}", file=sys.stderr); return 1
+    if args.json:
+        print(json.dumps(r, indent=2, default=str)); return 0
+    print(f"added spool: {body}")
+    return 0
+
+
+def cmd_cloud_spool_update(args: argparse.Namespace) -> int:
+    """`cloud-spool update <filamentId>` — PUT a partial update."""
+    import cloud_client
+    rc = _require_allow_write(args, f"update spool {args.filament_id}")
+    if rc is not None:
+        return rc
+    cli = cloud_client.CloudClient.load_or_anonymous()
+    if cli.session.empty:
+        print("not logged in", file=sys.stderr); return 1
+    body = _spool_body_from_args(args)
+    body.pop("filamentId", None)  # path-segment, not body field for PUT
+    body.pop("createType", None)  # leave the existing createType alone
+    if not body:
+        print("nothing to update — pass at least one of "
+              "--vendor / --type / --name / --color / --weight",
+              file=sys.stderr); return 2
+    try:
+        r = cli.update_spool(args.filament_id, body)
+    except cloud_client.CloudError as e:
+        print(f"cloud API failed: {e}", file=sys.stderr); return 1
+    if args.json:
+        print(json.dumps(r, indent=2, default=str)); return 0
+    print(f"updated spool {args.filament_id}: {body}")
+    return 0
+
+
+def cmd_cloud_spool_delete(args: argparse.Namespace) -> int:
+    """`cloud-spool delete <filamentId>` — DELETE one entry."""
+    import cloud_client
+    rc = _require_allow_write(args, f"delete spool {args.filament_id}")
+    if rc is not None:
+        return rc
+    cli = cloud_client.CloudClient.load_or_anonymous()
+    if cli.session.empty:
+        print("not logged in", file=sys.stderr); return 1
+    try:
+        cli.delete_spool(args.filament_id)
+    except cloud_client.CloudError as e:
+        print(f"cloud API failed: {e}", file=sys.stderr); return 1
+    print(f"deleted spool {args.filament_id}")
+    return 0
+
+
 def cmd_cloud_search_suggest(_args: argparse.Namespace) -> int:
     """Personalized search-bar suggestions (reflects what the user has
     searched for + popular terms). Exposes your search interests."""
@@ -7368,6 +7461,62 @@ def main() -> int:
         help="User's spool / filament inventory (AMS-RFID + manual entries).")
     cli_fil.add_argument("--json", action="store_true")
     cli_fil.set_defaults(fn=cmd_cloud_filaments)
+
+    # cloud-spool write-side CRUD. Gated by --allow-write because each
+    # subcommand mutates account-side state on Bambu Cloud.
+    cli_spool = sub.add_parser(
+        "cloud-spool",
+        help="Add / update / delete entries in your cloud spool "
+             "inventory. WRITES — needs --allow-write.")
+    cli_spool_sub = cli_spool.add_subparsers(dest="spool_action", required=True)
+
+    # `cloud-spool add`
+    cli_spool_add = cli_spool_sub.add_parser(
+        "add", help="POST a new spool entry to /v1/.../my/filament/v2.")
+    for arg, hlp in (
+        ("--vendor",       "filamentVendor (e.g. Bambu / Polymaker)"),
+        ("--type",         "filamentType (e.g. 'PLA Basic')"),
+        ("--name",         "filamentName (e.g. 'Galaxy Black')"),
+        ("--filament-id",  "filamentId (e.g. 'GFB02'; required)"),
+        ("--color",        "color hex (e.g. '#0F0F0F')"),
+    ):
+        cli_spool_add.add_argument(arg, help=hlp)
+    cli_spool_add.add_argument("--weight", type=int,
+                                help="weight in grams (e.g. 1000)")
+    cli_spool_add.add_argument("--allow-write", action="store_true",
+                                help="Required: confirm this mutates account state.")
+    cli_spool_add.add_argument("--json", action="store_true")
+    cli_spool_add.set_defaults(fn=cmd_cloud_spool_add)
+
+    # `cloud-spool update`
+    cli_spool_upd = cli_spool_sub.add_parser(
+        "update",
+        help="PUT a partial update to an existing spool entry.")
+    cli_spool_upd.add_argument("filament_id",
+                                help="filamentId of the spool to update")
+    for arg, hlp in (
+        ("--vendor", "filamentVendor (optional override)"),
+        ("--type",   "filamentType (optional override)"),
+        ("--name",   "filamentName (optional override)"),
+        ("--color",  "color hex (optional override)"),
+    ):
+        cli_spool_upd.add_argument(arg, help=hlp)
+    cli_spool_upd.add_argument("--weight", type=int,
+                                help="weight in grams (optional override)")
+    cli_spool_upd.add_argument("--allow-write", action="store_true",
+                                help="Required: confirm this mutates account state.")
+    cli_spool_upd.add_argument("--json", action="store_true")
+    cli_spool_upd.set_defaults(fn=cmd_cloud_spool_update)
+
+    # `cloud-spool delete`
+    cli_spool_del = cli_spool_sub.add_parser(
+        "delete",
+        help="DELETE a spool entry by filamentId.")
+    cli_spool_del.add_argument("filament_id",
+                                help="filamentId of the spool to delete")
+    cli_spool_del.add_argument("--allow-write", action="store_true",
+                                help="Required: confirm this mutates account state.")
+    cli_spool_del.set_defaults(fn=cmd_cloud_spool_delete)
 
     cli_sug = sub.add_parser(
         "cloud-search-suggest",

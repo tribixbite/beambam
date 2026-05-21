@@ -669,6 +669,57 @@ class CloudClient:
         r = self._authed_get("/v1/design-user-service/my/filament/v2")
         return r.get("hits") or []
 
+    def add_spool(self, body: dict) -> dict:
+        """Add a new spool entry to the user's inventory.
+
+        POSTs `body` to `/v1/design-user-service/my/filament/v2`. The
+        canonical body shape mirrors `get_filament_inventory` hits:
+
+            {"filamentVendor": "Bambu", "filamentType": "PLA Basic",
+             "filamentName": "Galaxy Black", "filamentId": "GFB02",
+             "color": "#0F0F0F", "weight": 1000, "createType": "manual"}
+
+        Bambu doesn't document the schema publicly; the fields above are
+        the ones their own GUI sends. Server-side validation may reject
+        bodies missing required fields with HTTP 400 — surface as
+        CloudError. WRITES the user's account state; gate via
+        `--allow-write` at the CLI layer.
+        """
+        self._ensure_fresh()
+        url = REGIONS[self.session.region]["iot"] + \
+              "/v1/design-user-service/my/filament/v2"
+        return _request("POST", url, body=body, headers={
+            "Authorization": f"Bearer {self.session.access_token}",
+        })
+
+    def update_spool(self, filament_id: str | int, body: dict) -> dict:
+        """Update an existing spool entry by filamentId.
+
+        PUTs `body` to `/v1/design-user-service/my/filament/v2/<id>`.
+        `filament_id` is the spool's `filamentId` field (the key Bambu's
+        own apps use for editing). WRITES; gate via `--allow-write`.
+        """
+        self._ensure_fresh()
+        url = REGIONS[self.session.region]["iot"] + \
+              f"/v1/design-user-service/my/filament/v2/{filament_id}"
+        return _request("PUT", url, body=body, headers={
+            "Authorization": f"Bearer {self.session.access_token}",
+        })
+
+    def delete_spool(self, filament_id: str | int) -> dict:
+        """Delete a spool entry by filamentId.
+
+        DELETEs `/v1/design-user-service/my/filament/v2/<id>`. Empty
+        200 on success (no body); failure surfaces as CloudError with
+        the server's message. WRITES; gate via `--allow-write`.
+        """
+        self._ensure_fresh()
+        url = REGIONS[self.session.region]["iot"] + \
+              f"/v1/design-user-service/my/filament/v2/{filament_id}"
+        return _request("DELETE", url, headers={
+            "Authorization": f"Bearer {self.session.access_token}",
+        })
+
     def get_app_configuration(self) -> dict:
         """Global app config / feature-flag manifest (rating-reason
         categories, region-specific toggles, etc.). Useful as a feature-

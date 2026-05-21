@@ -166,10 +166,17 @@ Remaining endpoints from the catalog worth wiring:
   surface the 403. Defer until we have Handy-style auth.
 - [ ] `cloud-device-info <serial>` — `/v1/iot-service/api/user/device/info`
   is 405 on GET, format of POST body undocumented. Defer until needed.
-- [ ] `cloud-spool {add|update|delete}` — `/v1/design-user-service/my/filament/v2`
-  CRUD for the spool inventory (extends the read-only `cloud-filaments`).
-  Each is a single POST/PUT/DELETE — but live-testing risks mutating the
-  real account; needs an `--allow-write` opt-in.
+- [x] `cloud-spool {add|update|delete}` (this round) — write-side CRUD
+  for `/v1/design-user-service/my/filament/v2`. Each subcommand is
+  gated on `--allow-write` so a typo can't mutate account state.
+  `add` POSTs `{filamentVendor/Type/Name/Id, color, weight, createType}`;
+  `update <filamentId>` PUTs a partial body (only fields the user
+  passed); `delete <filamentId>` DELETEs the path. Body shape isn't
+  publicly documented — fields above mirror what Bambu's own GUI
+  sends; server-side schema rejection surfaces as a clean exit-1 +
+  CloudError message. 14 unit tests in
+  `tests/test_cloud_spool_crud.py` (URL+method shape for each verb,
+  body-builder logic, --allow-write guard, logged-out handling).
 - [x] `cloud-comment-reply <commentId> <text>` (this round) — POST
   `/v1/comment-service/comment/{id}/reply` with `{"content": text}`
   body. `CloudClient.reply_to_comment` short-circuits empty/
