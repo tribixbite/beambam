@@ -5,12 +5,18 @@
     // doesn't blow out the 2-col mobile cells. "CLI subcommands" was
     // the original offender — drop the "CLI" since the page context
     // makes it obvious.
-    const stats = [
-        { n: '28', label: 'subcommands' },
-        { n: '12', label: 'printer models' },
-        { n: '300', label: 'tests passing' },
-        { n: '~69', label: 'HA entities' },
-        { n: '25', label: 'MCP tools' },
+    // Stats sourced from a single build-time-generated stats.json so
+    // they can't drift the way the hand-coded numbers did (the page
+    // claimed 28 subcommands / 300 tests until v1.3.0 when the real
+    // figures were 87 / 868). The generator lives at
+    // tools/site_stats.py and runs as part of the site build.
+    import stats from '$lib/stats.json';
+    const statsRows = [
+        { n: stats.subcommands, label: 'subcommands' },
+        { n: stats.printer_models, label: 'printer models' },
+        { n: stats.tests, label: 'tests passing' },
+        { n: stats.ha_entities, label: 'HA entities' },
+        { n: stats.mcp_tools, label: 'MCP tools' },
         { n: 'MIT', label: 'license' }
     ];
 
@@ -128,7 +134,7 @@ Summary: 6 pass, 2 warn, 0 fail`;
     <div class="frame py-[var(--space-2xl)]">
         <div class="label mb-[var(--space-xl)]">02 · By the numbers</div>
         <dl class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-6 gap-y-[var(--space-xl)] gap-x-[var(--space-md)] sm:gap-x-[var(--space-xl)]">
-            {#each stats as { n, label }}
+            {#each statsRows as { n, label }}
                 <div class="pl-[var(--space-md)] min-w-0" style="border-left: 1px solid var(--color-hair);">
                     <dt class="font-[var(--font-display)] leading-none tabular-nums"
                         style="color: var(--color-ink); font-size: clamp(1.75rem, 1.2rem + 2vw, 2.75rem);">{n}</dt>

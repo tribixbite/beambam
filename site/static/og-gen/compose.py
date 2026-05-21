@@ -76,7 +76,16 @@ def main() -> None:
 
     # ----- stat ribbon (top-right) -------------------------------------
     f_stat = font(F_MONO, 15)
-    stat_text = "28 SUBCOMMANDS · 12 MODELS · 300 TESTS"
+    # Stats line — sourced from the same site/src/lib/stats.json the
+    # landing page imports. Keep this in sync with the site rebuild;
+    # re-running compose.py after `python3 tools/site_stats.py` picks
+    # up new figures automatically.
+    import json as _json
+    _stats = _json.loads((HERE / ".." / ".." / "src" / "lib" /
+                           "stats.json").resolve().read_text())
+    stat_text = (f"{_stats['subcommands']} SUBCOMMANDS · "
+                  f"{_stats['printer_models']} MODELS · "
+                  f"{_stats['tests']} TESTS")
     sw = draw.textlength(stat_text, font=f_stat)
     draw.text((W - 80 - sw, 135), stat_text, font=f_stat, fill=MUTE_2)
 
