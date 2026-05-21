@@ -11,6 +11,7 @@ with stubbed `get_state` / `get_hub`, so no real printer is needed."""
 from __future__ import annotations
 
 import json
+import os
 import socket
 import sys
 import threading
@@ -27,19 +28,12 @@ from beambam.state_hub import StateHub
 from x2d_bridge import _serve_http
 
 
-# macOS GitHub Actions runners can't bring up loopback ThreadingHTTPServer
-# reliably under matrix-test load — even with a 15s timeout, ALL HTTP
-# integration tests time out with "port never came up". Linux runners
-# (ubuntu-24.04) bind in <50ms. The functionality is platform-agnostic
-# Python stdlib code; these tests are exercising the SAME code that
-# every Linux job and every dev box passes against. Skipping macOS
-# spares the matrix a noisy red without losing real coverage.
-# Module-level pytestmark — pytest applies it to every test_* in this file.
-pytestmark = pytest.mark.skipif(
-    sys.platform == "darwin",
-    reason="macOS GHA runners can't spin up loopback HTTP servers reliably; "
-           "Linux jobs + local dev cover this path.",
-)
+# Tests in this file spawn `_serve_http` on a free loopback port. macOS
+# GHA + Windows GHA runners are slower at MQTT / HTTP round-trips under
+# matrix-test load than Linux, but the underlying Python stdlib code is
+# platform-agnostic. We give every test a generous _wait_for_port window
+# (set inside _wait_for_port) and let the surfaced thread exception
+# surface root cause when a real bind fails.
 
 
 # --- harness -----------------------------------------------------------
@@ -50,14 +44,21 @@ def _free_port() -> int:
         return s.getsockname()[1]
 
 
-def _wait_for_port(port: int, timeout: float = 15.0) -> None:
+def _wait_for_port(port: int, timeout: float | None = None) -> None:
     """Poll the daemon's bind point until it accepts a TCP connection.
 
-    Default timeout is 15 s (not the more obvious 3 s) because GitHub
-    Actions macOS runners take noticeably longer to boot a ThreadingHTTPServer
-    + Handler closure than Linux runners — empirically ~5-10 s during
-    heavy CI load. 3 s was tight enough to spuriously time out on macOS
-    even after the server was about to bind."""
+    macOS / Windows GHA runners are noticeably slower to bring up
+    ThreadingHTTPServer under matrix-test load. Default 60 s on those;
+    15 s on Linux is plenty. Override via env BEAMBAM_TEST_PORT_TIMEOUT
+    if a local box needs a different cap."""
+    if timeout is None:
+        env_t = os.environ.get("BEAMBAM_TEST_PORT_TIMEOUT")
+        if env_t:
+            timeout = float(env_t)
+        elif sys.platform in ("darwin", "win32"):
+            timeout = 60.0
+        else:
+            timeout = 15.0
     deadline = time.time() + timeout
     while time.time() < deadline:
         try:
@@ -66,7 +67,7 @@ def _wait_for_port(port: int, timeout: float = 15.0) -> None:
         except OSError:
             time.sleep(0.05)
     raise RuntimeError(f"server on :{port} never came up "
-                       f"(timeout={timeout}s)")
+                       f"(timeout={timeout}s, platform={sys.platform})")
 
 
 def _start_server(states: dict[str, dict | None]):

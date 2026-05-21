@@ -99,23 +99,34 @@ def _live_printer_env_set() -> bool:
     return bool(os.environ.get("BEAMBAM_TEST_IP"))
 
 
+# Tests known to use loopback HTTP / MQTT broker fixtures that fail
+# under macOS GHA matrix-test load (PUBACK timeouts, urllib timeouts).
+# We give these a more generous timeout on Darwin rather than skipping
+# outright — they pass locally on macOS dev boxes; the issue is GHA's
+# heavy concurrent matrix load.
+_DARWIN_NEEDS_LONGER_TIMEOUT = {
+    "runtime/ha/test_ha.py",
+    "runtime/ha/test_multi_printer.py",
+    "runtime/ha/test_snapshot.py",
+    "runtime/queue/test_queue_http.py",
+    "runtime/timelapse/test_http.py",
+    "runtime/webui/test_auth.py",
+    "runtime/webui/test_webui.py",
+    "runtime/colorsync/test_mapper.py",
+    "runtime/assistant/test_assistant.py",
+}
+
+
 def _conditional_skip(rel: str) -> str | None:
     """Return a skip reason if this script can't run in the current env,
     else None. Centralises the env-detection so the same logic is visible
     to every script."""
-    # macOS GHA runners can't bring up loopback HTTP / MQTT brokers
-    # under matrix-test load — every test that does `socket.bind(127.0.0.1, …)`
-    # plus a paho/amqtt client times out or PUBACK-fails. Linux runners
-    # exercise the same code path; this skip preserves macOS CI green
-    # without losing real coverage. Matches the same approach used for
-    # tests/test_v12_http_routes.py + tests/test_state_events_sse.py.
-    if sys.platform == "darwin":
-        return ("macOS GHA can't reliably spawn loopback HTTP / MQTT "
-                "servers under matrix-test load; Linux jobs + local "
-                "dev cover this path.")
     if rel == "runtime/webrtc/test_webrtc.py":
         return _need_aiortc_skip()
     if rel == "runtime/network_shim/tests/test_shim_e2e.py":
+        if sys.platform != "linux":
+            return ("libbambu_networking.so is aarch64-Linux-only "
+                    "(built for Termux); other platforms can't dlopen it.")
         if not _need_shim_so().is_file():
             return (f"libbambu_networking.so not built — run `make -C "
                     f"runtime/network_shim` to build it locally; CI "
@@ -129,15 +140,11 @@ def _conditional_skip(rel: str) -> str | None:
     if rel == "runtime/webui/test_mobile.py":
         # The mobile UI test hardcodes the binary name `chromium-browser`
         # (not chromium / google-chrome — see runtime/webui/test_mobile.py
-        # line ~127). Ubuntu GHA ships google-chrome by default; the
-        # chromium-browser symlink isn't present, so the test hangs on
-        # subprocess startup and trips the wrapper's 60 s timeout. Skip
-        # unless the EXACT binary name is on PATH.
+        # line ~127). Linux GHA / Windows GHA / macOS GHA don't ship that
+        # exact name. Skip unless it's on PATH.
         if not shutil.which("chromium-browser"):
             return ("`chromium-browser` binary not on PATH (the mobile "
-                    "test hardcodes that name — `apt install "
-                    "chromium-browser` or symlink chromium-browser → "
-                    "google-chrome).")
+                    "test hardcodes that name).")
         return None
     if rel == "runtime/test_phase2_smoke.py":
         # The webrtc workload inside phase2 hits a connection-setup race
@@ -149,7 +156,34 @@ def _conditional_skip(rel: str) -> str | None:
         return ("phase2 webrtc workload races the gateway warm-up — "
                 "tracked separately; standalone webrtc test covers the "
                 "happy path.")
+    # Windows: any test that spawns a long-lived MQTT broker or daemon
+    # depends on POSIX-only signal/process semantics (SIGTERM, paho's
+    # default thread cleanup). amqtt + paho-mqtt have known Windows
+    # quirks in test fixtures. Skip these on Windows for now; the
+    # surface is exercised by the Linux + macOS jobs.
+    if sys.platform == "win32":
+        windows_unsafe = {
+            "runtime/ha/test_ha.py",
+            "runtime/ha/test_multi_printer.py",
+            "runtime/ha/test_snapshot.py",
+            "runtime/mcp/test_mcp.py",            # uses os.killpg
+            "runtime/timelapse/test_recorder.py",  # ffmpeg .exe in PATH?
+            "runtime/timelapse/test_http.py",
+        }
+        if rel in windows_unsafe:
+            return ("Windows-incompatible runtime test (POSIX signal / "
+                    "process-group semantics); Linux + macOS cover this.")
     return None
+
+
+def _timeout_for(rel: str) -> float:
+    """Per-script timeout, with a macOS bump for tests that drive
+    amqtt/paho — GHA macOS runners are noticeably slower at MQTT
+    handshake under concurrent matrix load."""
+    base = _TIMEOUTS_S.get(rel, 60.0)
+    if sys.platform == "darwin" and rel in _DARWIN_NEEDS_LONGER_TIMEOUT:
+        return max(base, 180.0)
+    return base
 
 
 @pytest.mark.parametrize(
@@ -167,7 +201,7 @@ def test_runtime_script(test_path: Path, runtime_env: dict[str, str]):
     if reason:
         pytest.skip(reason)
 
-    timeout = _TIMEOUTS_S.get(rel, 60.0)
+    timeout = _timeout_for(rel)
     argv = [sys.executable, str(test_path), *_EXTRA_ARGS.get(rel, [])]
     try:
         result = subprocess.run(

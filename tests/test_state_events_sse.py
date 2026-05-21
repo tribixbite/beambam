@@ -29,14 +29,9 @@ from beambam.state_hub import StateHub
 from x2d_bridge import _serve_http
 
 
-# macOS GHA runners can't bring up loopback ThreadingHTTPServer reliably
-# under matrix-test load. Linux jobs cover the same code path. Skipping
-# macOS keeps CI green without losing coverage.
-pytestmark = pytest.mark.skipif(
-    sys.platform == "darwin",
-    reason="macOS GHA runners can't spin up loopback HTTP servers reliably; "
-           "Linux jobs + local dev cover this path.",
-)
+# macOS / Windows GHA runners are slower at HTTP round-trips under
+# matrix-test load. `_wait_for_port` adapts its timeout based on platform
+# (60 s on darwin/win32, 15 s on linux) so the test passes on all three.
 
 
 def _free_port() -> int:
@@ -45,11 +40,14 @@ def _free_port() -> int:
         return s.getsockname()[1]
 
 
-def _wait_for_port(port: int, timeout: float = 15.0) -> None:
-    """Poll the daemon's bind point. Default 15 s (not 3 s) because
-    macOS GitHub Actions runners take ~5-10 s to bring up
-    ThreadingHTTPServer under load — empirically observed via the
-    `feat(daemon)` CI run."""
+def _wait_for_port(port: int, timeout: float | None = None) -> None:
+    """Poll the daemon's bind point. Linux: 15 s. Darwin/Win32: 60 s
+    (matrix-test load slows ThreadingHTTPServer startup substantially)."""
+    if timeout is None:
+        if sys.platform in ("darwin", "win32"):
+            timeout = 60.0
+        else:
+            timeout = 15.0
     deadline = time.time() + timeout
     while time.time() < deadline:
         try:
@@ -58,7 +56,7 @@ def _wait_for_port(port: int, timeout: float = 15.0) -> None:
         except OSError:
             time.sleep(0.05)
     raise RuntimeError(f"server on :{port} never came up "
-                       f"(timeout={timeout}s)")
+                       f"(timeout={timeout}s, platform={sys.platform})")
 
 
 def _start_server(hub: StateHub) -> tuple[int, threading.Thread]:
