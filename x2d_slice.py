@@ -458,6 +458,84 @@ def patch_project_settings_for_color(json_bytes: bytes, color: str) -> bytes:
     return _json.dumps(data, indent=4).encode("utf-8")
 
 
+def patch_project_settings_for_multi_color(json_bytes: bytes,
+                                             colors: list[str]) -> bytes:
+    """Multi-color variant. Expands every per-slot ``filament_*`` list
+    (and the parallel ``flush_volumes_matrix``/``flush_volumes_vector``)
+    to N entries — one per AMS slot.
+
+    Strategy: capture the current length of `filament_colour` (almost
+    always 1 in our single-color template), then for every key that's a
+    list of the same length, repeat its first entry N times. This keeps
+    BS's parallel-list invariants intact — without it BS crashes with
+    `std::bad_alloc` because some per-slot indexing walks off the end
+    of the shorter list."""
+    import json as _json
+    data = _json.loads(json_bytes.decode("utf-8", errors="replace"))
+    n = len(colors)
+    if n == 0:
+        return json_bytes
+    new_colours = ["#" + c.lstrip("#").upper() for c in colors]
+
+    old_n = len(data.get("filament_colour") or [1])
+    data["filament_colour"] = list(new_colours)
+
+    # Expand every other list whose len matches the OLD filament_colour len.
+    # This catches filament_type / filament_settings_id / filament_ids etc.
+    # but skips already-N lists like filament_max_volumetric_speed (len=4
+    # in the template because BS pre-stages 4 AMS slot slots).
+    for k in list(data.keys()):
+        if k == "filament_colour":
+            continue
+        v = data[k]
+        if not isinstance(v, list) or not v:
+            continue
+        if len(v) == old_n and k.startswith("filament_"):
+            data[k] = [v[0]] * n
+        elif len(v) == old_n and k == "default_filament_colour":
+            data[k] = [v[0]] * n
+    # Flush volumes: matrix is N×N, vector is 2N. Resize if present.
+    if isinstance(data.get("flush_volumes_matrix"), list) and data["flush_volumes_matrix"]:
+        proto = data["flush_volumes_matrix"][0]
+        # square N×N
+        data["flush_volumes_matrix"] = [proto] * (n * n)
+    if isinstance(data.get("flush_volumes_vector"), list) and data["flush_volumes_vector"]:
+        proto = data["flush_volumes_vector"][0]
+        data["flush_volumes_vector"] = [proto] * (2 * n)
+    return _json.dumps(data, indent=4).encode("utf-8")
+
+
+def patch_model_settings_for_per_object_extruder(xml_bytes: bytes,
+                                                   copies: int) -> bytes:
+    """For multi-color prints with --copies, give each copy/object its
+    own extruder index (1, 2, 3, ... N) so the slicer assigns a
+    different filament slot to each.
+
+    The model_settings.config <object id="N"> blocks each have
+    `<metadata key="extruder" value="1"/>` — we cycle through 1..N for
+    successive objects keyed by `<object id="...">`. The order of
+    <object> blocks in this file matches the order of copies, which
+    matches the slot assignment from _grid_layout()."""
+    if copies <= 1:
+        return xml_bytes
+    import re as _re
+    text = xml_bytes.decode("utf-8", errors="replace")
+    # Walk <object id="X"> ... </object> blocks in order and rewrite
+    # the inner extruder= metadata to slot (index+1).
+    def _replace_block(m: "_re.Match", idx_box: list = [0]) -> str:
+        block = m.group(0)
+        slot = idx_box[0] + 1
+        idx_box[0] += 1
+        return _re.sub(
+            r'(<metadata key="extruder" value=")\d+(")',
+            rf'\g<1>{slot}\g<2>',
+            block, count=1,
+        )
+    new_text = _re.sub(r'<object\s+id="\d+">.*?</object>', _replace_block,
+                       text, count=copies, flags=_re.DOTALL)
+    return new_text.encode("utf-8")
+
+
 # curr_bed_type enum values per PrintConfig.cpp:1071-1078. Friendly aliases
 # accepted on the CLI map to the canonical enum value used in the JSON.
 BED_TYPE_VALUES = {
@@ -553,7 +631,8 @@ def patch_project_settings_for_bed(json_bytes: bytes, bed_type: str) -> bytes:
 def graft_stl_into_template(template: Path, stl: Path, out: Path,
                               scale: float = 1.0, color: str | None = None,
                               bed_type: str | None = None,
-                              copies: int = 1) -> None:
+                              copies: int = 1,
+                              colors: list[str] | None = None) -> None:
     """Copy template 3MF, replace its 3D geometry with the STL's, and write
     to `out`. Preserves project_settings, machine, filament, etc.
 
@@ -562,6 +641,15 @@ def graft_stl_into_template(template: Path, stl: Path, out: Path,
     project_settings.config so the slicer assigns it to the primary
     filament tray. If `copies` > 1, emits that many instance entries on
     a grid (see _grid_layout).
+
+    If `colors` is provided (a list of resolved #RRGGBB hex strings),
+    this is multi-AMS-slot mode: each copy/object gets a distinct
+    extruder/AMS slot index (1..N), and project_settings.config gets
+    its filament_colour list expanded to N entries. Typically used with
+    `--copies` so a 4-copy print can hit 4 different AMS slots; when
+    `copies` is 1 but `colors` has N entries, only the first colour is
+    used and the rest of the slots become available for hand-edited
+    multi-part prints downstream.
     """
     vlist, tris = parse_stl(stl)
     print(f"[x2d_slice] parsed STL: {len(vlist)} verts, {len(tris)} triangles "
@@ -609,10 +697,27 @@ def graft_stl_into_template(template: Path, stl: Path, out: Path,
                         data = patch_model_settings_for_color(data, color)
                     if int(copies) > 1:
                         data = _patch_model_settings_for_copies(data, int(copies), vlist, float(scale))
+                    # NOTE: we intentionally do NOT call
+                    # patch_model_settings_for_per_object_extruder() here.
+                    # The `<metadata key="extruder" value="N"/>` on an
+                    # <object> is the NOZZLE index (X2D has 2 nozzles =
+                    # extruders 1 and 2), not the AMS slot. Setting it
+                    # to >2 trips BS's "out of bed area" check at slice
+                    # time because the slicer assigns no nozzle to those
+                    # extruder ids. AMS-slot binding lives in paint maps
+                    # / the wipe-tower config — out of scope for our
+                    # template-graft pipeline. --colors provisions the
+                    # slots in project_settings.config so a downstream
+                    # paint step or hand-edited model_settings can pick
+                    # them up.
                     zout.writestr(name, data)
                 elif name == "Metadata/project_settings.config":
                     data = zin.read(name)
-                    if color:
+                    if colors:
+                        # Multi-colour wins over single --color (and includes
+                        # the first colour in the expanded list anyway).
+                        data = patch_project_settings_for_multi_color(data, colors)
+                    elif color:
                         data = patch_project_settings_for_color(data, color)
                     if bed_type:
                         data = patch_project_settings_for_bed(data, bed_type)
@@ -669,6 +774,19 @@ def main() -> int:
                         "color name (e.g. 'Gold', 'PLA Silk Gold', 'GFA05 Gold'). "
                         "Names resolve via filaments_color_codes.json — use any "
                         "fila_color_name.en value from the catalogue.")
+    p.add_argument("--colors",
+                   help="Multi-AMS-slot color list, comma-separated. Each entry "
+                        "resolves via the same name/hex rules as --color. With "
+                        "--copies N, the Nth copy is assigned the Nth slot "
+                        "(cycling if the list is shorter than N). Wins over "
+                        "--color if both are given. Examples: "
+                        "'Gold,Red,Blue,Green' or '#E4BD68,#FF0000,#0000FF,#00FF00'.")
+    p.add_argument("--color-by-region",
+                   help="Path to a JSON file mapping per-object/region color "
+                        "assignments. Currently the JSON is interpreted as a list "
+                        "of colors equivalent to --colors. Reserved for future "
+                        "per-mesh-region splitting; today it's just --colors from "
+                        "a file.")
     p.add_argument("--bed",
                    help="curr_bed_type — one of 'cool', 'engineering', "
                         "'high_temp' (Smooth PEI), 'textured', 'supertack', or "
@@ -711,11 +829,44 @@ def main() -> int:
     if bed_type:
         print(f"[x2d_slice] bed-type {args.bed!r} → {bed_type!r}", file=sys.stderr)
 
+    # Resolve the multi-colour list from --colors or --color-by-region.
+    colors_list: list[str] | None = None
+    if args.color_by_region:
+        import json as _json
+        try:
+            raw = _json.loads(Path(args.color_by_region).read_text())
+        except (OSError, _json.JSONDecodeError) as e:
+            print(f"--color-by-region: can't read {args.color_by_region}: {e}",
+                  file=sys.stderr); return 2
+        if isinstance(raw, list):
+            colors_list = [resolve_color_name(c) for c in raw]
+        elif isinstance(raw, dict):
+            # Dict form: keys can be slot indices or arbitrary region names.
+            # Today we collapse into a position-ordered list.
+            colors_list = [resolve_color_name(v) for v in raw.values()]
+        else:
+            print(f"--color-by-region: expected JSON list or dict, got {type(raw).__name__}",
+                  file=sys.stderr); return 2
+    if args.colors:
+        if colors_list is not None:
+            print("warning: both --colors and --color-by-region given; --colors wins",
+                  file=sys.stderr)
+        colors_list = [resolve_color_name(c.strip())
+                       for c in args.colors.split(",") if c.strip()]
+    if colors_list:
+        # If --copies > 1, cycle the list to match copies count so each
+        # copy/object lands on a distinct slot.
+        if int(args.copies) > 1 and len(colors_list) < int(args.copies):
+            colors_list = [colors_list[i % len(colors_list)]
+                           for i in range(int(args.copies))]
+        print(f"[x2d_slice] multi-color slots: {colors_list}", file=sys.stderr)
+
     with tempfile.TemporaryDirectory(prefix="x2d_slice_") as td:
         graft = Path(td) / "graft.gcode.3mf"
         graft_stl_into_template(args.template, args.stl, graft,
                                  scale=args.scale, color=color_hex,
-                                 bed_type=bed_type, copies=int(args.copies))
+                                 bed_type=bed_type, copies=int(args.copies),
+                                 colors=colors_list)
         if args.keep_graft:
             kept = args.out.with_suffix(".graft.3mf")
             shutil.copy2(graft, kept)
