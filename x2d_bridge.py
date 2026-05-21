@@ -3171,6 +3171,47 @@ def cmd_stop(args: argparse.Namespace) -> int:
     return _publish_one(args, _print_cmd("stop", param=""))
 
 
+# Constant + helper used by cmd_reboot and its unit tests so the wire
+# payload is reachable without instantiating an argparse.Namespace.
+_REBOOT_GCODE = "M999"
+
+
+def _reboot_payload() -> dict:
+    """The wire payload `beambam reboot --confirm` sends.
+
+    M999 is the Marlin "restart from emergency stop" gcode. On Bambu
+    firmware it clears the printer's halt/error flags and re-arms the
+    motion system; it does NOT power-cycle the SoC, the MQTT broker,
+    or the network stack. There is no documented MQTT verb for a true
+    soft reboot on current X-series firmware — the only paths are the
+    physical power button or an OTA firmware update."""
+    return _print_cmd("gcode_line", param=f"{_REBOOT_GCODE}\n")
+
+
+def cmd_reboot(args: argparse.Namespace) -> int:
+    """Send `M999` to the printer (gcode error-clear).
+
+    Defaults to dry-run because the wording "reboot" is broader than
+    what the firmware actually exposes: M999 clears the halt/error
+    flag set, but it does NOT power-cycle the SoC, restart MQTT, or
+    flush the network plugin. Pass --confirm to actually send."""
+    payload = _reboot_payload()
+    if not args.confirm:
+        print("[reboot] DRY-RUN — pass --confirm to actually send.",
+              file=sys.stderr)
+        print(f"[reboot] would publish: {json.dumps(payload)}",
+              file=sys.stderr)
+        print("[reboot] note: M999 clears the printer's "
+              "emergency-stop / error flags. It does NOT power-cycle "
+              "the printer; the MQTT broker, network stack, AMS state, "
+              "and chamber heater all keep their current values. For "
+              "a real power-cycle, use the physical power button on "
+              "the back of the printer or wait for the next OTA "
+              "firmware update.", file=sys.stderr)
+        return 0
+    return _publish_one(args, payload)
+
+
 def cmd_gcode(args: argparse.Namespace) -> int:
     # MachineObject::publish_gcode — DeviceManager.cpp:3645
     gcode = args.gcode if args.gcode.endswith("\n") else args.gcode + "\n"
@@ -6492,6 +6533,7 @@ _COMMAND_GROUPS: list[tuple[str, list[tuple[str, str]]]] = [
         ("pause",          "Pause the active print"),
         ("resume",         "Resume a paused print"),
         ("stop",           "Stop the active print"),
+        ("reboot",         "M999 clear-error / restart-from-halt (NOT a real power-cycle)"),
         ("gcode",          "Send a raw gcode line to the printer"),
         ("home",           "Home the toolhead (G28)"),
         ("level",          "Run auto bed leveling"),
@@ -6716,6 +6758,19 @@ def main() -> int:
 
     sp = sub.add_parser("stop", help="Signed MQTT publish: abort current print")
     sp.set_defaults(fn=cmd_stop)
+
+    rb = sub.add_parser(
+        "reboot",
+        help="Send M999 (clear error / restart from emergency stop) via "
+             "signed MQTT. Defaults to dry-run — pass --confirm to "
+             "actually publish. Note: this is not a real power-cycle; "
+             "Bambu firmware doesn't expose one over MQTT.",
+    )
+    rb.add_argument("--confirm", action="store_true",
+                    help="Actually publish the M999 payload. Without "
+                         "this flag, the command prints what it would "
+                         "do and exits 0 without touching the printer.")
+    rb.set_defaults(fn=cmd_reboot)
 
     gc = sub.add_parser("gcode", help="Send a literal G-code line as a signed MQTT publish")
     gc.add_argument("gcode", help="The G-code line (a trailing newline is added if missing)")

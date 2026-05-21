@@ -79,7 +79,21 @@ Ordered by user-visible impact. Pick any 3-5 for the next release cut.
   full suite still 561 green. Queue contents already rendered (#55).
 
 ### New commands (each ~1-2 hr, well-scoped)
-- [ ] `beambam reboot` — soft reboot via M-code or signed control payload
+- [x] `beambam reboot` — honest M999 wrapper (this round). Bambu
+  firmware doesn't expose a real soft-reboot MQTT verb (BambuStudio
+  source has no `system_reboot` or `reset_machine` command, and a
+  rummage through the runtime/network_shim captures turned up no
+  candidate). The closest M-code is `M999` ("restart from emergency
+  stop") which clears the printer's halt/error flags but doesn't
+  power-cycle the SoC, MQTT broker, network stack, or any heaters.
+  The command sends M999 via the existing signed gcode_line pipe and
+  is **dry-run by default** — wording matters, and a misclick "reboot"
+  shouldn't wipe a paused print's recoverable-error state. `--confirm`
+  actually publishes. Dry-run output explicitly documents the
+  limitation so users aren't surprised. 4 unit tests in
+  `tests/test_reboot.py`. Live dry-run verified against real X2D;
+  `--confirm` deferred from live test because the printer was mid-print
+  with active HMS errors that the user may want to investigate first.
 - [x] `beambam plate {list,select,skip}` (this round) — multi-plate
   operations on a .gcode.3mf. `list` enumerates plates with weight /
   time / objects / filaments (human table or `--json`). `select N
