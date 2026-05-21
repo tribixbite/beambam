@@ -1772,10 +1772,31 @@ def _validate_ams_slot(state: dict, ams_global_slot: int,
 
 
 def cmd_print(args: argparse.Namespace) -> int:
-    creds = Creds.resolve(args)
     local = Path(args.file)
     use_ams = not args.no_ams
     force = bool(getattr(args, "force", False))
+
+    # Step 0: --dry-run analyzes the file and refuses on excessive purge
+    # waste BEFORE touching creds / network / FTPS. Lets `uvx beambam` users
+    # sanity-check a print on a workstation that isn't on the printer's LAN.
+    if getattr(args, "dry_run", False):
+        from beambam.analyze import analyze_3mf, format_report
+        report = analyze_3mf(local)
+        print(format_report(report))
+        flush_g = float(report.totals.get("flush_volume_g", 0.0))
+        max_g = float(getattr(args, "max_flush_g", 10.0))
+        if flush_g > max_g:
+            sys.stderr.write(
+                f"\n[print --dry-run] REFUSED: predicted purge "
+                f"{flush_g:.1f} g exceeds --max-flush-g {max_g:.1f} g. "
+                f"Re-slice with fewer color swaps OR raise the threshold.\n")
+            return 2
+        sys.stderr.write(
+            f"\n[print --dry-run] OK: predicted purge {flush_g:.1f} g "
+            f"<= --max-flush-g {max_g:.1f} g\n")
+        return 0
+
+    creds = Creds.resolve(args)
 
     # Step 1: derive authoritative bed_type / bed_temp / filament
     # expectations from the 3MF before we touch the network. If the
@@ -6339,6 +6360,18 @@ def main() -> int:
     pr.add_argument("--flow-cali", action="store_true")
     pr.add_argument("--timelapse", action="store_true")
     pr.add_argument("--vib-cali", action="store_true")
+    pr.add_argument("--dry-run", action="store_true",
+                    help="Run `beambam analyze` on the file FIRST and refuse "
+                         "to upload / print if the predicted purge waste "
+                         "exceeds --max-flush-g. Touches neither the "
+                         "printer's network surface nor FTPS. Exit code 0 "
+                         "if safe, 2 if over threshold.")
+    pr.add_argument("--max-flush-g", type=float, default=10.0,
+                    help="Maximum total purge waste in grams that --dry-run "
+                         "will accept. Default 10g — typical for a 4-color "
+                         "swap-heavy print. Bigger plates with many color "
+                         "transitions can blow past this fast; raise it if "
+                         "you knowingly want a high-flush print.")
     pr.set_defaults(fn=cmd_print)
 
     d = sub.add_parser("daemon", help="Long-running monitor; emits state to stdout")

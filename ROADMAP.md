@@ -61,7 +61,14 @@ Ordered by user-visible impact. Pick any 3-5 for the next release cut.
   `~/.config/fish/completions/beambam.fish`. Bash live-verified
   `beambam cl<Tab>` → 34 `cloud-*` subcommands. 15 unit tests in
   `tests/test_install_completion.py`.
-- [ ] `beambam print --dry-run` — auto-run analyze before send; refuse on flush > N grams
+- [x] `beambam print --dry-run` — runs `beambam analyze` on the .3mf,
+  prints the human report, and refuses (exit 2) if total purge waste
+  exceeds `--max-flush-g` (default 10 g). Short-circuits BEFORE
+  Creds.resolve / FTPS / MQTT, so it works on a workstation without a
+  `~/.x2d/credentials` file. Live-verified: rumi_frame (0 g flush) →
+  exit 0; same file with `--max-flush-g=-1` → exit 2 with REFUSED
+  message. 5 unit tests in `tests/test_print_dry_run.py` (incl. one
+  e2e against the bundled rumi fixture).
 - [ ] `beambam fw-update` — cloud-driven firmware update (needs Bambu Cloud auth)
 
 ### Cloud API surface (additive — read-only catalog from 76-endpoint research)
