@@ -1214,7 +1214,6 @@ def _print_search_printables(args: argparse.Namespace) -> int:
         return 1
     print(f"\n{len(items)} match(es) for {args.query!r} on Printables:\n")
     for i, it in enumerate(items, 1):
-        slug = it.get("slug", "")
         likes = it.get("likesCount", 0)
         dls = it.get("downloadCount", 0)
         u = (it.get("user") or {}).get("publicUsername", "?")
