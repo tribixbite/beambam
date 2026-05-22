@@ -99,8 +99,13 @@ Issues = "https://github.com/tribixbite/beambam/issues"
 Changelog = "https://github.com/tribixbite/beambam/blob/main/CHANGELOG.md"
 
 [project.scripts]
-beambam = "x2d_bridge:main"
-bb = "x2d_bridge:main"
+# `main()` moved to `beambam.cli` in Phase 5e.5. x2d_bridge.py re-exports
+# `main` for back-compat — both bindings resolve the same function.
+# The libbambu_networking.so GUI shim keeps spawning `python3
+# x2d_bridge.py` by literal pathname via the `if __name__ == "__main__"`
+# block in the shim file.
+beambam = "beambam.cli:main"
+bb = "beambam.cli:main"
 beambam-mcp = "runtime.mcp.server:main"
 beambam-slice = "x2d_slice:main"
 beambam-upload = "lan_upload:main"

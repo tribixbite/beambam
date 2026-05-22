@@ -205,10 +205,13 @@ _MAX_CMD_HANDLERS_IN_BRIDGE = 0
 #           moving it broke 23 tests that monkeypatch
 #           `x2d_bridge.X2DClient`; the 9-LoC saving wasn't worth the
 #           test-coupling rework.
+#     646 — Phase 5e.5: main() (~895 LoC argparse builder + dispatcher)
+#           → beambam/cli/__init__.py. x2d_bridge.py keeps a re-export
+#           + the `if __name__ == "__main__"` block so the GUI shim's
+#           pathname-spawn still works.
 #
-# Target after 5e.5 (extract main()): ~600
 # Target after 5e.6 (shim only): ~50
-_MAX_LOC_IN_BRIDGE = 1531
+_MAX_LOC_IN_BRIDGE = 646
 
 
 def _count_cmd_handlers() -> int:
