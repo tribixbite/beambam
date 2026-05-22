@@ -2,6 +2,55 @@
 
 All notable changes to this project.
 
+## v1.4.0 — Phase 5e bridge split complete (2026-05-22)
+
+The `x2d_bridge.py` monolith decomposition finished. The single
+7,800-LoC file is now a **255-LoC pure re-export shim**, with every
+handler living under its canonical home:
+
+- `beambam.serve_socket` — GUI-shim Unix-socket JSON-RPC server
+  (`ServeServer`, `_PrinterSession`, `_ConnHandler`, 14 `_op_*`,
+  `_OPS` dispatch table)
+- `beambam.serve_http` — multi-printer HTTP daemon body
+- `beambam.cli.{control, cloud, info, daemon, lan}` — every `cmd_*`
+- `beambam.cli:main` — argparse builder + dispatcher (new console-script
+  entry point; `beambam = "beambam.cli:main"` in pyproject.toml)
+- `beambam._version` — `PACKAGE_VERSION` + `_package_version()`
+
+Phase 5e LoC ratchet across this release:
+
+  3,470 → 3,462 (5e.1 PACKAGE_VERSION → beambam._version)
+  3,462 → 2,501 (5e.2 ServeServer + 14 _op_* → beambam.serve_socket)
+  2,501 → 1,543 (5e.3 _serve_http body → beambam.serve_http)
+  1,543 → 1,531 (5e.4 _reboot_payload → beambam.cli.control)
+  1,531 →   646 (5e.5 main() ~895 LoC → beambam.cli)
+    646 →   255 (5e.6 shim collapse)
+
+All `from x2d_bridge import X` and `x2d_bridge.X` access patterns
+keep working through the back-compat re-exports — no consumer code
+changes required. The `libbambu_networking.so` GUI shim still spawns
+`python3 x2d_bridge.py serve` by literal pathname.
+
+**Other v1.4.0 work**:
+
+- `beambam ams sync` + `ams set` finalized for batch tray-metadata pushes
+- Filament profile generator now lives in `beambam.filament_profiles`
+  with cross-printer parametrization (X1C / X1E / P1S / P1P / A1 /
+  A1mini / H2D / H2S / X2D × {0.2, 0.4, 0.6, 0.8} nozzles); the
+  X2D-specific recipes stay in `tools/gen_x2d_filament_profiles.py`
+  as a thin shim
+- Stop hook + loop hook + ratchet tests for the bridge split — every
+  new `cmd_*` lands in `beambam/cli/<group>.py` automatically
+- Web UI: AMS humidity badges, Doctor card, Analyze drop-zone
+- Daemon HTTP routes: `/ams`, `/doctor`, `/analyze`
+- `StateHub` wiring for `/state.events` (push, not poll)
+- `beambam tail`, `beambam reboot` (M999 wrapper), `beambam plate
+  {list,select,skip}`
+- Site stats are now generated from a build-time `stats.json` so the
+  landing page can never drift from reality again
+- 1,026 tests pass offline; 9 live-printer-gated tests skipped
+
+
 ## v1.2.0 — 12 new commands + bridge split phase 2
 
 Twelve new CLI subcommands across pull/push/inspect/health surfaces,
