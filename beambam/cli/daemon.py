@@ -310,10 +310,12 @@ def cmd_camera(args: argparse.Namespace) -> int:
     from threading import Event, Lock, Thread
     from beambam.config import Creds
     from beambam.mqtt import X2DClient
-    # Lazy-import bridge helpers — _check_bearer is the daemon's shared
-    # auth gate; _x2d_search_roots walks the dev-checkout + dist
-    # install roots for module discovery (lvl_local).
-    from x2d_bridge import _check_bearer, _x2d_search_roots
+    # _check_bearer + _x2d_search_roots both live in beambam/* canonical
+    # homes since the Phase 5e split. Import directly to avoid going
+    # through x2d_bridge's re-export surface (which missed
+    # `_x2d_search_roots` in the 1.4.0 shim collapse).
+    from beambam.serve_http_helpers import _check_bearer
+    from beambam.presets import _x2d_search_roots
 
     creds = Creds.resolve(args)
 
