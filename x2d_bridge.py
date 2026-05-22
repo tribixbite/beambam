@@ -249,6 +249,12 @@ def _serve_http(bind: str,
       POST /control/light     → {"state":"on|off|flashing"} (#46)
       POST /control/temp      → {"target":"bed|nozzle|chamber","value":int,"idx":int?} (#46)
       POST /control/ams_load  → {"slot":int} (#46)
+      POST /control/ams_set   → {"slot":0..15, "tray_type":str,
+                                  "tray_info_idx":str?,
+                                  "nozzle_temp_min":int,
+                                  "nozzle_temp_max":int,
+                                  "tray_color":str?, "setting_id":str?,
+                                  "dry_run":bool?}
       POST /control/sound     → {"state":"on|off"} (HA prompt-sound)
       POST /slice-print       → upload STL/3MF and spawn slice-print
                                  (HA-friendly; raw bytes body + headers)
@@ -1099,6 +1105,39 @@ def _serve_http(bind: str,
                     target=int(slot) - 1,         # 0-indexed in mqtt
                     curr_temp=int(body.get("curr_temp", 215)),
                     tar_temp=int(body.get("tar_temp", 215)))
+            elif verb == "ams_set":
+                # Push tray_info_idx + nozzle range + color to a single
+                # AMS slot. UI sends raw fields (no profile loading on
+                # the daemon side); CLI keeps the profile-JSON loader.
+                # Slot here is 0..15 GLOBAL (matches `beambam ams set`),
+                # NOT the 1..16 UI labeling used by ams_load.
+                from beambam.ams import build_tray_metadata_payload
+                slot = body.get("slot")
+                if not isinstance(slot, int) or not 0 <= slot <= 15:
+                    self._send_json({"error":
+                        "slot must be int 0..15"}, status=400)
+                    return
+                try:
+                    payload = build_tray_metadata_payload(
+                        slot,
+                        tray_type=str(body.get("tray_type", "PLA")),
+                        tray_info_idx=str(body.get("tray_info_idx",
+                                                    "GFL99")),
+                        nozzle_temp_min=int(body.get("nozzle_temp_min",
+                                                       190)),
+                        nozzle_temp_max=int(body.get("nozzle_temp_max",
+                                                       240)),
+                        tray_color=(body.get("tray_color") or None),
+                        setting_id=(body.get("setting_id") or None),
+                    )
+                except (ValueError, TypeError) as e:
+                    self._send_json({"error": f"bad input: {e}"},
+                                      status=400)
+                    return
+                if body.get("dry_run"):
+                    self._send_json({"ok": True, "dry_run": True,
+                                      "payload": payload})
+                    return
             elif verb == "gcode":
                 line = (body or {}).get("line", "")
                 if not isinstance(line, str) or not line.strip():
@@ -1124,7 +1163,7 @@ def _serve_http(bind: str,
                 self._send_json({"error": f"unknown control verb {verb!r}",
                                   "supported": ["pause", "resume", "stop",
                                                 "light", "temp", "ams_load",
-                                                "gcode", "sound"]},
+                                                "ams_set", "gcode", "sound"]},
                                   status=404)
                 return
             status, resp = self._publish_via_client(printer, payload)
@@ -3155,11 +3194,10 @@ def main() -> int:
     cli_ps.add_argument("--source", default="makerworld",
                         choices=("makerworld", "printables"),
                         help="Which catalogue to search. `makerworld` "
-                             "(default) chains into cloud-print-design "
-                             "with full slice+upload+print. `printables` "
-                             "shows the picker and emits the URL — chain "
-                             "via `beambam fetch` + `beambam slice/print` "
-                             "manually (file shape differs from MW).")
+                             "(default) chains into cloud-print-design. "
+                             "`printables` fetches the STL through the "
+                             "Printables GraphQL then chains into "
+                             "slice-print. Both end at an actual print.")
     cli_ps.add_argument("--limit", type=int, default=10, help="How many hits to show")
     cli_ps.add_argument("--offset", type=int, default=0,
                         help="Pagination offset (Printables only — MW uses --limit)")

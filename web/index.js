@@ -250,10 +250,12 @@
       const trays = ams.tray || [];
       trays.forEach((tray, idx) => {
         const slotIdx = (Number(ams.id) * 4) + idx + 1;  // 1-indexed
+        const globalSlot = (Number(ams.id) * 4) + idx;   // 0-indexed
         const div = document.createElement("div");
         const empty = !tray || !tray.tray_color;
         div.className = "swatch" + (empty ? " empty" : "");
         div.dataset.slot = slotIdx;
+        div.dataset.globalSlot = globalSlot;
         if (!empty) {
           div.style.background = "#" + tray.tray_color.slice(0, 6);
           div.title = `${tray.tray_type} ${tray.tray_sub_brands || ""}`.trim();
@@ -262,7 +264,24 @@
           div.classList.add("active");
         }
         div.textContent = "" + slotIdx;
+        // Cache the current tray dict on the element so the edit
+        // dialog can pre-fill from live state without a re-fetch.
+        if (tray) div._amsTray = tray;
         div.addEventListener("click", () => loadSlot(slotIdx));
+        div.addEventListener("contextmenu", (ev) => {
+          ev.preventDefault();
+          openAmsEdit(globalSlot, tray);
+        });
+        // Touch long-press fallback (>500ms) for mobile, since
+        // contextmenu fires inconsistently on touchscreens.
+        let lp = null;
+        div.addEventListener("touchstart", () => {
+          lp = setTimeout(() => openAmsEdit(globalSlot, tray), 600);
+        }, { passive: true });
+        const clearLp = () => { if (lp) { clearTimeout(lp); lp = null; } };
+        div.addEventListener("touchend",    clearLp);
+        div.addEventListener("touchmove",   clearLp);
+        div.addEventListener("touchcancel", clearLp);
         grid.appendChild(div);
       });
     });
@@ -342,6 +361,96 @@
     if (!confirm(`Load filament from AMS slot ${slot}?`)) return;
     control("ams_load", { slot });
   }
+
+  // --- AMS slot metadata editor ---------------------------------------
+  // Maps the chosen material to a sensible default tray_info_idx +
+  // nozzle temp range. User can still override every field.
+  const AMS_TYPE_DEFAULTS = {
+    PLA:  { idx: "GFL99", min: 190, max: 240 },
+    PETG: { idx: "GFG99", min: 230, max: 270 },
+    TPU:  { idx: "GFU99", min: 210, max: 240 },
+    ABS:  { idx: "GFB99", min: 240, max: 280 },
+    ASA:  { idx: "GFB99", min: 240, max: 280 },
+    PA:   { idx: "GFN99", min: 260, max: 290 },
+    PC:   { idx: "GFC99", min: 260, max: 290 },
+  };
+  const amsDialog = $("ams-edit");
+  let _amsEditSlot = null;
+  function openAmsEdit(globalSlot, tray) {
+    _amsEditSlot = globalSlot;
+    $("ams-edit-slot").textContent =
+      `${globalSlot} (AMS ${Math.floor(globalSlot/4)}, tray ${globalSlot%4})`;
+    const t = (tray && tray.tray_type) || "PLA";
+    $("ams-edit-type").value = AMS_TYPE_DEFAULTS[t] ? t : "PLA";
+    const cur = tray && tray.tray_color
+      ? "#" + tray.tray_color.slice(0, 6)
+      : "#808080";
+    $("ams-edit-color").value = cur.toLowerCase();
+    const d = AMS_TYPE_DEFAULTS[$("ams-edit-type").value];
+    $("ams-edit-tmin").value = (tray && tray.nozzle_temp_min) || d.min;
+    $("ams-edit-tmax").value = (tray && tray.nozzle_temp_max) || d.max;
+    $("ams-edit-idx").value  = (tray && tray.tray_info_idx)   || d.idx;
+    $("ams-edit-preview-out").textContent = "";
+    if (typeof amsDialog.showModal === "function") {
+      amsDialog.showModal();
+    } else {
+      amsDialog.setAttribute("open", "");        // fallback
+    }
+  }
+  // Auto-update temps + idx when material changes (only if user hasn't
+  // hand-edited yet — track via a `data-dirty` flag).
+  ["ams-edit-tmin","ams-edit-tmax","ams-edit-idx"].forEach((id) => {
+    $(id).addEventListener("input", () => $(id).dataset.dirty = "1");
+  });
+  $("ams-edit-type").addEventListener("change", () => {
+    const d = AMS_TYPE_DEFAULTS[$("ams-edit-type").value];
+    if (!d) return;
+    ["ams-edit-tmin","ams-edit-tmax","ams-edit-idx"].forEach((id) => {
+      if (!$(id).dataset.dirty) {
+        if (id === "ams-edit-idx") $(id).value = d.idx;
+        else if (id === "ams-edit-tmin") $(id).value = d.min;
+        else $(id).value = d.max;
+      }
+    });
+  });
+  function _amsEditBody(dryRun) {
+    const colorHex = $("ams-edit-color").value
+      .replace("#","").toUpperCase();
+    return {
+      slot: _amsEditSlot,
+      tray_type: $("ams-edit-type").value,
+      tray_info_idx: $("ams-edit-idx").value,
+      nozzle_temp_min: parseInt($("ams-edit-tmin").value, 10),
+      nozzle_temp_max: parseInt($("ams-edit-tmax").value, 10),
+      tray_color: colorHex + "FF",
+      dry_run: !!dryRun,
+    };
+  }
+  $("ams-edit-cancel").addEventListener("click", () => {
+    if (typeof amsDialog.close === "function") amsDialog.close();
+    else amsDialog.removeAttribute("open");
+  });
+  $("ams-edit-preview").addEventListener("click", async () => {
+    const url = `/control/ams_set?printer=${encodeURIComponent(activePrinter)}`;
+    try {
+      const r = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(_amsEditBody(true)),
+      });
+      const data = await r.json().catch(() => ({}));
+      $("ams-edit-preview-out").textContent =
+        JSON.stringify(data.payload || data, null, 2);
+    } catch (e) {
+      $("ams-edit-preview-out").textContent = "preview failed: " + e.message;
+    }
+  });
+  $("ams-edit-apply").addEventListener("click", async () => {
+    if (!confirm(`Push these settings to AMS slot ${_amsEditSlot}?`)) return;
+    await control("ams_set", _amsEditBody(false));
+    if (typeof amsDialog.close === "function") amsDialog.close();
+    else amsDialog.removeAttribute("open");
+  });
 
   // --- camera transports -----------------------------------------------
   const camImg   = $("cam-img");

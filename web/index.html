@@ -75,8 +75,45 @@
       <h2>AMS slots</h2>
       <div id="ams-humidity" class="ams-humidity"></div>
       <div id="ams-slots" class="ams-grid"></div>
-      <div class="muted small">tap a swatch to load that filament</div>
+      <div class="muted small">tap to load · long-press / right-click to edit metadata</div>
     </section>
+
+    <!-- Hidden until the user long-presses or right-clicks a swatch. -->
+    <dialog id="ams-edit" class="ams-edit-dialog">
+      <form method="dialog" id="ams-edit-form">
+        <h3>Edit AMS slot <span id="ams-edit-slot"></span></h3>
+        <label>Material
+          <select id="ams-edit-type">
+            <option value="PLA">PLA</option>
+            <option value="PETG">PETG</option>
+            <option value="TPU">TPU</option>
+            <option value="ABS">ABS</option>
+            <option value="ASA">ASA</option>
+            <option value="PA">PA / Nylon</option>
+            <option value="PC">PC</option>
+          </select>
+        </label>
+        <label>Color
+          <input id="ams-edit-color" type="color" value="#808080">
+        </label>
+        <label>Nozzle min (°C)
+          <input id="ams-edit-tmin" type="number" min="150" max="320" value="190">
+        </label>
+        <label>Nozzle max (°C)
+          <input id="ams-edit-tmax" type="number" min="150" max="320" value="240">
+        </label>
+        <label>tray_info_idx (advanced)
+          <input id="ams-edit-idx" type="text" value="GFL99"
+                 title="Bambu filament-library id; GFL99=generic PLA, GFG99=PETG, GFU99=TPU">
+        </label>
+        <div class="ams-edit-buttons">
+          <button type="button" id="ams-edit-cancel">Cancel</button>
+          <button type="button" id="ams-edit-preview">Preview</button>
+          <button type="button" id="ams-edit-apply">Apply</button>
+        </div>
+        <pre id="ams-edit-preview-out" class="ams-edit-preview muted small"></pre>
+      </form>
+    </dialog>
 
     <section class="card doctor">
       <h2>

@@ -113,6 +113,147 @@ def test_print_search_source_printables_out_of_range_pick(monkeypatch,
     assert "out of range" in capsys.readouterr().out
 
 
+# ----- Printables chain: pick → fetch → slice-print ---------------------
+
+
+def test_print_search_printables_chains_into_fetch_then_slice(monkeypatch,
+                                                                capsys):
+    """When dry_run_pick is False, the Printables backend must invoke
+    `beambam fetch <url>` then `beambam slice-print <stl>` via subprocess.
+    Verifies argv shape + that --copies / --scale-pct / --color flags
+    propagate to slice-print."""
+    import x2d_bridge
+
+    # Stub the Printables GraphQL search.
+    class _FakeResp:
+        def __init__(self, body): self._body = body
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def read(self): return self._body
+    monkeypatch.setattr(
+        __import__("urllib.request").request, "urlopen",
+        lambda req, timeout=None: _FakeResp(_fake_printables_response([
+            {"id": 12345, "name": "Pokeball", "slug": "pokeball",
+             "likesCount": 1, "downloadCount": 2,
+             "user": {"publicUsername": "u"}},
+        ])))
+
+    # Capture the two subprocess.run / subprocess.call invocations.
+    captured: list[list[str]] = []
+
+    def _fake_run(cmd, *a, **kw):
+        captured.append(list(cmd))
+        # `fetch --json` is invoked first → emit a path matching the
+        # contract `_print_search_printables` expects.
+        # We can't write into the tmpdir since it gets deleted on
+        # context-exit, but `fetch --json` is a one-shot: the path it
+        # claims to have written doesn't need to exist for the picker
+        # logic (only the slice-print subprocess.call later would
+        # actually need it).
+        out_dir = cmd[cmd.index("--out-dir") + 1]
+        stl_path = f"{out_dir}/pokeball.stl"
+        # Touch the file so the priority-walk finds it.
+        Path(stl_path).write_bytes(b"")
+        class _R:
+            returncode = 0
+            stdout = json.dumps([stl_path])
+            stderr = ""
+        return _R()
+
+    def _fake_call(cmd):
+        captured.append(list(cmd))
+        return 0
+
+    monkeypatch.setattr("subprocess.run", _fake_run)
+    monkeypatch.setattr("subprocess.call", _fake_call)
+
+    rc = x2d_bridge.cmd_print_search(_ns(
+        source="printables", query="pokeball", pick=1,
+        dry_run_pick=False,
+        scale_pct=75.0, copies=4, color="#FF0000",
+    ))
+    assert rc == 0
+    # First subprocess.run: fetch
+    assert any("fetch" in c and "printables.com/model/12345-pokeball"
+               in " ".join(c) for c in captured)
+    # Second: slice-print with the user's flags
+    slice_argv = next(c for c in captured if "slice-print" in c)
+    assert "--scale-pct" in slice_argv and "75.0" in slice_argv
+    assert "--copies" in slice_argv and "4" in slice_argv
+    assert "--color" in slice_argv and "#FF0000" in slice_argv
+
+
+def test_print_search_printables_dry_run_pick_skips_chain(monkeypatch,
+                                                          capsys):
+    """`--dry-run-pick` must NOT touch subprocess — the picker alone
+    is what's tested."""
+    import x2d_bridge
+
+    class _FakeResp:
+        def __init__(self, body): self._body = body
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def read(self): return self._body
+    monkeypatch.setattr(
+        __import__("urllib.request").request, "urlopen",
+        lambda req, timeout=None: _FakeResp(_fake_printables_response([
+            {"id": 1, "name": "x", "slug": "x", "likesCount": 0,
+             "downloadCount": 0, "user": {"publicUsername": "u"}},
+        ])))
+
+    called: list[str] = []
+    monkeypatch.setattr("subprocess.run",
+                        lambda *a, **kw: called.append("run") or None)
+    monkeypatch.setattr("subprocess.call",
+                        lambda *a, **kw: called.append("call") or 0)
+
+    rc = x2d_bridge.cmd_print_search(_ns(
+        source="printables", pick=1, dry_run_pick=True))
+    assert rc == 0
+    assert called == []        # neither was invoked
+
+
+def test_print_search_printables_fetch_no_printable_returns_1(monkeypatch,
+                                                                capsys):
+    """If fetch saved a download but no .stl/.3mf/.obj, the chain must
+    surface a clean error (exit 1), not crash."""
+    import x2d_bridge
+
+    class _FakeResp:
+        def __init__(self, body): self._body = body
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def read(self): return self._body
+    monkeypatch.setattr(
+        __import__("urllib.request").request, "urlopen",
+        lambda req, timeout=None: _FakeResp(_fake_printables_response([
+            {"id": 1, "name": "x", "slug": "x", "likesCount": 0,
+             "downloadCount": 0, "user": {"publicUsername": "u"}},
+        ])))
+
+    def _fake_run(cmd, *a, **kw):
+        # Fetch reports a .txt download (premium-only model edge case)
+        out_dir = cmd[cmd.index("--out-dir") + 1]
+        txt = f"{out_dir}/readme.txt"
+        Path(txt).write_bytes(b"")
+        class _R:
+            returncode = 0
+            stdout = json.dumps([txt])
+            stderr = ""
+        return _R()
+    monkeypatch.setattr("subprocess.run", _fake_run)
+
+    called_call = []
+    monkeypatch.setattr("subprocess.call",
+                        lambda *a, **kw: called_call.append(a) or 0)
+
+    rc = x2d_bridge.cmd_print_search(_ns(
+        source="printables", pick=1, dry_run_pick=False))
+    assert rc == 1
+    assert called_call == []    # slice-print never reached
+    assert "no printable files" in capsys.readouterr().err
+
+
 # ----- source=makerworld stays on the old path --------------------------
 
 

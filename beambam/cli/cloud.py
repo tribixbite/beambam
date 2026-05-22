@@ -1246,10 +1246,11 @@ def _print_search_printables(args: argparse.Namespace) -> int:
     """Printables backend for `print-search --source printables`.
 
     Queries Printables' anonymous GraphQL, shows the same numbered
-    picker as the MakerWorld flow, then prints the canonical model URL
-    for the picked entry. Pipeline does NOT chain into a print —
-    Printables files are .stl-in-.zip; the user follows up with
-    `beambam fetch <url>` then `beambam slice/print` manually.
+    picker as the MakerWorld flow, then chains: fetch via the existing
+    Printables GraphQL path (`beambam fetch`) into a tmpdir, pick the
+    first .3mf/.stl/.obj/.step, then forward to `beambam slice-print`
+    with the user's --copies / --scale-pct / --mm / --color / --slot
+    flags. Mirrors `cmd_cloud_print_design`'s subprocess approach.
     """
     import urllib.request as _ur
     import urllib.error as _ue
@@ -1320,11 +1321,72 @@ def _print_search_printables(args: argparse.Namespace) -> int:
     print(f"\n→ Picked: {chosen.get('name', '')}\n  {url}")
     if args.dry_run_pick:
         return 0
-    print("\nNext steps (Printables files are .stl-in-.zip):")
-    print(f"  beambam fetch {url}")
-    print(f"  beambam slice <stl> --out model.gcode.3mf")
-    print(f"  beambam print model.gcode.3mf")
-    return 0
+
+    # Chain: fetch → slice-print. Mirrors cmd_cloud_print_design's
+    # subprocess approach so we inherit the entire arg-validation +
+    # signing + upload + start_print pipeline from slice-print.
+    import subprocess
+    import tempfile
+    from pathlib import Path
+    from x2d_bridge import X2D_ROOT_PATH
+
+    bridge = X2D_ROOT_PATH / "x2d_bridge.py"
+    with tempfile.TemporaryDirectory(prefix="print_search_pr_") as td:
+        td_p = Path(td)
+        # Step 1: fetch the model via the existing Printables GraphQL
+        # path in cmd_fetch. --json lets us parse the saved paths back.
+        fetch_cmd = [sys.executable, str(bridge), "fetch", url,
+                     "--out-dir", str(td_p), "--json"]
+        try:
+            res = subprocess.run(fetch_cmd, capture_output=True,
+                                 text=True, check=True)
+        except subprocess.CalledProcessError as e:
+            print(f"\n[print-search] fetch failed (exit {e.returncode}):",
+                  file=sys.stderr)
+            if e.stderr:
+                print(e.stderr, file=sys.stderr)
+            return 1
+        try:
+            saved = json.loads(res.stdout) if res.stdout.strip() else []
+        except json.JSONDecodeError:
+            saved = []
+        # Pick the first printable-shaped file. Prefer .3mf > .stl >
+        # .obj/.step. Printables typically ships .stl; some packs
+        # bundle a .3mf too.
+        prio = (".3mf", ".stl", ".obj", ".step", ".stp")
+        printable = next(
+            (p for ext in prio
+                for p in saved
+                if str(p).lower().endswith(ext)),
+            None,
+        )
+        if printable is None:
+            print(f"\n[print-search] fetch saved no printable files. "
+                  f"Got: {saved!r}", file=sys.stderr)
+            return 1
+        print(f"\n[print-search] fetched {Path(printable).name}",
+              file=sys.stderr)
+
+        # Step 2: slice + (maybe) upload + (maybe) print. Same flag
+        # forwarding shape as cmd_cloud_print_design.
+        cmd = [sys.executable, str(bridge), "slice-print", str(printable)]
+        if args.printer: cmd.extend(["--printer", args.printer])
+        if args.ip:      cmd.extend(["--ip", args.ip])
+        if args.code:    cmd.extend(["--code", args.code])
+        if args.serial:  cmd.extend(["--serial", args.serial])
+        if getattr(args, "scale", 1.0) != 1.0:
+            cmd.extend(["--scale", str(args.scale)])
+        if getattr(args, "scale_pct", None) is not None:
+            cmd.extend(["--scale-pct", str(args.scale_pct)])
+        if getattr(args, "mm", None) is not None:
+            cmd.extend(["--mm", str(args.mm)])
+        if int(getattr(args, "copies", 1)) != 1:
+            cmd.extend(["--copies", str(args.copies)])
+        if args.color:   cmd.extend(["--color", args.color])
+        if args.slot:    cmd.extend(["--slot", str(args.slot)])
+        if args.no_ams:  cmd.append("--no-ams")
+        if args.dry_run: cmd.append("--dry-run")
+        return subprocess.call(cmd)
 
 
 def cmd_print_search(args: argparse.Namespace) -> int:
