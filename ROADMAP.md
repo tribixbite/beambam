@@ -289,11 +289,12 @@ Remaining endpoints from the catalog worth wiring:
   (commit 50aa9d9) reads from `~/.x2d/snapshots/`.
 
 ### Refactor (boring but actively blocking v2.0 surface)
-**Status check — `x2d_bridge.py` is ~7,800 LoC with 74 `cmd_*` handlers
-and growing ~1 handler per loop iteration.** The "blockers" prior
-ROADMAP versions claimed are stale; see
-[BRIDGE_SPLIT_PLAN.md](docs/BRIDGE_SPLIT_PLAN.md) for the rewritten
-phase staging.
+**Status — `x2d_bridge.py` is down to ~3,470 LoC with 0 `cmd_*`
+handlers (was ~7,800 / 74 at session start).** Phases 4 + 5a–5d
+shipped. Phase 5e is in flight — see
+[BRIDGE_SPLIT_PLAN.md](docs/BRIDGE_SPLIT_PLAN.md) for batch list.
+The `tests/test_bridge_split_progress.py` ratchet records every
+batch in its history comment.
 
 - [x] **Phase 4** (this round) — moved `X2DClient` + the metrics
   helpers (`metric_inc` / `metric_global_inc` / `metrics_snapshot`,

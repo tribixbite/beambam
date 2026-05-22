@@ -1,158 +1,146 @@
-# Splitting `x2d_bridge.py` into modules — current state + actionable phases
+# Splitting `x2d_bridge.py` into modules — current state + remaining phases
 
-**Last touched:** 2026-05-21. **State:** Phases 1–3 shipped in v1.2.0;
-Phase 4 + 5 are the active work and have been wrongly marked "blocked"
-in prior versions of this doc. They are not blocked — Phase 4 is one
-small commit, and Phase 5 is a stack of bounded sub-phases that can
-each land independently.
+**Last touched:** 2026-05-21 (post-Phase-5d). **State:** Phases 1–4
+and 5a–5d **shipped**. Phase 5e is in flight (HTTP-server extraction
+in batches). The monolith is down from ~7,800 LoC / 74 `cmd_*` to
+**~3,470 LoC / 0 `cmd_*`** — see commit history of
+`tests/test_bridge_split_progress.py` for the batch-by-batch ledger.
 
 ## Why this plan exists
 
-`x2d_bridge.py` has grown from ~6,275 LoC at v1.0.0 to **~7,800 LoC**
-with **74 `cmd_*` handlers** today. The split is the boring-but-important
-work that keeps the public API (`beambam.Printer`, `beambam.Creds`,
-etc.) clean while the CLI continues to gain features. Without active
-phase-by-phase drainage, every new subcommand piles into the monolith
-instead of `beambam/cli/`, and the monolith never shrinks.
+The split is the boring-but-important work that keeps the public API
+(`beambam.Printer`, `beambam.Creds`, etc.) clean while the CLI keeps
+gaining features. Without active phase-by-phase drainage, every new
+subcommand piles into the monolith instead of `beambam/cli/`, and the
+monolith never shrinks. The `tests/test_bridge_split_progress.py`
+guard test fails CI on any new `cmd_*` in `x2d_bridge.py`, so the
+drainage is now ratchet-only.
 
-## What's already done (Phase 1–3, shipped in v1.2.0)
+## What shipped (Phases 1–5d, v1.2.0 → v1.3.0)
 
-| Symbol(s) | New home | Verification |
-|---|---|---|
-| `Creds`, env / file resolver | `beambam/config.py` | `__all__ = ["Creds"]`, x2d_bridge re-imports. |
-| `BAMBU_CERT_ID`, `sign_payload` | `beambam/mqtt.py` | Sign + verify works against firmware. |
-| `_ImplicitFTPTLS`, `upload_file`, `download_file`, `list_files` | `beambam/ftps.py` | `pytest tests/test_ftps_*.py` passes. |
-| `Printer` high-level facade | `beambam/printer.py` | Used by `beambam ams set`, `beambam.Printer.state()`. |
-| Per-feature modules: `analyze`, `frame`, `slice`, `simulate`, `state_hub`, `cam`, `find`, `init_wizard`, `install_completion`, `upgrade`, `plate`, `orient`, `download`, `cloud_data`, `cloud_fetch`, `filament_profiles`, `doctor`, `ams`, `mqttcli`, `queuecli`, `configcli`, `schemas` | `beambam/*.py` | Each has its own test file. |
+| Phase | Symbols moved | New home | Verification |
+|---|---|---|---|
+| **1–3** | `Creds`, env/file resolver | `beambam/config.py` | `__all__ = ["Creds"]` |
+| **1–3** | `BAMBU_CERT_ID`, `sign_payload` | `beambam/mqtt.py` | sign+verify against firmware |
+| **1–3** | `_ImplicitFTPTLS`, `upload_file`, `download_file`, `list_files` | `beambam/ftps.py` | tests pass |
+| **1–3** | `Printer` high-level facade | `beambam/printer.py` | `beambam ams set/sync` uses it |
+| **1–3** | Per-feature: `analyze`, `frame`, `slice`, `simulate`, `state_hub`, `cam`, `find`, `init_wizard`, `install_completion`, `upgrade`, `plate`, `orient`, `download`, `cloud_data`, `cloud_fetch`, `filament_profiles`, `doctor`, `ams`, `mqttcli`, `queuecli`, `configcli`, `schemas` | `beambam/*.py` (31 modules) | each has its own test file |
+| **4** | `X2DClient` + `_metric_inc` + `_METRICS` | `beambam/mqtt.py` | `grep "class X2DClient" beambam/mqtt.py` |
+| **5a** | `pause`/`resume`/`stop`/`gcode`/`home`/`level`/`set-temp`/`chamber-light`/`reboot`/`jog`/`record`/`timelapse`/`resolution`/`fod-check`/`ams-load`/`ams-unload` | `beambam/cli/control.py` | 16 handlers |
+| **5b** | every `cmd_cloud_*` (~30) | `beambam/cli/cloud.py` | 2,050 LoC, every cloud verb |
+| **5c** | `status`/`health`/`watch`/`tail`/`notify`/`printers`/`fetch`/`analyze`/`fcm-harvest` | `beambam/cli/info.py` | read-only handlers, zero coupling |
+| **5d** (partial) | `daemon`, `serve` shell, `camera`, `webrtc`, `ha-publish`, parser registrations | `beambam/cli/daemon.py` | 930 LoC; cli/__init__.py wires sub-parsers |
+| **5d** (partial) | LAN ops: `upload`, `print`, `files`, `slice-print` | `beambam/cli/lan.py` | 363 LoC |
+| **5d** (partial) | HTTP helpers, preset loader, HTTP cloud routes | `beambam/serve_http_helpers.py`, `beambam/presets.py` | batch 2–4 extractions |
 
-`beambam/mqtt.py` exposes `X2DClient` via `__getattr__` as a lazy
-re-export from x2d_bridge — that's the seam Phase 4 closes.
+**Guard ratchet history** (full ledger in
+`tests/test_bridge_split_progress.py`):
+74 → 71 → 65 → 58 → 54 → 49 → 41 → 36 → 33 → 31 → 29 → 27 → 26 → 21
+→ 20 → 19 → 18 → 16 → 14 → 12 → 10 → 8 → **0**.
 
-## Phase 4 — move `X2DClient` into `beambam.mqtt` (single commit)
+## Phase 5e — what's left in the monolith
 
-**Why this phase is not "blocked on `_metric_inc` extraction":**
-`_metric_inc` is a 10-line counter at `x2d_bridge.py:131`. It can
-move with `X2DClient` in the same commit. Calling it a separate
-blocker was an over-cautious framing — there's no other consumer of
-`_metric_inc` outside `X2DClient`.
+`x2d_bridge.py` is 3,470 LoC with **no CLI handlers** and **no public
+class anyone imports by name**. What's left:
 
-**Step list (estimated 30–45 min, no live-printer required):**
+| Lines | Block | LoC | Target |
+|---|---|---:|---|
+| 1–117 | Module header, imports, `PACKAGE_VERSION` | ~100 | shim header only |
+| 117–124 | `_signing_key()` (lazy private key loader) | ~10 | `beambam.mqtt` (already has `sign_payload`) |
+| 218–1180 | `_serve_http()` body (~960 LoC) | ~960 | `beambam/serve_http.py` or `beambam/cli/daemon.py` |
+| 1226–1900 | `_PrinterSession` + `ServeServer` + `_ConnHandler` | ~675 | `beambam/serve_socket.py` (new) |
+| 1900–2210 | 14 `_op_*` handlers (`_op_hello`, `_op_connect_printer`, …) | ~310 | same `beambam/serve_socket.py` |
+| 2210–2570 | `_publish_one`, `_reboot_payload`, `_package_version`, misc | ~360 | distribute |
+| 2574–end | `main()` argparse builder | ~900 | `beambam/cli/__init__.py:main()` |
 
-1. Cut `_metric_inc` + the `_METRICS` dict + helper constants from
-   `x2d_bridge.py` and paste verbatim into `beambam/mqtt.py`.
-2. Cut the `X2DClient` class from `x2d_bridge.py` (lines ~148–390 in
-   today's file) and paste into `beambam/mqtt.py`. Imports already
-   work: `paho.mqtt`, `cryptography`, `Creds` (from `beambam.config`),
-   `sign_payload` (same file), `BAMBU_CERT_ID` (same file).
-3. Delete the `__getattr__("X2DClient")` lazy-import shim at the bottom
-   of `beambam/mqtt.py`. Add `"X2DClient"` to `__all__`.
-4. In `x2d_bridge.py`, add `from beambam.mqtt import X2DClient, sign_payload, BAMBU_CERT_ID`
-   at the top of the file. Verify every callsite finds it via the
-   import (there are ~30; `grep -nE "\bX2DClient\b" x2d_bridge.py`).
-5. Run `pytest -q`. Aside from the cmd_* count moving by 0, the suite
-   should pass unchanged.
+### Phase 5e batch list (smallest blast radius first)
 
-**Risk:** very low. `X2DClient` has no incoming runtime dependencies
-from the cmd_* handlers other than via constructor; moving it doesn't
-disturb the daemon's startup order.
+1. **5e.1 — `beambam/_version.py`** (~30 LoC moved)
+   * Pull `PACKAGE_VERSION` + `_package_version()` out. Used by ~6
+     places (status banner, MCP server, daemon HTTP `/healthz`,
+     `--version` flag, OG image gen, install-completion).
+   * Risk: trivial. Imports flow downward, no cycles.
 
-## Phase 5 — drain `cmd_*` into `beambam/cli/`
+2. **5e.2 — `beambam/serve_socket.py`** (~1,000 LoC moved)
+   * Move `_PrinterSession`, `ServeServer`, `_ConnHandler`, every
+     `_op_*` handler. **This is the GUI-shim JSON-RPC server.**
+   * Only consumer: `libbambu_networking.so` which spawns
+     `python3 x2d_bridge.py serve` by literal pathname. The shim
+     reaches `cmd_serve` (already in `beambam.cli.daemon`), which
+     calls `ServeServer.run()`. Moving `ServeServer` only requires
+     `cmd_serve` to import from the new location.
+   * Risk: medium. `runtime/network_shim/tests/test_shim_e2e.py`
+     should run against a real printer after. CI tests (which spawn
+     the bridge as a subprocess) confirm the socket protocol stays
+     byte-stable.
 
-74 `cmd_*` handlers, ~5,800 LoC of `cmd_*` code, plus the `_serve_http`
-HTTP server (~1,200 LoC). The diff is too big for one PR. Phases 5a–e
-are independent and each ≤300 LoC of net move (i.e. functions are cut
-from `x2d_bridge.py`, pasted into `beambam/cli/<group>.py`, and the
-`sub.add_parser(...)` call in `main()` is updated to import the
-handler from its new home).
+3. **5e.3 — `beambam/serve_http.py`** (~960 LoC moved)
+   * Continue the batched extraction the other agent started:
+     `_serve_http()` body becomes a thin dispatcher that imports
+     per-route handlers from `beambam/serve_http_helpers.py` and
+     `beambam/serve_http_routes/*.py`.
+   * Risk: low — each route is independent; can be split across
+     several commits using the same batch pattern as 5b.
 
-### Phase 5a — `beambam/cli/_helpers.py` + `beambam/cli/control.py`
+4. **5e.4 — `_publish_one` + `_reboot_payload`** (~50 LoC moved)
+   * `_publish_one` → `beambam/cli/_helpers.py` (already exists).
+     Used by `cmd_chamber_light`, `cmd_ams_load`, etc. — handlers
+     that already live in `beambam/cli/control.py` and import via
+     `from x2d_bridge import _publish_one`.
+   * `_reboot_payload` → `beambam/cli/control.py` (where `cmd_reboot`
+     already lives). Drop the back-compat re-export from x2d_bridge.
 
-**Move:** the `_print_cmd`, `_system_cmd`, `_camera_cmd`, `_publish_one`,
-`_next_seq` helpers to `beambam/cli/_helpers.py`. Then move the
-control-verb handlers (each is 5–15 lines, all wrap one of those
-helpers): `cmd_pause`, `cmd_resume`, `cmd_stop`, `cmd_reboot`,
-`cmd_gcode`, `cmd_home`, `cmd_level`, `cmd_set_temp`, `cmd_chamber_light`,
-`cmd_jog`, `cmd_fod_check`, `cmd_ams_load`, `cmd_ams_unload`,
-`cmd_record`, `cmd_timelapse`, `cmd_resolution`, `cmd_files`.
+5. **5e.5 — `main()` → `beambam/cli/__init__.py`** (~900 LoC moved)
+   * Last big move. The argparse builder + subparser registrations
+     + dispatcher loop. Most subparser bodies already live in
+     `beambam/cli/<group>.py`'s `register(sub)` function — `main()`
+     just calls them. Moving `main()` is mechanical.
+   * Risk: low. `pyproject.toml` console-script entries
+     (`beambam = x2d_bridge:main`, `bb = x2d_bridge:main`) get
+     updated to `beambam = beambam.cli:main`. `x2d_bridge.py`
+     keeps a `main = beambam.cli.main` re-export so the
+     network_shim's literal-pathname spawn still finds it.
 
-**Expected LoC move:** ~600 in, ~50 deletion in x2d_bridge.py for the
-parser registrations (which become 1-line `from beambam.cli.control import register; register(sub)`).
+6. **5e.6 — `x2d_bridge.py` → 5-line shim** (~3,400 LoC deleted)
+   * Final state:
+     ```python
+     """Backwards-compat shim. Implementation lives under beambam.cli.
+     The libbambu_networking.so GUI shim spawns this file by literal
+     pathname; keep the entry point byte-stable."""
+     from beambam.cli import main
+     if __name__ == "__main__":
+         raise SystemExit(main())
+     ```
 
-### Phase 5b — `beambam/cli/cloud.py`
+## What the guard test enforces
 
-**Move:** every `cmd_cloud_*` handler (currently ~30, ~2,000 LoC).
-Already a natural cluster — every cloud handler uses
-`_resolve_cloud_serial` + `_cloud_publish_payload` from
-`x2d_bridge.py`. Both helpers move with them.
+`tests/test_bridge_split_progress.py` pins `cmd_*` at 0 and FAILS CI
+if it grows. Every Phase 5e batch should also progressively shrink
+`wc -l x2d_bridge.py` — consider extending the guard to track LoC
+once batch 5e.6 lands, so the shim stays a shim.
 
-**Live-test surface:** any cloud handler that publishes to a real
-account (`cloud-pause`, `cloud-stop`, `cloud-chamber-light`,
-`cloud-comment-reply`). Should be live-tested but is opt-in.
+## What the network_shim contract requires us to preserve
 
-### Phase 5c — `beambam/cli/info.py`
+`runtime/network_shim/PROTOCOL.md` is the wire-level contract. The
+JSON-RPC envelope on the Unix socket must stay byte-stable:
 
-**Move:** read-only / observability commands: `cmd_status`, `cmd_health`,
-`cmd_watch`, `cmd_tail`, `cmd_notify`, `cmd_printers`, `cmd_files`,
-`cmd_fetch`, `cmd_files`. None of these touch the daemon's long-running
-state; they're one-shot.
-
-### Phase 5d — `beambam/cli/daemon.py`
-
-**Move:** `cmd_daemon`, `cmd_serve`, `cmd_camera`, `cmd_webrtc`,
-`cmd_ha_publish`, plus the entire `_serve_http` function (~1,200 LoC).
-This is the load-bearing piece and the largest sub-phase. Move LAST,
-after the rest of the migration has reduced x2d_bridge.py to a
-manageable size.
-
-**Critical:** `libbambu_networking.so` spawns `x2d_bridge.py serve` by
-literal pathname. The shim at `x2d_bridge.py` MUST keep working as
-the entry point. The actual `cmd_serve` body moves; the parser entry
-stays callable through the shim.
-
-### Phase 5e — `main()` to `beambam/cli/__init__.py`
-
-**Move:** the argparse builder + the discover-and-dispatch loop.
-`x2d_bridge.py` becomes the ~5-line shim shown below. `beambam` and
-`bb` console-script entries already point at `x2d_bridge:main`; they
-get updated to `beambam.cli:main` in `pyproject.toml`.
-
-**Final x2d_bridge.py:**
-
-```python
-"""Backwards-compat shim — implementation moved to beambam.cli.main()
-in v1.3.x. New code should `import beambam.cli` or run `beambam`/`bb`.
-
-The libbambu_networking.so GUI shim spawns this file by literal
-pathname; keep the entry point byte-stable."""
-from beambam.cli import main
-if __name__ == "__main__":
-    raise SystemExit(main())
+```json
+{"kind": "req", "id": <int>, "op": "<verb>", "args": {...}}
+{"kind": "rsp", "id": <int>, "ok": <bool>, "result": {...}, "error": {...}}
 ```
 
-## Migration discipline — the guard test
+Moving the `_op_*` handlers into `beambam/serve_socket.py` doesn't
+change the wire format — it just relocates the dispatch table. The
+E2E test (`runtime/network_shim/tests/test_shim_e2e.py`) is the
+regression gate; it spins up a real Unix socket against the actual
+bridge and exercises the full op set.
 
-`tests/test_bridge_split_progress.py` pins the current `cmd_*` count
-in `x2d_bridge.py` and asserts it MUST NOT grow. The test fails with
-a pointer to this doc whenever a new feature lands in the monolith
-instead of `beambam/cli/`. Bumping the budget downward (after a
-successful sub-phase) is a deliberate edit; bumping it upward requires
-deleting the test or adding the lying number — both visible in PR
-review.
+## What is NOT changing in 5e
 
-**Today's pinned count:** 74. **Target after Phase 4 + 5a:** ~57.
-**Target after Phase 5b:** ~27. **Target after Phase 5c–e:** 0
-(`x2d_bridge.py` is the shim).
-
-## Why I don't propose a single big-bang split
-
-A single PR moving 7,000 LoC is unreviewable. Each Phase 5 sub-phase
-is independently verifiable: full suite green + relevant live test
-(if any) passes. If a sub-phase breaks anything, the revert is one
-commit, not "the entire split".
-
-## What's still allowed to live in x2d_bridge.py during the migration
-
-* `start_print()` — used by `lan_print.py`, `lan_upload.py`, slicing
-  helpers. Move with Phase 5a (the helpers don't shadow it).
-* The argparse `main()` and `_build_epilog()` — Phase 5e's job.
-* Backwards-compat re-exports — keep until v2.0 cut.
+* The `beambam` and `bb` console-script entry points still work.
+* `python3 x2d_bridge.py status` still works (via the shim).
+* `libbambu_networking.so` still spawns `x2d_bridge.py serve` by
+  pathname. The shim's `if __name__ == "__main__"` path stays valid.
+* All public `from x2d_bridge import X2DClient, sign_payload, Creds,
+  upload_file, download_file, list_files, start_print`-style imports
+  keep working via re-exports — `runtime/*` doesn't have to change.
