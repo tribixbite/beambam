@@ -2544,19 +2544,11 @@ from beambam.cli.cloud import (  # noqa: E402, F401
 # cmd_analyze moved to beambam/cli/info.py (Phase 5c batch 5).
 
 
-def _package_version() -> str:
-    """Return the installed `beambam` version, or a source-checkout
-    fallback if the package isn't installed (e.g. running from a clone).
-    Centralised so --version, User-Agent strings, and bridge_version all
-    agree."""
-    try:
-        from importlib.metadata import version, PackageNotFoundError
-        return version("beambam")
-    except Exception:
-        return "1.3.0+source"
-
-
-PACKAGE_VERSION = _package_version()
+# `_package_version` + `PACKAGE_VERSION` moved to beambam/_version.py
+# (Phase 5e batch 1). Re-export here for back-compat with existing
+# call sites (`from x2d_bridge import PACKAGE_VERSION`) in
+# beambam/cli/info.py + scratch/installed mirror.
+from beambam._version import PACKAGE_VERSION, _package_version  # noqa: F401, E402
 
 
 # _COMMAND_GROUPS catalog + _build_epilog() helper moved to
