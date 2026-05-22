@@ -1,7 +1,7 @@
 {
-  "subcommands": 111,
+  "subcommands": 122,
   "printer_models": 9,
-  "tests": 891,
+  "tests": 1034,
   "ha_entities": 57,
   "mcp_tools": 25
 }

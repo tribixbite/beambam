@@ -32,8 +32,14 @@ beambam doctor
 # 4.  Preview a print plan before sending it hot.
 beambam analyze model.gcode.3mf
 
-# 5.  Upload + start print, AMS slot 5.
-beambam print model.gcode.3mf --slot 5`;
+# 5.  Push + start print, AMS slot 5.
+beambam print model.gcode.3mf --slot 5
+
+# 6.  Run the all-in-one daemon (web UI :8765, HA, Prometheus).
+beambam boo --http :8765 --queue --timelapse
+
+# 7.  Camera proxy in the background; snap a frame any time.
+beambam cam start && beambam cam`;
 
     // Doctor output uses unicode literals — inside a JS string, \u is processed.
     const doctorSample = `$ beambam doctor
@@ -70,7 +76,7 @@ Summary: 6 pass, 2 warn, 0 fail`;
         {
             tag: 'INTEGRATIONS',
             head: 'Home Assistant, MCP, Web UI, Prometheus, WebRTC.',
-            body: 'One daemon publishes everything. ~69 HA entities via MQTT discovery (per-tray AMS color + humidity warnings). 25 MCP tools for Claude / Cursor / Continue. Mobile-friendly web UI with multi-printer queue. Prometheus /metrics for SREs. WebRTC chamber camera under 100ms latency.'
+            body: 'One `boo` daemon publishes everything. ~69 HA entities via MQTT discovery (per-tray AMS color + humidity warnings). 25 MCP tools for Claude / Cursor / Continue. Mobile-friendly web UI with multi-printer queue + AMS metadata editor. Prometheus /metrics for SREs. WebRTC chamber camera under 100ms latency.'
         },
         {
             tag: 'ANALYZER',
@@ -95,7 +101,7 @@ Summary: 6 pass, 2 warn, 0 fail`;
         <!-- Status pill — "we shipped a thing" -->
         <div class="pill mb-[var(--space-2xl)]">
             <span class="pill-dot"></span>
-            <span>v1.2.0 shipped · 12 new commands</span>
+            <span>v1.3.0 · ams sync · printables chain · short verbs (boo / ha / led)</span>
         </div>
 
         <!-- Wordmark — its own row so it can breathe. Hero size capped at
