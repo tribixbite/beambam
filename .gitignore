@@ -36,6 +36,7 @@ _egl_probe.*
 _*.py
 !__init__.py
 !beambam/cli/_helpers.py
+!beambam/_version.py
 
 # Local scripts that bake printer-specific values
 *.local
