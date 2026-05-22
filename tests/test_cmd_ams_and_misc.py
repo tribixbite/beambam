@@ -41,7 +41,9 @@ class _Cap:
 
 @pytest.fixture
 def captured(monkeypatch):
-    import x2d_bridge
+    from beambam.cli.control import cmd_ams_load, cmd_ams_unload
+    from beambam.cli.info import cmd_printers
+    from beambam.cli.lan import cmd_files
 
     bucket: list[dict] = []
 
@@ -49,7 +51,7 @@ def captured(monkeypatch):
         def publish(self, payload, qos=1, **kw):
             bucket.append(payload)
 
-    monkeypatch.setattr(x2d_bridge, "X2DClient", _Cli)
+    monkeypatch.setattr("beambam.mqtt.X2DClient", _Cli)
     return bucket
 
 
@@ -68,10 +70,12 @@ def _args(**kw) -> argparse.Namespace:
 def test_ams_unload_uses_255_sentinel_for_target_and_slot(captured):
     """Per DeviceManager.cpp:1537 — target=255 + slot=255 is the unload
     sentinel; firmware interprets it as 'eject whatever is loaded'."""
-    import x2d_bridge
+    from beambam.cli.control import cmd_ams_load, cmd_ams_unload
+    from beambam.cli.info import cmd_printers
+    from beambam.cli.lan import cmd_files
 
     args = _args(ams=0, curr_temp=210, tar_temp=210)
-    rc = x2d_bridge.cmd_ams_unload(args)
+    rc = cmd_ams_unload(args)
     assert rc == 0
     body = captured[0]["print"]
     assert body["command"] == "ams_change_filament"
@@ -101,10 +105,12 @@ def test_ams_unload_uses_255_sentinel_for_target_and_slot(captured):
 def test_ams_load_computes_correct_tray_id(captured, ams, slot, expected_target):
     """Lock in the tray_id arithmetic — getting this wrong loads the
     wrong filament."""
-    import x2d_bridge
+    from beambam.cli.control import cmd_ams_load, cmd_ams_unload
+    from beambam.cli.info import cmd_printers
+    from beambam.cli.lan import cmd_files
 
     args = _args(ams=ams, slot=slot, curr_temp=215, tar_temp=215)
-    rc = x2d_bridge.cmd_ams_load(args)
+    rc = cmd_ams_load(args)
     assert rc == 0
     body = captured[0]["print"]
     assert body["command"] == "ams_change_filament"
@@ -118,7 +124,9 @@ def test_ams_load_computes_correct_tray_id(captured, ams, slot, expected_target)
 
 def test_cmd_printers_lists_default_section(monkeypatch, tmp_path, capsys):
     """`[printer]` (no name) is emitted with name = ''."""
-    import x2d_bridge
+    from beambam.cli.control import cmd_ams_load, cmd_ams_unload
+    from beambam.cli.info import cmd_printers
+    from beambam.cli.lan import cmd_files
 
     creds = tmp_path / "credentials"
     creds.write_text(
@@ -134,7 +142,7 @@ def test_cmd_printers_lists_default_section(monkeypatch, tmp_path, capsys):
     (home / ".x2d").mkdir(exist_ok=True)
     (home / ".x2d" / "credentials").write_text(creds.read_text())
 
-    rc = x2d_bridge.cmd_printers(_args())
+    rc = cmd_printers(_args())
     assert rc == 0
     data = json.loads(capsys.readouterr().out)
     assert "printers" in data
@@ -147,7 +155,9 @@ def test_cmd_printers_lists_default_section(monkeypatch, tmp_path, capsys):
 
 def test_cmd_printers_lists_named_sections(monkeypatch, tmp_path, capsys):
     """`[printer:studio]` + `[printer:lab]` are emitted with their names."""
-    import x2d_bridge
+    from beambam.cli.control import cmd_ams_load, cmd_ams_unload
+    from beambam.cli.info import cmd_printers
+    from beambam.cli.lan import cmd_files
 
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path.parent))
     home = tmp_path.parent
@@ -157,7 +167,7 @@ def test_cmd_printers_lists_named_sections(monkeypatch, tmp_path, capsys):
         "[printer:lab]\nip = 10.0.0.2\nserial = BBB\n"
     )
 
-    rc = x2d_bridge.cmd_printers(_args())
+    rc = cmd_printers(_args())
     assert rc == 0
     data = json.loads(capsys.readouterr().out)
     names = sorted(p["name"] for p in data["printers"])
@@ -166,11 +176,13 @@ def test_cmd_printers_lists_named_sections(monkeypatch, tmp_path, capsys):
 
 def test_cmd_printers_empty_when_no_creds_file(monkeypatch, tmp_path, capsys):
     """No file → no exception, just an empty list."""
-    import x2d_bridge
+    from beambam.cli.control import cmd_ams_load, cmd_ams_unload
+    from beambam.cli.info import cmd_printers
+    from beambam.cli.lan import cmd_files
 
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
     # tmp_path has no .x2d/ — the handler must not crash on missing file.
-    rc = x2d_bridge.cmd_printers(_args())
+    rc = cmd_printers(_args())
     assert rc == 0
     data = json.loads(capsys.readouterr().out)
     assert data == {"printers": []}
@@ -178,7 +190,9 @@ def test_cmd_printers_empty_when_no_creds_file(monkeypatch, tmp_path, capsys):
 
 def test_cmd_printers_ignores_non_printer_sections(monkeypatch, tmp_path, capsys):
     """Foreign sections like `[other]` must not appear in the output."""
-    import x2d_bridge
+    from beambam.cli.control import cmd_ams_load, cmd_ams_unload
+    from beambam.cli.info import cmd_printers
+    from beambam.cli.lan import cmd_files
 
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path.parent))
     home = tmp_path.parent
@@ -188,7 +202,7 @@ def test_cmd_printers_ignores_non_printer_sections(monkeypatch, tmp_path, capsys
         "[other]\nstuff = ignored\n"
     )
 
-    rc = x2d_bridge.cmd_printers(_args())
+    rc = cmd_printers(_args())
     assert rc == 0
     data = json.loads(capsys.readouterr().out)
     assert len(data["printers"]) == 1
@@ -221,7 +235,9 @@ class _FakeTunnel:
 
 def test_cmd_files_emits_json(monkeypatch, capsys):
     """`--json` flag emits a parseable list with name/path/size/is_dir."""
-    import x2d_bridge
+    from beambam.cli.control import cmd_ams_load, cmd_ams_unload
+    from beambam.cli.info import cmd_printers
+    from beambam.cli.lan import cmd_files
 
     # Inject a fake `runtime.network_shim.file_tunnel` module so the
     # import inside cmd_files resolves to our stub.
@@ -232,7 +248,7 @@ def test_cmd_files_emits_json(monkeypatch, capsys):
     monkeypatch.setitem(sys.modules, "runtime.network_shim.file_tunnel", fake_mod)
 
     args = _args(kind="sdcard", json=True)
-    rc = x2d_bridge.cmd_files(args)
+    rc = cmd_files(args)
     assert rc == 0
     parsed = json.loads(capsys.readouterr().out)
     assert isinstance(parsed, list) and len(parsed) == 2
@@ -244,7 +260,9 @@ def test_cmd_files_emits_json(monkeypatch, capsys):
 def test_cmd_files_sys_exits_on_missing_module(monkeypatch):
     """If file_tunnel can't be imported (deleted, broken install), the
     handler must sys.exit with a useful error — NOT a raw ImportError."""
-    import x2d_bridge
+    from beambam.cli.control import cmd_ams_load, cmd_ams_unload
+    from beambam.cli.info import cmd_printers
+    from beambam.cli.lan import cmd_files
 
     # Inject a broken module that raises ImportError on attribute access.
     # `sys.modules[name] = None` makes `from <name> import X` raise
@@ -252,6 +270,6 @@ def test_cmd_files_sys_exits_on_missing_module(monkeypatch):
     monkeypatch.setitem(sys.modules, "runtime.network_shim.file_tunnel",
                          None)
     with pytest.raises(SystemExit) as exc:
-        x2d_bridge.cmd_files(_args(kind="sdcard", json=True))
+        cmd_files(_args(kind="sdcard", json=True))
     # SystemExit's str() should mention the missing module.
     assert "file_tunnel" in str(exc.value)

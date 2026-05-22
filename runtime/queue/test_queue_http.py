@@ -27,7 +27,8 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT))
 
-import x2d_bridge
+from beambam import _WEB_DIR_DEFAULT
+from beambam.serve_http import _serve_http
 from runtime.queue.manager import QueueManager
 
 
@@ -75,7 +76,7 @@ def main() -> int:
         mgr = QueueManager(dispatch_cb=lambda j: True,
                             path=Path(tmp) / "queue.json")
         threading.Thread(
-            target=x2d_bridge._serve_http,
+            target=_serve_http,
             kwargs={
                 "bind":          f"127.0.0.1:{port}",
                 "get_state":     lambda _p: {"print": {"nozzle_temper": 27.0}},
@@ -84,7 +85,7 @@ def main() -> int:
                 "auth_token":    None,
                 "printer_names": ["studio", "garage"],
                 "clients":       {"studio": object(), "garage": object()},
-                "web_dir":       x2d_bridge._WEB_DIR_DEFAULT,
+                "web_dir":       _WEB_DIR_DEFAULT,
                 "queue_mgr":     mgr,
             },
             daemon=True, name="qhttp-test",

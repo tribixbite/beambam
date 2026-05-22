@@ -25,7 +25,8 @@ import threading
 import time
 import urllib.request
 
-import x2d_bridge
+from beambam import _WEB_DIR_DEFAULT
+from beambam.serve_http import _serve_http
 
 
 def _free_port() -> int:
@@ -68,7 +69,7 @@ def main() -> int:
 
     mock = _MockClient()
     server_thread = threading.Thread(
-        target=x2d_bridge._serve_http,
+        target=_serve_http,
         kwargs={
             "bind":          f"127.0.0.1:{port}",
             "get_state":     get_state,
@@ -77,7 +78,7 @@ def main() -> int:
             "auth_token":    None,
             "printer_names": [""],
             "clients":       {"": mock},
-            "web_dir":       x2d_bridge._WEB_DIR_DEFAULT,
+            "web_dir":       _WEB_DIR_DEFAULT,
         },
         daemon=True,
         name="webui-test-server",

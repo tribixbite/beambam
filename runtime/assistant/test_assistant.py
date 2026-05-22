@@ -27,7 +27,8 @@ from unittest import mock
 REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT))
 
-import x2d_bridge
+from beambam import _WEB_DIR_DEFAULT
+from beambam.serve_http import _serve_http
 from runtime.assistant import router
 
 
@@ -172,7 +173,7 @@ def main() -> int:
     # ----- 5. HTTP /assistant/chat -----
     port = _free_port()
     threading.Thread(
-        target=x2d_bridge._serve_http,
+        target=_serve_http,
         kwargs={
             "bind":          f"127.0.0.1:{port}",
             "get_state":     lambda _p: {"print": {"nozzle_temper": 27.0}},
@@ -181,7 +182,7 @@ def main() -> int:
             "auth_token":    None,
             "printer_names": [""],
             "clients":       {"": object()},
-            "web_dir":       x2d_bridge._WEB_DIR_DEFAULT,
+            "web_dir":       _WEB_DIR_DEFAULT,
         },
         daemon=True, name="ass-http",
     ).start()

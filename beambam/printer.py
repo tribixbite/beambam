@@ -55,7 +55,7 @@ class Printer(AbstractContextManager):
     """
 
     def __init__(self, creds=None) -> None:
-        from x2d_bridge import Creds  # noqa: E402
+        from beambam.config import Creds
         if creds is None:
             creds = Creds.resolve(argparse.Namespace(
                 ip=None, code=None, serial=None, printer=None,
@@ -75,7 +75,7 @@ class Printer(AbstractContextManager):
     @classmethod
     def from_credentials_section(cls, name: str) -> "Printer":
         """Pick the named [printer:NAME] section from ~/.x2d/credentials."""
-        from x2d_bridge import Creds
+        from beambam.config import Creds
         creds = Creds.resolve(argparse.Namespace(
             ip=None, code=None, serial=None, printer=name,
         ))
@@ -88,7 +88,7 @@ class Printer(AbstractContextManager):
         """X2DClient — opens MQTT on first access. The connection stays
         live until disconnect() / close() / __exit__."""
         if self._client is None:
-            from x2d_bridge import X2DClient
+            from beambam.mqtt import X2DClient
             self._client = X2DClient(self.creds)
             self._client.connect()
         return self._client
@@ -147,7 +147,7 @@ class Printer(AbstractContextManager):
         auto-derives bed_type+bed_temp from the .gcode.3mf — pass it
         when uploading + printing in one shot. Returns the wire payload
         that was published (useful for logging/diff in simulate mode)."""
-        from x2d_bridge import start_print
+        from beambam.print_job import start_print
         if use_ams is None:
             use_ams = ams is not None
         if ams is None:
@@ -273,20 +273,20 @@ class Printer(AbstractContextManager):
         """FTPS-implicit-TLS upload to the printer's SD card. No MQTT;
         the file appears on the Files screen for manual or scripted
         start_print() later."""
-        from x2d_bridge import upload_file
+        from beambam.ftps import upload_file
         upload_file(self.creds, Path(local_path), remote_name=remote_name)
 
     def download(self, remote_name: str, local_path: str | Path) -> int:
         """FTPS download of a file from the printer's SD card. Returns
         bytes written. Works while the printer is mid-print (uses the
         fixed TLS context — see x2d_bridge.download_file)."""
-        from x2d_bridge import download_file
+        from beambam.ftps import download_file
         return download_file(self.creds, remote_name, Path(local_path))
 
     def list_files(self, path: str = "") -> list[str]:
         """List the printer's SD card. Empty path returns root entries;
         pass `'sdcard'` for the actual SD mount."""
-        from x2d_bridge import list_files
+        from beambam.ftps import list_files
         return list_files(self.creds, path)
 
     # --- Cloud (lazy) ------------------------------------------------------

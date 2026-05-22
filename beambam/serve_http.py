@@ -118,10 +118,7 @@ def _serve_http(bind: str,
     port = int(port_part)
     names = list(printer_names) if printer_names else [""]
     if web_dir is None:
-        # Lazy-import to dodge the
-        # serve_http → x2d_bridge → serve_http import cycle. Phase 5e.5
-        # will move _WEB_DIR_DEFAULT out of the bridge entirely.
-        from x2d_bridge import _WEB_DIR_DEFAULT
+        from beambam import _WEB_DIR_DEFAULT
         web_dir = _WEB_DIR_DEFAULT
     clients = clients or {}
 

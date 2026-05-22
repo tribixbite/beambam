@@ -552,7 +552,7 @@ def cmd_fcm_harvest(args: argparse.Namespace) -> int:
     import sys
     # Just shell out to the standalone harvester so we keep the code
     # in one place and don't duplicate the harvester logic.
-    from x2d_bridge import X2D_ROOT_PATH
+    from beambam import X2D_ROOT_PATH
     script = (X2D_ROOT_PATH / "runtime" / "handy_extract"
               / "fcm_snapshot_harvest.py")
     if not script.exists():
@@ -596,7 +596,8 @@ def cmd_fetch(args: argparse.Namespace) -> int:
     # Bridge-internal constants kept in x2d_bridge so a single source of
     # truth survives (PACKAGE_VERSION is wired up from pyproject; the
     # root path comes from the env override).
-    from x2d_bridge import PACKAGE_VERSION, X2D_ROOT_PATH
+    from beambam import X2D_ROOT_PATH
+    from beambam._version import PACKAGE_VERSION
 
     out_dir = Path(args.out_dir).expanduser()
     out_dir.mkdir(parents=True, exist_ok=True)

@@ -36,7 +36,8 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DOCS_DIR = REPO_ROOT / "docs"
 
-import x2d_bridge
+from beambam import _WEB_DIR_DEFAULT
+from beambam.serve_http import _serve_http
 
 
 def _free_port() -> int:
@@ -79,18 +80,19 @@ def _spawn_daemon_subprocess(port: int) -> subprocess.Popen:
     runner.write_text(
         "import sys, time, json\n"
         "sys.path.insert(0, " + repr(str(REPO_ROOT)) + ")\n"
-        "import x2d_bridge\n"
+        "from beambam import _WEB_DIR_DEFAULT\n"
+        "from beambam.serve_http import _serve_http\n"
         "FAKE = " + repr(_FAKE_STATE) + "\n"
         "def gs(_p): return FAKE\n"
         "def gt(_p): return time.time() - 2\n"
         "class M:\n"
         "    def publish(self, p): pass\n"
-        "x2d_bridge._serve_http(\n"
+        "_serve_http(\n"
         "    bind=\"127.0.0.1:" + str(port) + "\",\n"
         "    get_state=gs, get_last_ts=gt, max_staleness=30,\n"
         "    auth_token=None, printer_names=[\"\"],\n"
         "    clients={\"\": M()},\n"
-        "    web_dir=x2d_bridge._WEB_DIR_DEFAULT)\n"
+        "    web_dir=_WEB_DIR_DEFAULT)\n"
     )
     proc = subprocess.Popen(
         [sys.executable, str(runner)],

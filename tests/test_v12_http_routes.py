@@ -25,10 +25,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import pytest
 
 from beambam.state_hub import StateHub
-from x2d_bridge import _serve_http
-
-
-# Tests in this file spawn `_serve_http` on a free loopback port. macOS
+from beambam.serve_http import _serve_http
 # GHA + Windows GHA runners are slower at MQTT / HTTP round-trips under
 # matrix-test load than Linux, but the underlying Python stdlib code is
 # platform-agnostic. We give every test a generous _wait_for_port window

@@ -30,7 +30,8 @@ from amqtt.broker import Broker
 REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT))
 
-import x2d_bridge
+from beambam import _WEB_DIR_DEFAULT
+from beambam.serve_http import _serve_http
 from runtime.ha.publisher import HAPublisher
 
 
@@ -89,7 +90,7 @@ def _spawn_daemon(port: int, mock: _MockX2DClient,
         },
     }
     t = threading.Thread(
-        target=x2d_bridge._serve_http,
+        target=_serve_http,
         kwargs={
             "bind":          f"127.0.0.1:{port}",
             "get_state":     lambda _p: fake_state,
@@ -103,7 +104,7 @@ def _spawn_daemon(port: int, mock: _MockX2DClient,
             # has [printer:studio] / [printer:garage] sections.
             "printer_names": [mock.label],
             "clients":       {mock.label: mock},
-            "web_dir":       x2d_bridge._WEB_DIR_DEFAULT,
+            "web_dir":       _WEB_DIR_DEFAULT,
         },
         daemon=True, name=f"daemon-{mock.label}",
     )

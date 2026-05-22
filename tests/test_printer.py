@@ -14,7 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import pytest
 
 from beambam import Printer
-from x2d_bridge import Creds
+from beambam.config import Creds
 
 
 FAKE = Creds(ip="192.168.0.999", code="ABCD1234", serial="FAKESERIAL12345")
@@ -115,11 +115,11 @@ def test_home_default_xyz():
 
 
 def test_upload_delegates_to_ftps_helper(tmp_path):
-    """Printer.upload calls x2d_bridge.upload_file with our creds + path."""
+    """Printer.upload calls beambam.ftps.upload_file with our creds + path."""
     fixture = tmp_path / "f.3mf"
     fixture.write_bytes(b"x")
     p = Printer(creds=FAKE)
-    with patch("x2d_bridge.upload_file") as upload:
+    with patch("beambam.ftps.upload_file") as upload:
         p.upload(fixture)
         upload.assert_called_once_with(FAKE, fixture, remote_name=None)
         upload.reset_mock()
@@ -129,7 +129,7 @@ def test_upload_delegates_to_ftps_helper(tmp_path):
 
 def test_list_files_delegates(tmp_path):
     p = Printer(creds=FAKE)
-    with patch("x2d_bridge.list_files", return_value=["a", "b"]) as lf:
+    with patch("beambam.ftps.list_files", return_value=["a", "b"]) as lf:
         result = p.list_files()
         assert result == ["a", "b"]
         lf.assert_called_once_with(FAKE, "")

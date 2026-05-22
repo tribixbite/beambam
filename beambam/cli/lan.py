@@ -209,7 +209,7 @@ def cmd_slice_print(args: argparse.Namespace) -> int:
     # X2D_ROOT_PATH stays in x2d_bridge as a single source of truth for
     # the install root; cmd_slice_print subprocesses back into the
     # slicer + (when --3mf input) BambuStudio under it.
-    from x2d_bridge import X2D_ROOT_PATH
+    from beambam import X2D_ROOT_PATH
 
     stl = Path(args.stl)
     if not stl.exists():

@@ -202,7 +202,7 @@ def test_live_state_matches_print_state_schema(live_printer):
     state keys exist as TypedDict keys somewhere in our schema (or in
     the dict[str, Any] catch-alls)."""
     from beambam import Printer
-    from x2d_bridge import Creds
+    from beambam.config import Creds
     with Printer(Creds(ip=live_printer.ip, code=live_printer.code,
                        serial=live_printer.serial)) as p:
         s = p.state(timeout=10.0)

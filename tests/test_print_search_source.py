@@ -41,7 +41,7 @@ def _fake_printables_response(items: list) -> bytes:
 
 
 def test_print_search_source_printables_hits_graphql(monkeypatch, capsys):
-    import x2d_bridge
+    from beambam.cli.cloud import cmd_print_search
 
     captured_urls: list[str] = []
 
@@ -61,7 +61,7 @@ def test_print_search_source_printables_hits_graphql(monkeypatch, capsys):
 
     monkeypatch.setattr(__import__("urllib.request").request, "urlopen", _stub)
 
-    rc = x2d_bridge.cmd_print_search(
+    rc = cmd_print_search(
         _ns(source="printables", query="pokeball", pick=1,
             dry_run_pick=True))
     assert rc == 0
@@ -73,7 +73,7 @@ def test_print_search_source_printables_hits_graphql(monkeypatch, capsys):
 
 def test_print_search_source_printables_no_results_returns_1(monkeypatch,
                                                               capsys):
-    import x2d_bridge
+    from beambam.cli.cloud import cmd_print_search
 
     class _FakeResp:
         def __init__(self, body): self._body = body
@@ -85,14 +85,14 @@ def test_print_search_source_printables_no_results_returns_1(monkeypatch,
         __import__("urllib.request").request, "urlopen",
         lambda req, timeout=None: _FakeResp(_fake_printables_response([])))
 
-    rc = x2d_bridge.cmd_print_search(_ns(source="printables", query="xyz"))
+    rc = cmd_print_search(_ns(source="printables", query="xyz"))
     assert rc == 1
     assert "no Printables results" in capsys.readouterr().out
 
 
 def test_print_search_source_printables_out_of_range_pick(monkeypatch,
                                                            capsys):
-    import x2d_bridge
+    from beambam.cli.cloud import cmd_print_search
 
     class _FakeResp:
         def __init__(self, body): self._body = body
@@ -107,7 +107,7 @@ def test_print_search_source_printables_out_of_range_pick(monkeypatch,
              "downloadCount": 0, "user": {"publicUsername": "u"}},
         ])))
 
-    rc = x2d_bridge.cmd_print_search(
+    rc = cmd_print_search(
         _ns(source="printables", pick=99, dry_run_pick=True))
     assert rc == 2
     assert "out of range" in capsys.readouterr().out
@@ -122,7 +122,7 @@ def test_print_search_printables_chains_into_fetch_then_slice(monkeypatch,
     `beambam fetch <url>` then `beambam slice-print <stl>` via subprocess.
     Verifies argv shape + that --copies / --scale-pct / --color flags
     propagate to slice-print."""
-    import x2d_bridge
+    from beambam.cli.cloud import cmd_print_search
 
     # Stub the Printables GraphQL search.
     class _FakeResp:
@@ -167,7 +167,7 @@ def test_print_search_printables_chains_into_fetch_then_slice(monkeypatch,
     monkeypatch.setattr("subprocess.run", _fake_run)
     monkeypatch.setattr("subprocess.call", _fake_call)
 
-    rc = x2d_bridge.cmd_print_search(_ns(
+    rc = cmd_print_search(_ns(
         source="printables", query="pokeball", pick=1,
         dry_run_pick=False,
         scale_pct=75.0, copies=4, color="#FF0000",
@@ -187,7 +187,7 @@ def test_print_search_printables_dry_run_pick_skips_chain(monkeypatch,
                                                           capsys):
     """`--dry-run-pick` must NOT touch subprocess — the picker alone
     is what's tested."""
-    import x2d_bridge
+    from beambam.cli.cloud import cmd_print_search
 
     class _FakeResp:
         def __init__(self, body): self._body = body
@@ -207,7 +207,7 @@ def test_print_search_printables_dry_run_pick_skips_chain(monkeypatch,
     monkeypatch.setattr("subprocess.call",
                         lambda *a, **kw: called.append("call") or 0)
 
-    rc = x2d_bridge.cmd_print_search(_ns(
+    rc = cmd_print_search(_ns(
         source="printables", pick=1, dry_run_pick=True))
     assert rc == 0
     assert called == []        # neither was invoked
@@ -217,7 +217,7 @@ def test_print_search_printables_fetch_no_printable_returns_1(monkeypatch,
                                                                 capsys):
     """If fetch saved a download but no .stl/.3mf/.obj, the chain must
     surface a clean error (exit 1), not crash."""
-    import x2d_bridge
+    from beambam.cli.cloud import cmd_print_search
 
     class _FakeResp:
         def __init__(self, body): self._body = body
@@ -247,7 +247,7 @@ def test_print_search_printables_fetch_no_printable_returns_1(monkeypatch,
     monkeypatch.setattr("subprocess.call",
                         lambda *a, **kw: called_call.append(a) or 0)
 
-    rc = x2d_bridge.cmd_print_search(_ns(
+    rc = cmd_print_search(_ns(
         source="printables", pick=1, dry_run_pick=False))
     assert rc == 1
     assert called_call == []    # slice-print never reached
@@ -261,7 +261,7 @@ def test_print_search_source_makerworld_uses_cloud_client(monkeypatch,
                                                            capsys):
     """Default --source makerworld must call CloudClient.search_designs,
     NOT urlopen against printables."""
-    import x2d_bridge
+    from beambam.cli.cloud import cmd_print_search
     import cloud_client
 
     cli_session = cloud_client.Session(
@@ -284,7 +284,7 @@ def test_print_search_source_makerworld_uses_cloud_client(monkeypatch,
         __import__("urllib.request").request, "urlopen",
         lambda *a, **kw: pytest.fail("makerworld path leaked into urlopen"))
 
-    rc = x2d_bridge.cmd_print_search(
+    rc = cmd_print_search(
         _ns(source="makerworld", query="cube", pick=1, dry_run_pick=True))
     assert rc == 0
     out = capsys.readouterr().out

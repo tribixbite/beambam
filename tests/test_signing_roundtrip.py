@@ -22,7 +22,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding
 
-from x2d_bridge import sign_payload, BAMBU_CERT_ID
+from beambam.mqtt import sign_payload, BAMBU_CERT_ID
 from bambu_cert import BAMBU_PRIVATE_KEY_PEM
 
 

@@ -22,14 +22,20 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import pytest  # noqa: F401
 
-import x2d_bridge as bridge
+# `bridge` was `import x2d_bridge as bridge` before the v1.5 split;
+# cmd_reboot + _reboot_payload + _publish_one now live in
+# beambam.cli.control, which is the patch target the tests below
+# reach via `patch.object(bridge, ...)`.
+from beambam.cli import control as bridge
+
+from beambam.cli.control import _reboot_payload, cmd_reboot
 
 
 def test_reboot_payload_is_m999_via_gcode_line():
     """The wire payload should be `gcode_line` with `M999\\n` — the
     same shape `cmd_gcode` produces, so it flows through the existing
     signed-MQTT path with no special handling needed."""
-    payload = bridge._reboot_payload()
+    payload = _reboot_payload()
     assert payload["print"]["command"] == "gcode_line"
     assert payload["print"]["param"] == "M999\n"
     # sequence_id is monotonic — present and non-empty
@@ -45,7 +51,7 @@ def test_reboot_dry_run_is_default_and_does_not_publish():
     buf = io.StringIO()
     with patch.object(bridge, "_publish_one") as pub, \
          redirect_stderr(buf):
-        rc = bridge.cmd_reboot(args)
+        rc = cmd_reboot(args)
     assert rc == 0
     pub.assert_not_called()
     err = buf.getvalue()
@@ -70,7 +76,7 @@ def test_reboot_confirm_calls_publish_one_with_m999():
     args = argparse.Namespace(confirm=True,
                               ip=None, code=None, serial=None, printer=None)
     with patch.object(bridge, "_publish_one", return_value=0) as pub:
-        rc = bridge.cmd_reboot(args)
+        rc = cmd_reboot(args)
     assert rc == 0
     assert pub.call_count == 1
     _, sent_payload = pub.call_args[0]
@@ -84,5 +90,5 @@ def test_reboot_confirm_propagates_publish_failure():
     args = argparse.Namespace(confirm=True,
                               ip=None, code=None, serial=None, printer=None)
     with patch.object(bridge, "_publish_one", return_value=3):
-        rc = bridge.cmd_reboot(args)
+        rc = cmd_reboot(args)
     assert rc == 3

@@ -90,9 +90,9 @@ def _ns(**kw) -> argparse.Namespace:
 
 
 def test_cloud_logout_clears_session_and_prints(fake_cli, capsys):
-    import x2d_bridge
+    from beambam.cli.cloud import cmd_cloud_browse, cmd_cloud_comment_reply, cmd_cloud_design, cmd_cloud_history, cmd_cloud_logout, cmd_cloud_messages, cmd_cloud_points, cmd_cloud_profile, cmd_cloud_search, cmd_cloud_task, cmd_cloud_ttcode, cmd_cloud_unread
 
-    rc = x2d_bridge.cmd_cloud_logout(_ns())
+    rc = cmd_cloud_logout(_ns())
     assert rc == 0
     fake_cli.logout.assert_called_once()
     assert "session cleared" in capsys.readouterr().out
@@ -103,14 +103,14 @@ def test_cloud_logout_clears_session_and_prints(fake_cli, capsys):
 
 def test_cloud_history_calls_get_user_tasks(fake_cli, capsys):
     """Limits are forwarded as ints; output is the pretty table by default."""
-    import x2d_bridge
+    from beambam.cli.cloud import cmd_cloud_browse, cmd_cloud_comment_reply, cmd_cloud_design, cmd_cloud_history, cmd_cloud_logout, cmd_cloud_messages, cmd_cloud_points, cmd_cloud_profile, cmd_cloud_search, cmd_cloud_task, cmd_cloud_ttcode, cmd_cloud_unread
 
     fake_cli.get_user_tasks.return_value = [
         {"id": 1, "status": 2, "deviceId": "dev1",
          "designTitle": "Cube", "designId": 99,
          "startTime": 1700000000, "endTime": 1700001200},
     ]
-    rc = x2d_bridge.cmd_cloud_history(_ns(limit=10))
+    rc = cmd_cloud_history(_ns(limit=10))
     assert rc == 0
     fake_cli.get_user_tasks.assert_called_once_with(limit=10)
     out = capsys.readouterr().out
@@ -119,28 +119,28 @@ def test_cloud_history_calls_get_user_tasks(fake_cli, capsys):
 
 
 def test_cloud_history_json_flag_emits_parseable_json(fake_cli, capsys):
-    import x2d_bridge
+    from beambam.cli.cloud import cmd_cloud_browse, cmd_cloud_comment_reply, cmd_cloud_design, cmd_cloud_history, cmd_cloud_logout, cmd_cloud_messages, cmd_cloud_points, cmd_cloud_profile, cmd_cloud_search, cmd_cloud_task, cmd_cloud_ttcode, cmd_cloud_unread
 
     fake_cli.get_user_tasks.return_value = [{"id": 5}]
-    rc = x2d_bridge.cmd_cloud_history(_ns(json=True))
+    rc = cmd_cloud_history(_ns(json=True))
     assert rc == 0
     parsed = json.loads(capsys.readouterr().out)
     assert parsed == [{"id": 5}]
 
 
 def test_cloud_history_empty_returns_0_and_prints_notice(fake_cli, capsys):
-    import x2d_bridge
+    from beambam.cli.cloud import cmd_cloud_browse, cmd_cloud_comment_reply, cmd_cloud_design, cmd_cloud_history, cmd_cloud_logout, cmd_cloud_messages, cmd_cloud_points, cmd_cloud_profile, cmd_cloud_search, cmd_cloud_task, cmd_cloud_ttcode, cmd_cloud_unread
 
     fake_cli.get_user_tasks.return_value = []
-    rc = x2d_bridge.cmd_cloud_history(_ns())
+    rc = cmd_cloud_history(_ns())
     assert rc == 0
     assert "(no tasks)" in capsys.readouterr().out
 
 
 def test_cloud_history_logged_out_returns_1(anon_cli, capsys):
-    import x2d_bridge
+    from beambam.cli.cloud import cmd_cloud_browse, cmd_cloud_comment_reply, cmd_cloud_design, cmd_cloud_history, cmd_cloud_logout, cmd_cloud_messages, cmd_cloud_points, cmd_cloud_profile, cmd_cloud_search, cmd_cloud_task, cmd_cloud_ttcode, cmd_cloud_unread
 
-    rc = x2d_bridge.cmd_cloud_history(_ns())
+    rc = cmd_cloud_history(_ns())
     assert rc == 1
     err = capsys.readouterr().err
     assert "not logged in" in err
@@ -150,10 +150,10 @@ def test_cloud_history_logged_out_returns_1(anon_cli, capsys):
 def test_cloud_history_cloud_error_returns_1(fake_cli, capsys):
     """Network/API errors must surface as exit 1 + stderr message — never
     bubble as a raw traceback."""
-    import x2d_bridge
+    from beambam.cli.cloud import cmd_cloud_browse, cmd_cloud_comment_reply, cmd_cloud_design, cmd_cloud_history, cmd_cloud_logout, cmd_cloud_messages, cmd_cloud_points, cmd_cloud_profile, cmd_cloud_search, cmd_cloud_task, cmd_cloud_ttcode, cmd_cloud_unread
 
     fake_cli.get_user_tasks.side_effect = cloud_client.CloudError("403 Forbidden")
-    rc = x2d_bridge.cmd_cloud_history(_ns())
+    rc = cmd_cloud_history(_ns())
     assert rc == 1
     err = capsys.readouterr().err
     assert "cloud API failed" in err
@@ -164,10 +164,10 @@ def test_cloud_history_cloud_error_returns_1(fake_cli, capsys):
 
 
 def test_cloud_task_forwards_id_to_client(fake_cli, capsys):
-    import x2d_bridge
+    from beambam.cli.cloud import cmd_cloud_browse, cmd_cloud_comment_reply, cmd_cloud_design, cmd_cloud_history, cmd_cloud_logout, cmd_cloud_messages, cmd_cloud_points, cmd_cloud_profile, cmd_cloud_search, cmd_cloud_task, cmd_cloud_ttcode, cmd_cloud_unread
 
     fake_cli.get_task.return_value = {"task": "details"}
-    rc = x2d_bridge.cmd_cloud_task(_ns(task_id=42))
+    rc = cmd_cloud_task(_ns(task_id=42))
     assert rc == 0
     fake_cli.get_task.assert_called_once_with(42)
     parsed = json.loads(capsys.readouterr().out)
@@ -175,9 +175,9 @@ def test_cloud_task_forwards_id_to_client(fake_cli, capsys):
 
 
 def test_cloud_task_logged_out_returns_1(anon_cli):
-    import x2d_bridge
+    from beambam.cli.cloud import cmd_cloud_browse, cmd_cloud_comment_reply, cmd_cloud_design, cmd_cloud_history, cmd_cloud_logout, cmd_cloud_messages, cmd_cloud_points, cmd_cloud_profile, cmd_cloud_search, cmd_cloud_task, cmd_cloud_ttcode, cmd_cloud_unread
 
-    assert x2d_bridge.cmd_cloud_task(_ns(task_id=1)) == 1
+    assert cmd_cloud_task(_ns(task_id=1)) == 1
 
 
 # ===== cmd_cloud_messages =================================================
@@ -185,12 +185,12 @@ def test_cloud_task_logged_out_returns_1(anon_cli):
 
 def test_cloud_messages_counts_only_default(fake_cli, capsys):
     """Without --list, only get_message_count() is called."""
-    import x2d_bridge
+    from beambam.cli.cloud import cmd_cloud_browse, cmd_cloud_comment_reply, cmd_cloud_design, cmd_cloud_history, cmd_cloud_logout, cmd_cloud_messages, cmd_cloud_points, cmd_cloud_profile, cmd_cloud_search, cmd_cloud_task, cmd_cloud_ttcode, cmd_cloud_unread
 
     fake_cli.get_message_count.return_value = {
         "unreadTotal": 7, "deviceCount": 3, "designCount": 4,
     }
-    rc = x2d_bridge.cmd_cloud_messages(_ns(list=False))
+    rc = cmd_cloud_messages(_ns(list=False))
     assert rc == 0
     fake_cli.get_message_count.assert_called_once()
     fake_cli.get_messages.assert_not_called()
@@ -199,47 +199,47 @@ def test_cloud_messages_counts_only_default(fake_cli, capsys):
 
 
 def test_cloud_messages_with_list_also_pulls_messages(fake_cli, capsys):
-    import x2d_bridge
+    from beambam.cli.cloud import cmd_cloud_browse, cmd_cloud_comment_reply, cmd_cloud_design, cmd_cloud_history, cmd_cloud_logout, cmd_cloud_messages, cmd_cloud_points, cmd_cloud_profile, cmd_cloud_search, cmd_cloud_task, cmd_cloud_ttcode, cmd_cloud_unread
 
     fake_cli.get_message_count.return_value = {"unreadTotal": 1}
     fake_cli.get_messages.return_value = {"hits": [
         {"id": 100, "type": 1, "title": "Print finished"},
     ]}
-    rc = x2d_bridge.cmd_cloud_messages(_ns(list=True, limit=5))
+    rc = cmd_cloud_messages(_ns(list=True, limit=5))
     assert rc == 0
     fake_cli.get_messages.assert_called_once_with(limit=5)
     assert "Print finished" in capsys.readouterr().out
 
 
 def test_cloud_messages_logged_out_returns_1(anon_cli):
-    import x2d_bridge
+    from beambam.cli.cloud import cmd_cloud_browse, cmd_cloud_comment_reply, cmd_cloud_design, cmd_cloud_history, cmd_cloud_logout, cmd_cloud_messages, cmd_cloud_points, cmd_cloud_profile, cmd_cloud_search, cmd_cloud_task, cmd_cloud_ttcode, cmd_cloud_unread
 
-    assert x2d_bridge.cmd_cloud_messages(_ns()) == 1
+    assert cmd_cloud_messages(_ns()) == 1
 
 
 # ===== cmd_cloud_search ===================================================
 
 
 def test_cloud_search_forwards_query_limit_offset(fake_cli, capsys):
-    import x2d_bridge
+    from beambam.cli.cloud import cmd_cloud_browse, cmd_cloud_comment_reply, cmd_cloud_design, cmd_cloud_history, cmd_cloud_logout, cmd_cloud_messages, cmd_cloud_points, cmd_cloud_profile, cmd_cloud_search, cmd_cloud_task, cmd_cloud_ttcode, cmd_cloud_unread
 
     fake_cli.search_designs.return_value = {"total": 0, "hits": []}
-    rc = x2d_bridge.cmd_cloud_search(_ns(query="rumi", limit=5, offset=10))
+    rc = cmd_cloud_search(_ns(query="rumi", limit=5, offset=10))
     assert rc == 0
     fake_cli.search_designs.assert_called_once_with("rumi", limit=5, offset=10)
 
 
 def test_cloud_search_logged_out(anon_cli):
-    import x2d_bridge
+    from beambam.cli.cloud import cmd_cloud_browse, cmd_cloud_comment_reply, cmd_cloud_design, cmd_cloud_history, cmd_cloud_logout, cmd_cloud_messages, cmd_cloud_points, cmd_cloud_profile, cmd_cloud_search, cmd_cloud_task, cmd_cloud_ttcode, cmd_cloud_unread
 
-    assert x2d_bridge.cmd_cloud_search(_ns(query="cube")) == 1
+    assert cmd_cloud_search(_ns(query="cube")) == 1
 
 
 def test_cloud_search_cloud_error_returns_1(fake_cli, capsys):
-    import x2d_bridge
+    from beambam.cli.cloud import cmd_cloud_browse, cmd_cloud_comment_reply, cmd_cloud_design, cmd_cloud_history, cmd_cloud_logout, cmd_cloud_messages, cmd_cloud_points, cmd_cloud_profile, cmd_cloud_search, cmd_cloud_task, cmd_cloud_ttcode, cmd_cloud_unread
 
     fake_cli.search_designs.side_effect = cloud_client.CloudError("500")
-    rc = x2d_bridge.cmd_cloud_search(_ns(query="x"))
+    rc = cmd_cloud_search(_ns(query="x"))
     assert rc == 1
     assert "cloud API failed" in capsys.readouterr().err
 
@@ -248,10 +248,10 @@ def test_cloud_search_cloud_error_returns_1(fake_cli, capsys):
 
 
 def test_cloud_browse_forwards_nav_arg(fake_cli):
-    import x2d_bridge
+    from beambam.cli.cloud import cmd_cloud_browse, cmd_cloud_comment_reply, cmd_cloud_design, cmd_cloud_history, cmd_cloud_logout, cmd_cloud_messages, cmd_cloud_points, cmd_cloud_profile, cmd_cloud_search, cmd_cloud_task, cmd_cloud_ttcode, cmd_cloud_unread
 
     fake_cli.browse_designs_by_nav.return_value = {"total": 0, "hits": []}
-    rc = x2d_bridge.cmd_cloud_browse(_ns(nav="Foryou", limit=10, offset=0))
+    rc = cmd_cloud_browse(_ns(nav="Foryou", limit=10, offset=0))
     assert rc == 0
     fake_cli.browse_designs_by_nav.assert_called_once_with(
         "Foryou", limit=10, offset=0,
@@ -259,9 +259,9 @@ def test_cloud_browse_forwards_nav_arg(fake_cli):
 
 
 def test_cloud_browse_logged_out(anon_cli):
-    import x2d_bridge
+    from beambam.cli.cloud import cmd_cloud_browse, cmd_cloud_comment_reply, cmd_cloud_design, cmd_cloud_history, cmd_cloud_logout, cmd_cloud_messages, cmd_cloud_points, cmd_cloud_profile, cmd_cloud_search, cmd_cloud_task, cmd_cloud_ttcode, cmd_cloud_unread
 
-    assert x2d_bridge.cmd_cloud_browse(_ns(nav="Trending")) == 1
+    assert cmd_cloud_browse(_ns(nav="Trending")) == 1
 
 
 # ===== cmd_cloud_design ===================================================
@@ -271,14 +271,14 @@ def test_cloud_design_forwards_design_id(fake_cli, capsys):
     """Default (no --json): the handler pretty-prints fields like
     'Title' / 'Slug' / 'Design ID' — assert the design id appears in
     that human format."""
-    import x2d_bridge
+    from beambam.cli.cloud import cmd_cloud_browse, cmd_cloud_comment_reply, cmd_cloud_design, cmd_cloud_history, cmd_cloud_logout, cmd_cloud_messages, cmd_cloud_points, cmd_cloud_profile, cmd_cloud_search, cmd_cloud_task, cmd_cloud_ttcode, cmd_cloud_unread
 
     fake_cli.get_design.return_value = {
         "id": 1623016, "title": "Calibration Cube", "slug": "calibration-cube",
         "designCreator": {"publicUsername": "tester"},
         "instances": [],
     }
-    rc = x2d_bridge.cmd_cloud_design(_ns(design_id=1623016))
+    rc = cmd_cloud_design(_ns(design_id=1623016))
     assert rc == 0
     fake_cli.get_design.assert_called_once_with(1623016)
     out = capsys.readouterr().out
@@ -287,10 +287,10 @@ def test_cloud_design_forwards_design_id(fake_cli, capsys):
 
 
 def test_cloud_design_json_emits_full_payload(fake_cli, capsys):
-    import x2d_bridge
+    from beambam.cli.cloud import cmd_cloud_browse, cmd_cloud_comment_reply, cmd_cloud_design, cmd_cloud_history, cmd_cloud_logout, cmd_cloud_messages, cmd_cloud_points, cmd_cloud_profile, cmd_cloud_search, cmd_cloud_task, cmd_cloud_ttcode, cmd_cloud_unread
 
     fake_cli.get_design.return_value = {"id": 1, "title": "x"}
-    rc = x2d_bridge.cmd_cloud_design(_ns(design_id=1, json=True))
+    rc = cmd_cloud_design(_ns(design_id=1, json=True))
     assert rc == 0
     parsed = json.loads(capsys.readouterr().out)
     assert parsed["id"] == 1
@@ -302,12 +302,12 @@ def test_cloud_design_json_emits_full_payload(fake_cli, capsys):
 def test_cloud_ttcode_happy_path(fake_cli, capsys):
     """Lucky case (handy-class session): get_ttcode returns the TUTK
     creds dict and we pretty-print each field."""
-    import x2d_bridge
+    from beambam.cli.cloud import cmd_cloud_browse, cmd_cloud_comment_reply, cmd_cloud_design, cmd_cloud_history, cmd_cloud_logout, cmd_cloud_messages, cmd_cloud_points, cmd_cloud_profile, cmd_cloud_search, cmd_cloud_task, cmd_cloud_ttcode, cmd_cloud_unread
 
     fake_cli.get_ttcode.return_value = {
         "ttcode": "GHIJ", "uid": "AAA111", "auth_key": "secret",
     }
-    rc = x2d_bridge.cmd_cloud_ttcode(
+    rc = cmd_cloud_ttcode(
         argparse.Namespace(serial="00P9AJ000000000", json=False))
     assert rc == 0
     fake_cli.get_ttcode.assert_called_once_with("00P9AJ000000000")
@@ -320,12 +320,12 @@ def test_cloud_ttcode_happy_path(fake_cli, capsys):
 def test_cloud_ttcode_403_explains_gate(fake_cli, capsys):
     """The documented expected 403 for non-Handy sessions must surface
     as a clean stderr explanation (not a raw API error message)."""
-    import x2d_bridge
+    from beambam.cli.cloud import cmd_cloud_browse, cmd_cloud_comment_reply, cmd_cloud_design, cmd_cloud_history, cmd_cloud_logout, cmd_cloud_messages, cmd_cloud_points, cmd_cloud_profile, cmd_cloud_search, cmd_cloud_task, cmd_cloud_ttcode, cmd_cloud_unread
 
     fake_cli.get_ttcode.side_effect = cloud_client.CloudError(
         "HTTP 403 on GET /v1/iot-service/api/user/ttcode: Forbidden",
         status=403)
-    rc = x2d_bridge.cmd_cloud_ttcode(
+    rc = cmd_cloud_ttcode(
         argparse.Namespace(serial="X", json=False))
     assert rc == 1
     err = capsys.readouterr().err
@@ -337,11 +337,11 @@ def test_cloud_ttcode_other_error_falls_through_to_generic_message(
         fake_cli, capsys):
     """Non-403 CloudErrors take the standard `cloud API failed: ...`
     path — the 403 special-case is the only gated message."""
-    import x2d_bridge
+    from beambam.cli.cloud import cmd_cloud_browse, cmd_cloud_comment_reply, cmd_cloud_design, cmd_cloud_history, cmd_cloud_logout, cmd_cloud_messages, cmd_cloud_points, cmd_cloud_profile, cmd_cloud_search, cmd_cloud_task, cmd_cloud_ttcode, cmd_cloud_unread
 
     fake_cli.get_ttcode.side_effect = cloud_client.CloudError(
         "HTTP 500 on GET ...: Internal Server Error", status=500)
-    rc = x2d_bridge.cmd_cloud_ttcode(
+    rc = cmd_cloud_ttcode(
         argparse.Namespace(serial="X", json=False))
     assert rc == 1
     err = capsys.readouterr().err
@@ -350,10 +350,10 @@ def test_cloud_ttcode_other_error_falls_through_to_generic_message(
 
 
 def test_cloud_ttcode_json_emits_raw_dict(fake_cli, capsys):
-    import x2d_bridge
+    from beambam.cli.cloud import cmd_cloud_browse, cmd_cloud_comment_reply, cmd_cloud_design, cmd_cloud_history, cmd_cloud_logout, cmd_cloud_messages, cmd_cloud_points, cmd_cloud_profile, cmd_cloud_search, cmd_cloud_task, cmd_cloud_ttcode, cmd_cloud_unread
 
     fake_cli.get_ttcode.return_value = {"ttcode": "X", "uid": "Y"}
-    rc = x2d_bridge.cmd_cloud_ttcode(
+    rc = cmd_cloud_ttcode(
         argparse.Namespace(serial="X", json=True))
     assert rc == 0
     parsed = json.loads(capsys.readouterr().out)
@@ -361,9 +361,9 @@ def test_cloud_ttcode_json_emits_raw_dict(fake_cli, capsys):
 
 
 def test_cloud_ttcode_logged_out_returns_1(anon_cli, capsys):
-    import x2d_bridge
+    from beambam.cli.cloud import cmd_cloud_browse, cmd_cloud_comment_reply, cmd_cloud_design, cmd_cloud_history, cmd_cloud_logout, cmd_cloud_messages, cmd_cloud_points, cmd_cloud_profile, cmd_cloud_search, cmd_cloud_task, cmd_cloud_ttcode, cmd_cloud_unread
 
-    rc = x2d_bridge.cmd_cloud_ttcode(
+    rc = cmd_cloud_ttcode(
         argparse.Namespace(serial="X", json=False))
     assert rc == 1
     assert "not logged in" in capsys.readouterr().err
@@ -376,11 +376,11 @@ def test_cloud_ttcode_logged_out_returns_1(anon_cli, capsys):
 def test_cloud_comment_reply_forwards_id_and_text(fake_cli, capsys):
     """Happy path: text is forwarded to reply_to_comment + a confirmation
     is printed citing the new reply id."""
-    import x2d_bridge
+    from beambam.cli.cloud import cmd_cloud_browse, cmd_cloud_comment_reply, cmd_cloud_design, cmd_cloud_history, cmd_cloud_logout, cmd_cloud_messages, cmd_cloud_points, cmd_cloud_profile, cmd_cloud_search, cmd_cloud_task, cmd_cloud_ttcode, cmd_cloud_unread
 
     fake_cli.reply_to_comment.return_value = {"id": 4242,
                                                 "content": "thanks!"}
-    rc = x2d_bridge.cmd_cloud_comment_reply(
+    rc = cmd_cloud_comment_reply(
         _ns(comment_id=987654, text="thanks!"))
     assert rc == 0
     fake_cli.reply_to_comment.assert_called_once_with(987654, "thanks!")
@@ -390,11 +390,11 @@ def test_cloud_comment_reply_forwards_id_and_text(fake_cli, capsys):
 
 
 def test_cloud_comment_reply_json_emits_full_record(fake_cli, capsys):
-    import x2d_bridge
+    from beambam.cli.cloud import cmd_cloud_browse, cmd_cloud_comment_reply, cmd_cloud_design, cmd_cloud_history, cmd_cloud_logout, cmd_cloud_messages, cmd_cloud_points, cmd_cloud_profile, cmd_cloud_search, cmd_cloud_task, cmd_cloud_ttcode, cmd_cloud_unread
 
     payload = {"id": 4242, "content": "thanks!", "parentId": 987654}
     fake_cli.reply_to_comment.return_value = payload
-    rc = x2d_bridge.cmd_cloud_comment_reply(
+    rc = cmd_cloud_comment_reply(
         _ns(comment_id=987654, text="thanks!", json=True))
     assert rc == 0
     parsed = json.loads(capsys.readouterr().out)
@@ -402,9 +402,9 @@ def test_cloud_comment_reply_json_emits_full_record(fake_cli, capsys):
 
 
 def test_cloud_comment_reply_logged_out_returns_1(anon_cli, capsys):
-    import x2d_bridge
+    from beambam.cli.cloud import cmd_cloud_browse, cmd_cloud_comment_reply, cmd_cloud_design, cmd_cloud_history, cmd_cloud_logout, cmd_cloud_messages, cmd_cloud_points, cmd_cloud_profile, cmd_cloud_search, cmd_cloud_task, cmd_cloud_ttcode, cmd_cloud_unread
 
-    rc = x2d_bridge.cmd_cloud_comment_reply(
+    rc = cmd_cloud_comment_reply(
         _ns(comment_id=1, text="x"))
     assert rc == 1
     assert "not logged in" in capsys.readouterr().err
@@ -414,11 +414,11 @@ def test_cloud_comment_reply_logged_out_returns_1(anon_cli, capsys):
 def test_cloud_comment_reply_cloud_error_returns_1(fake_cli, capsys):
     """CloudError from the client (incl. our own empty-text guard) must
     surface as exit 1 + stderr, never as a raw traceback."""
-    import x2d_bridge
+    from beambam.cli.cloud import cmd_cloud_browse, cmd_cloud_comment_reply, cmd_cloud_design, cmd_cloud_history, cmd_cloud_logout, cmd_cloud_messages, cmd_cloud_points, cmd_cloud_profile, cmd_cloud_search, cmd_cloud_task, cmd_cloud_ttcode, cmd_cloud_unread
 
     fake_cli.reply_to_comment.side_effect = cloud_client.CloudError(
         "403 forbidden")
-    rc = x2d_bridge.cmd_cloud_comment_reply(
+    rc = cmd_cloud_comment_reply(
         _ns(comment_id=1, text="x"))
     assert rc == 1
     assert "cloud API failed" in capsys.readouterr().err
@@ -429,14 +429,14 @@ def test_cloud_comment_reply_cloud_error_returns_1(fake_cli, capsys):
 
 
 def test_cloud_profile_pretty_prints_known_fields(fake_cli, capsys):
-    import x2d_bridge
+    from beambam.cli.cloud import cmd_cloud_browse, cmd_cloud_comment_reply, cmd_cloud_design, cmd_cloud_history, cmd_cloud_logout, cmd_cloud_messages, cmd_cloud_points, cmd_cloud_profile, cmd_cloud_search, cmd_cloud_task, cmd_cloud_ttcode, cmd_cloud_unread
     fake_cli.get_my_profile.return_value = {
         "uid": 42, "handle": "claude", "name": "Claude",
         "bio": "test", "designCount": 7, "fanCount": 3,
         "followCount": 11, "likeCount": 99,
         "futureFieldWeIgnore": "shrug",
     }
-    rc = x2d_bridge.cmd_cloud_profile(_ns())
+    rc = cmd_cloud_profile(_ns())
     assert rc == 0
     out = capsys.readouterr().out
     assert "uid" in out and "42" in out
@@ -447,23 +447,23 @@ def test_cloud_profile_pretty_prints_known_fields(fake_cli, capsys):
 
 
 def test_cloud_profile_json_round_trips(fake_cli, capsys):
-    import x2d_bridge
+    from beambam.cli.cloud import cmd_cloud_browse, cmd_cloud_comment_reply, cmd_cloud_design, cmd_cloud_history, cmd_cloud_logout, cmd_cloud_messages, cmd_cloud_points, cmd_cloud_profile, cmd_cloud_search, cmd_cloud_task, cmd_cloud_ttcode, cmd_cloud_unread
     fake_cli.get_my_profile.return_value = {"uid": 1, "handle": "x"}
-    rc = x2d_bridge.cmd_cloud_profile(_ns(json=True))
+    rc = cmd_cloud_profile(_ns(json=True))
     assert rc == 0
     assert json.loads(capsys.readouterr().out)["uid"] == 1
 
 
 def test_cloud_profile_logged_out_returns_1(anon_cli):
-    import x2d_bridge
-    rc = x2d_bridge.cmd_cloud_profile(_ns())
+    from beambam.cli.cloud import cmd_cloud_browse, cmd_cloud_comment_reply, cmd_cloud_design, cmd_cloud_history, cmd_cloud_logout, cmd_cloud_messages, cmd_cloud_points, cmd_cloud_profile, cmd_cloud_search, cmd_cloud_task, cmd_cloud_ttcode, cmd_cloud_unread
+    rc = cmd_cloud_profile(_ns())
     assert rc == 1
 
 
 def test_cloud_profile_cloud_error_returns_1(fake_cli, capsys):
-    import x2d_bridge
+    from beambam.cli.cloud import cmd_cloud_browse, cmd_cloud_comment_reply, cmd_cloud_design, cmd_cloud_history, cmd_cloud_logout, cmd_cloud_messages, cmd_cloud_points, cmd_cloud_profile, cmd_cloud_search, cmd_cloud_task, cmd_cloud_ttcode, cmd_cloud_unread
     fake_cli.get_my_profile.side_effect = cloud_client.CloudError("500")
-    rc = x2d_bridge.cmd_cloud_profile(_ns())
+    rc = cmd_cloud_profile(_ns())
     assert rc == 1
     assert "cloud API failed" in capsys.readouterr().err
 
@@ -472,13 +472,13 @@ def test_cloud_profile_cloud_error_returns_1(fake_cli, capsys):
 
 
 def test_cloud_points_prints_each_leaf(fake_cli, capsys):
-    import x2d_bridge
+    from beambam.cli.cloud import cmd_cloud_browse, cmd_cloud_comment_reply, cmd_cloud_design, cmd_cloud_history, cmd_cloud_logout, cmd_cloud_messages, cmd_cloud_points, cmd_cloud_profile, cmd_cloud_search, cmd_cloud_task, cmd_cloud_ttcode, cmd_cloud_unread
     fake_cli.get_points_progress.return_value = {
         "totalPoints": 1234,
         "weeklyEarned": 50,
         "rewards": [{"id": 1}, {"id": 2}],   # nested list compacted
     }
-    rc = x2d_bridge.cmd_cloud_points(_ns())
+    rc = cmd_cloud_points(_ns())
     assert rc == 0
     out = capsys.readouterr().out
     assert "totalPoints" in out and "1234" in out
@@ -487,16 +487,16 @@ def test_cloud_points_prints_each_leaf(fake_cli, capsys):
 
 
 def test_cloud_points_json_flag(fake_cli, capsys):
-    import x2d_bridge
+    from beambam.cli.cloud import cmd_cloud_browse, cmd_cloud_comment_reply, cmd_cloud_design, cmd_cloud_history, cmd_cloud_logout, cmd_cloud_messages, cmd_cloud_points, cmd_cloud_profile, cmd_cloud_search, cmd_cloud_task, cmd_cloud_ttcode, cmd_cloud_unread
     fake_cli.get_points_progress.return_value = {"totalPoints": 1234}
-    rc = x2d_bridge.cmd_cloud_points(_ns(json=True))
+    rc = cmd_cloud_points(_ns(json=True))
     assert rc == 0
     assert json.loads(capsys.readouterr().out)["totalPoints"] == 1234
 
 
 def test_cloud_points_logged_out_returns_1(anon_cli):
-    import x2d_bridge
-    rc = x2d_bridge.cmd_cloud_points(_ns())
+    from beambam.cli.cloud import cmd_cloud_browse, cmd_cloud_comment_reply, cmd_cloud_design, cmd_cloud_history, cmd_cloud_logout, cmd_cloud_messages, cmd_cloud_points, cmd_cloud_profile, cmd_cloud_search, cmd_cloud_task, cmd_cloud_ttcode, cmd_cloud_unread
+    rc = cmd_cloud_points(_ns())
     assert rc == 1
 
 
@@ -504,10 +504,10 @@ def test_cloud_points_logged_out_returns_1(anon_cli):
 
 
 def test_cloud_unread_sums_both_endpoints(fake_cli, capsys):
-    import x2d_bridge
+    from beambam.cli.cloud import cmd_cloud_browse, cmd_cloud_comment_reply, cmd_cloud_design, cmd_cloud_history, cmd_cloud_logout, cmd_cloud_messages, cmd_cloud_points, cmd_cloud_profile, cmd_cloud_search, cmd_cloud_task, cmd_cloud_ttcode, cmd_cloud_unread
     fake_cli.get_trouble_unread_count.return_value = 3
     fake_cli.get_makerworld_unread_count.return_value = 5
-    rc = x2d_bridge.cmd_cloud_unread(_ns())
+    rc = cmd_cloud_unread(_ns())
     assert rc == 0
     out = capsys.readouterr().out
     assert "aftersale_tickets" in out and " 3" in out
@@ -516,25 +516,25 @@ def test_cloud_unread_sums_both_endpoints(fake_cli, capsys):
 
 
 def test_cloud_unread_json_shape(fake_cli, capsys):
-    import x2d_bridge
+    from beambam.cli.cloud import cmd_cloud_browse, cmd_cloud_comment_reply, cmd_cloud_design, cmd_cloud_history, cmd_cloud_logout, cmd_cloud_messages, cmd_cloud_points, cmd_cloud_profile, cmd_cloud_search, cmd_cloud_task, cmd_cloud_ttcode, cmd_cloud_unread
     fake_cli.get_trouble_unread_count.return_value = 2
     fake_cli.get_makerworld_unread_count.return_value = 4
-    rc = x2d_bridge.cmd_cloud_unread(_ns(json=True))
+    rc = cmd_cloud_unread(_ns(json=True))
     assert rc == 0
     parsed = json.loads(capsys.readouterr().out)
     assert parsed == {"aftersale_tickets": 2, "makerworld": 4, "total": 6}
 
 
 def test_cloud_unread_logged_out_returns_1(anon_cli):
-    import x2d_bridge
-    rc = x2d_bridge.cmd_cloud_unread(_ns())
+    from beambam.cli.cloud import cmd_cloud_browse, cmd_cloud_comment_reply, cmd_cloud_design, cmd_cloud_history, cmd_cloud_logout, cmd_cloud_messages, cmd_cloud_points, cmd_cloud_profile, cmd_cloud_search, cmd_cloud_task, cmd_cloud_ttcode, cmd_cloud_unread
+    rc = cmd_cloud_unread(_ns())
     assert rc == 1
 
 
 def test_cloud_unread_cloud_error_returns_1(fake_cli, capsys):
-    import x2d_bridge
+    from beambam.cli.cloud import cmd_cloud_browse, cmd_cloud_comment_reply, cmd_cloud_design, cmd_cloud_history, cmd_cloud_logout, cmd_cloud_messages, cmd_cloud_points, cmd_cloud_profile, cmd_cloud_search, cmd_cloud_task, cmd_cloud_ttcode, cmd_cloud_unread
     fake_cli.get_trouble_unread_count.side_effect = cloud_client.CloudError(
         "401")
-    rc = x2d_bridge.cmd_cloud_unread(_ns())
+    rc = cmd_cloud_unread(_ns())
     assert rc == 1
     assert "cloud API failed" in capsys.readouterr().err

@@ -40,7 +40,7 @@ def _count_subcommands() -> int:
     sys.path.insert(0, str(REPO))
     import argparse as _ap
 
-    import x2d_bridge  # type: ignore
+    from beambam.cli import main
 
     captured: dict[str, _ap.ArgumentParser] = {}
     orig = _ap.ArgumentParser.parse_args
@@ -54,7 +54,7 @@ def _count_subcommands() -> int:
     sys.argv = ["x2d_bridge.py"]
     try:
         try:
-            x2d_bridge.main()
+            main()
         except SystemExit:
             pass
     finally:

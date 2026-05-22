@@ -72,7 +72,7 @@ def test_subparser_pub_rejects_bad_qos():
 def test_cmd_mqtt_pub_invalid_json(capsys):
     args = _ns(mqtt_cmd="pub", payload="not json", file=None, qos=1)
     with patch("beambam.config.Creds.resolve") as resolve:
-        from x2d_bridge import Creds as RealCreds
+        from beambam.config import Creds as RealCreds
         resolve.return_value = RealCreds(ip="1.2.3.4", code="12345678",
                                           serial="FAKE")
         rc = cmd_mqtt(args)
@@ -84,7 +84,7 @@ def test_cmd_mqtt_pub_missing_payload(capsys):
     """Neither positional payload nor --file → error."""
     args = _ns(mqtt_cmd="pub", payload=None, file=None, qos=1)
     with patch("beambam.config.Creds.resolve") as resolve:
-        from x2d_bridge import Creds as RealCreds
+        from beambam.config import Creds as RealCreds
         resolve.return_value = RealCreds(ip="1.2.3.4", code="12345678",
                                           serial="FAKE")
         rc = cmd_mqtt(args)
@@ -97,7 +97,7 @@ def test_cmd_mqtt_pub_publishes_payload(capsys):
                file=None, qos=1)
     with patch("beambam.config.Creds.resolve") as resolve, \
          patch("beambam.mqttcli.publish_signed") as pub:
-        from x2d_bridge import Creds as RealCreds
+        from beambam.config import Creds as RealCreds
         resolve.return_value = RealCreds(ip="1.2.3.4", code="12345678",
                                           serial="FAKE")
         rc = cmd_mqtt(args)
@@ -114,7 +114,7 @@ def test_cmd_mqtt_pub_reads_from_file(tmp_path):
     args = _ns(mqtt_cmd="pub", payload=None, file=str(payload_file), qos=1)
     with patch("beambam.config.Creds.resolve") as resolve, \
          patch("beambam.mqttcli.publish_signed") as pub:
-        from x2d_bridge import Creds as RealCreds
+        from beambam.config import Creds as RealCreds
         resolve.return_value = RealCreds(ip="1.2.3.4", code="12345678",
                                           serial="FAKE")
         rc = cmd_mqtt(args)
@@ -127,7 +127,7 @@ def test_cmd_mqtt_pub_reads_from_stdin(monkeypatch):
     args = _ns(mqtt_cmd="pub", payload=None, file="-", qos=1)
     with patch("beambam.config.Creds.resolve") as resolve, \
          patch("beambam.mqttcli.publish_signed") as pub:
-        from x2d_bridge import Creds as RealCreds
+        from beambam.config import Creds as RealCreds
         resolve.return_value = RealCreds(ip="1.2.3.4", code="12345678",
                                           serial="FAKE")
         rc = cmd_mqtt(args)
@@ -140,7 +140,7 @@ def test_cmd_mqtt_pub_surfaces_publish_error(capsys):
     with patch("beambam.config.Creds.resolve") as resolve, \
          patch("beambam.mqttcli.publish_signed",
                 side_effect=ConnectionError("nope")):
-        from x2d_bridge import Creds as RealCreds
+        from beambam.config import Creds as RealCreds
         resolve.return_value = RealCreds(ip="1.2.3.4", code="12345678",
                                           serial="FAKE")
         rc = cmd_mqtt(args)
@@ -153,7 +153,7 @@ def test_cmd_mqtt_sub_delegates_to_subscribe_loop():
                raw=True, max_messages=3)
     with patch("beambam.config.Creds.resolve") as resolve, \
          patch("beambam.mqttcli.subscribe_loop", return_value=0) as sub:
-        from x2d_bridge import Creds as RealCreds
+        from beambam.config import Creds as RealCreds
         resolve.return_value = RealCreds(ip="1.2.3.4", code="12345678",
                                           serial="FAKE")
         rc = cmd_mqtt(args)
@@ -172,7 +172,7 @@ def test_cmd_mqtt_sub_delegates_to_subscribe_loop():
 def test_live_subscribe_receives_one_push(live_printer, tmp_path):
     """Real round-trip: subscribe to /report and receive at least one
     push (triggered by us sending a status request)."""
-    from x2d_bridge import Creds
+    from beambam.config import Creds
     creds = Creds(ip=live_printer.ip, code=live_printer.code,
                   serial=live_printer.serial)
     out = io.StringIO()

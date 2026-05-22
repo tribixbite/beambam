@@ -25,13 +25,45 @@ Source-of-truth payload shapes from BambuStudio:
 from __future__ import annotations
 
 import argparse
+import json
 import sys
+
+# Import the MODULES (not the symbols) so the Creds + X2DClient lookups
+# inside `_publish_one` go through `beambam.config.Creds` and
+# `beambam.mqtt.X2DClient` attribute access at call time. That way
+# `monkeypatch.setattr("beambam.mqtt.X2DClient", _Cli)` actually
+# reaches the publish path — vs. a `from ... import X2DClient` here
+# which would freeze the binding at module load and dodge the patch.
+from beambam import config as _config
+from beambam import mqtt as _mqtt
+
+
+def _publish_one(args: argparse.Namespace, payload: dict) -> int:
+    """Connect, publish one signed-MQTT payload, disconnect, echo JSON.
+
+    The wire workhorse for ~17 LAN-control verbs (pause / resume /
+    stop / gcode / home / level / set-temp / chamber-light / reboot /
+    jog / record / timelapse / resolution / fod-check / ams-load /
+    ams-unload).
+
+    Tests can monkeypatch either `beambam.mqtt.X2DClient` (canonical)
+    or `beambam.config.Creds.resolve` (for credential override) —
+    both reach the publish path because we resolve the attributes at
+    call time, not at module-load."""
+    creds = _config.Creds.resolve(args)
+    cli = _mqtt.X2DClient(creds)
+    cli.connect()
+    try:
+        cli.publish(payload)
+    finally:
+        cli.disconnect()
+    print(json.dumps(payload, indent=2))
+    return 0
 
 
 def _publish(args: argparse.Namespace, payload: dict) -> int:
-    """Lazy proxy to x2d_bridge._publish_one (LAN connect + sign + ack-wait
-    state machine still lives in the monolith)."""
-    from x2d_bridge import _publish_one
+    """Alias kept for the dozen handlers below that grew up calling
+    `_publish` instead of `_publish_one`."""
     return _publish_one(args, payload)
 
 

@@ -18,7 +18,7 @@ Workflow:
      anyway after the file load).
   4. Upload the file via x2d_bridge's implicit-FTPS uploader.
   5. Submit the full Jan-2025+ firmware-required project_file payload via
-     x2d_bridge.start_print, which handles RSA-SHA256 signing with the
+     start_print, which handles RSA-SHA256 signing with the
      publicly-leaked Bambu Connect cert (X2D / H2D / refreshed P1+X1
      firmwares reject unsigned publishes with err_code 84033543).
 
@@ -58,7 +58,10 @@ from pathlib import Path
 # Reuse x2d_bridge's signing/connection/upload/start_print path. This
 # requires bambu_cert.py (publicly-leaked Bambu Connect signing key) to
 # be importable next to x2d_bridge.py.
-import x2d_bridge
+from beambam.config import Creds
+from beambam.ftps import upload_file
+from beambam.mqtt import X2DClient
+from beambam.print_job import start_print
 import preflight_3mf
 
 log = logging.getLogger("lan_print")
@@ -329,9 +332,9 @@ def main() -> int:
                     len(fil_types), len(fil_types))
     expected_type = fil_types[0] if fil_types else None
 
-    creds = x2d_bridge.Creds.resolve(args)
+    creds = Creds.resolve(args)
     log.info("Connecting (signed MQTT) to %s [%s]…", creds.ip, creds.serial)
-    client = x2d_bridge.X2DClient(creds)
+    client = X2DClient(creds)
     client.connect()
 
     # Pre-flight check — uses the same X2DClient connection's first
@@ -489,13 +492,13 @@ def main() -> int:
 
     fname = args.file.name
     log.info("Uploading %s (%d B) via implicit-FTPS…", fname, args.file.stat().st_size)
-    x2d_bridge.upload_file(creds, args.file, remote_name=fname)
+    upload_file(creds, args.file, remote_name=fname)
     log.info("Upload complete")
 
     log.info("Sending signed start_print(plate=%d, ams_slots=%s, bed=%s, flow_cali=%s)",
              args.plate, chosen_slots, bed_type, not args.no_flow_cali)
     try:
-        x2d_bridge.start_print(
+        start_print(
             client, fname,
             use_ams=True,
             ams_slot=chosen_slots if len(chosen_slots) > 1 else chosen_slots[0],

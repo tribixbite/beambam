@@ -40,17 +40,27 @@ class _CapturingClient:
         self.published.append(payload)
 
 
-def _patch_bridge_publish(monkey_published: list[dict]) -> None:
-    """Install a capturing X2DClient.publish that pushes to the list."""
-    import x2d_bridge
+def _patch_bridge_publish(monkey_published: list[dict],
+                          monkeypatch=None) -> None:
+    """Install a capturing X2DClient.publish that pushes to the list.
+
+    Patches `beambam.mqtt.X2DClient` — `_publish_one` resolves the
+    class via `_mqtt.X2DClient` (module-attribute lookup) at call time,
+    so this is the canonical patch site after the bridge split."""
+    from unittest.mock import patch as _patch
 
     class _Cli(_CapturingClient):
         def publish(self, payload, qos=1, **kw):
             monkey_published.append(payload)
 
-    # _publish_one builds the client and calls connect/publish/disconnect.
-    # Inject our shim by patching the X2DClient class.
-    x2d_bridge.X2DClient = lambda *a, **kw: _Cli()  # type: ignore
+    if monkeypatch is not None:
+        monkeypatch.setattr("beambam.mqtt.X2DClient",
+                             lambda *a, **kw: _Cli())
+        return None
+    # Stand-alone path: return the unittest.mock patcher so callers
+    # can context-manage it themselves.
+    return _patch("beambam.mqtt.X2DClient",
+                  lambda *a, **kw: _Cli())
 
 
 def _make_args(**kw) -> argparse.Namespace:
@@ -67,14 +77,16 @@ def _make_args(**kw) -> argparse.Namespace:
     return argparse.Namespace(**defaults)
 
 
-def test_record_on_payload() -> None:
-    import x2d_bridge
+def test_record_on_payload(monkeypatch) -> None:
+    from beambam.cli._helpers import _camera_cmd
+    from beambam.cli.control import cmd_record, cmd_resolution, cmd_timelapse
+    from beambam.mqtt import X2DClient
 
     published: list[dict] = []
-    _patch_bridge_publish(published)
+    _patch_bridge_publish(published, monkeypatch=monkeypatch)
 
     args = _make_args(state="on")
-    rc = x2d_bridge.cmd_record(args)
+    rc = cmd_record(args)
     assert rc == 0, "cmd_record should return 0 on success"
     assert len(published) == 1, "expected one publish"
     p = published[0]
@@ -85,72 +97,84 @@ def test_record_on_payload() -> None:
     assert "sequence_id" in cam, cam
 
 
-def test_record_off_payload() -> None:
-    import x2d_bridge
+def test_record_off_payload(monkeypatch) -> None:
+    from beambam.cli._helpers import _camera_cmd
+    from beambam.cli.control import cmd_record, cmd_resolution, cmd_timelapse
+    from beambam.mqtt import X2DClient
 
     published: list[dict] = []
-    _patch_bridge_publish(published)
+    _patch_bridge_publish(published, monkeypatch=monkeypatch)
 
-    rc = x2d_bridge.cmd_record(_make_args(state="off"))
+    rc = cmd_record(_make_args(state="off"))
     assert rc == 0
     assert published[0]["camera"]["control"] == "disable"
 
 
-def test_timelapse_on_payload() -> None:
-    import x2d_bridge
+def test_timelapse_on_payload(monkeypatch) -> None:
+    from beambam.cli._helpers import _camera_cmd
+    from beambam.cli.control import cmd_record, cmd_resolution, cmd_timelapse
+    from beambam.mqtt import X2DClient
 
     published: list[dict] = []
-    _patch_bridge_publish(published)
+    _patch_bridge_publish(published, monkeypatch=monkeypatch)
 
-    rc = x2d_bridge.cmd_timelapse(_make_args(state="on"))
+    rc = cmd_timelapse(_make_args(state="on"))
     assert rc == 0
     cam = published[0]["camera"]
     assert cam["command"] == "ipcam_timelapse"
     assert cam["control"] == "enable"
 
 
-def test_resolution_payload() -> None:
-    import x2d_bridge
+def test_resolution_payload(monkeypatch) -> None:
+    from beambam.cli._helpers import _camera_cmd
+    from beambam.cli.control import cmd_record, cmd_resolution, cmd_timelapse
+    from beambam.mqtt import X2DClient
 
     for res in ("low", "medium", "high", "full"):
         published: list[dict] = []
-        _patch_bridge_publish(published)
+        _patch_bridge_publish(published, monkeypatch=monkeypatch)
 
-        rc = x2d_bridge.cmd_resolution(_make_args(resolution=res))
+        rc = cmd_resolution(_make_args(resolution=res))
         assert rc == 0, f"resolution={res} failed"
         cam = published[0]["camera"]
         assert cam["command"] == "ipcam_resolution_set"
         assert cam["resolution"] == res
 
 
-def test_invalid_state_rejected() -> None:
-    import x2d_bridge
+def test_invalid_state_rejected(monkeypatch) -> None:
+    from beambam.cli._helpers import _camera_cmd
+    from beambam.cli.control import cmd_record, cmd_resolution, cmd_timelapse
+    from beambam.mqtt import X2DClient
 
     # cmd_record sys.exits on invalid state — catch via SystemExit
     raised = False
     try:
-        x2d_bridge.cmd_record(_make_args(state="bogus"))
+        cmd_record(_make_args(state="bogus"))
     except SystemExit:
         raised = True
     assert raised, "cmd_record should sys.exit on invalid state"
 
 
-def test_invalid_resolution_rejected() -> None:
-    import x2d_bridge
+def test_invalid_resolution_rejected(monkeypatch) -> None:
+    from beambam.cli._helpers import _camera_cmd
+    from beambam.cli.control import cmd_record, cmd_resolution, cmd_timelapse
+    from beambam.mqtt import X2DClient
 
     raised = False
     try:
-        x2d_bridge.cmd_resolution(_make_args(resolution="ultra"))
+        cmd_resolution(_make_args(resolution="ultra"))
     except SystemExit:
         raised = True
     assert raised, "cmd_resolution should sys.exit on invalid value"
 
 
-def test_camera_helper_builds_correct_shape() -> None:
+def test_camera_helper_builds_correct_shape(monkeypatch) -> None:
     """Direct test of the _camera_cmd() helper to lock in the shape."""
-    import x2d_bridge
+    from beambam.cli._helpers import _camera_cmd
+    from beambam.cli.control import cmd_record, cmd_resolution, cmd_timelapse
+    from beambam.mqtt import X2DClient
 
-    p = x2d_bridge._camera_cmd("ipcam_test", control="enable", extra=42)
+    p = _camera_cmd("ipcam_test", control="enable", extra=42)
     assert "camera" in p
     cam = p["camera"]
     assert cam["command"] == "ipcam_test"

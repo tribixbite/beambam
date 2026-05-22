@@ -34,7 +34,9 @@ inline as well — the import paths stay stable.
 """
 from __future__ import annotations
 
+import os
 from importlib import metadata as _metadata
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from beambam.config import Creds
@@ -44,7 +46,21 @@ try:
     __version__ = _metadata.version("beambam")
 except _metadata.PackageNotFoundError:
     # Editable / source checkout without `pip install -e .`
-    __version__ = "1.2.0"
+    __version__ = "1.5.0+source"
+
+
+# Repo / install root. Drives things like the web/ dir + bs-bionic
+# slicer path. Overridable via the X2D_ROOT env var (handy for tests).
+# Resolves to the parent of beambam/, which is the repo root in dev
+# checkouts and the wheel-install site-packages dir in pip installs.
+X2D_ROOT_PATH = Path(os.environ.get(
+    "X2D_ROOT", str(Path(__file__).resolve().parent.parent)))
+
+# Path to the bundled `web/` static asset dir, used by the bridge's
+# HTTP server when the caller doesn't pass an explicit `web_dir`.
+# `web/` is force-included alongside the package in the wheel build
+# (see pyproject.toml's [tool.hatch.build.targets.wheel.force-include]).
+_WEB_DIR_DEFAULT = X2D_ROOT_PATH / "web"
 
 if TYPE_CHECKING:
     from cloud_client import CloudClient, CloudError
@@ -90,4 +106,5 @@ def __getattr__(name: str) -> Any:
 # "undefined in __all__". Keep both: __all__ is the "from beambam import *"
 # surface (Creds + Printer); the lazy names are addressable as `beambam.X`
 # directly but skip the * import expansion.
-__all__ = ["Creds", "Printer", "__version__"]
+__all__ = ["Creds", "Printer", "X2D_ROOT_PATH", "_WEB_DIR_DEFAULT",
+           "__version__"]

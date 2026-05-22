@@ -28,7 +28,9 @@ import time
 import urllib.error
 import urllib.request
 
-import x2d_bridge
+from beambam import _WEB_DIR_DEFAULT
+from beambam.serve_http import _serve_http
+from beambam.serve_http_helpers import _parse_cookie
 
 
 def _free_port() -> int:
@@ -42,7 +44,7 @@ def _spawn(port: int, *, auth_token: str | None) -> threading.Thread:
     def gt(_p): return time.time() - 2
 
     th = threading.Thread(
-        target=x2d_bridge._serve_http,
+        target=_serve_http,
         kwargs={
             "bind":          f"127.0.0.1:{port}",
             "get_state":     gs,
@@ -51,7 +53,7 @@ def _spawn(port: int, *, auth_token: str | None) -> threading.Thread:
             "auth_token":    auth_token,
             "printer_names": [""],
             "clients":       {},
-            "web_dir":       x2d_bridge._WEB_DIR_DEFAULT,
+            "web_dir":       _WEB_DIR_DEFAULT,
         },
         daemon=True,
         name=f"webui-auth-test-{port}",
@@ -179,7 +181,7 @@ def main() -> int:
           s == 200 and b"printer-name" in body, str(s))
 
     # _parse_cookie unit checks
-    pc = x2d_bridge._parse_cookie
+    pc = _parse_cookie
     check("_parse_cookie basic", pc("x2d_token=abc", "x2d_token") == "abc")
     check("_parse_cookie multi", pc("a=1; x2d_token=abc; b=2", "x2d_token") == "abc")
     check("_parse_cookie missing", pc("a=1; b=2", "x2d_token") == "")

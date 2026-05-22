@@ -1328,7 +1328,7 @@ def _print_search_printables(args: argparse.Namespace) -> int:
     import subprocess
     import tempfile
     from pathlib import Path
-    from x2d_bridge import X2D_ROOT_PATH
+    from beambam import X2D_ROOT_PATH
 
     bridge = X2D_ROOT_PATH / "x2d_bridge.py"
     with tempfile.TemporaryDirectory(prefix="print_search_pr_") as td:
@@ -1412,7 +1412,7 @@ def cmd_print_search(args: argparse.Namespace) -> int:
     import cloud_client
     # X2D_ROOT_PATH stays in x2d_bridge (single source of truth for the
     # install root; cmd_print_search subprocesses back into the bridge).
-    from x2d_bridge import X2D_ROOT_PATH
+    from beambam import X2D_ROOT_PATH
     cli = cloud_client.CloudClient.load_or_anonymous()
     if cli.session.empty:
         print("not logged in — run `cloud-login` first",
@@ -1543,7 +1543,7 @@ def cmd_cloud_print_design(args: argparse.Namespace) -> int:
     # X2D_ROOT_PATH stays in x2d_bridge as a single source of truth for
     # the install root (env-overridable). Same lazy-import pattern as
     # cmd_fetch in beambam.cli.info.
-    from x2d_bridge import X2D_ROOT_PATH
+    from beambam import X2D_ROOT_PATH
 
     cli = cloud_client.CloudClient.load_or_anonymous()
     if cli.session.empty:

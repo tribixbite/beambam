@@ -28,7 +28,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import pytest
 
-import x2d_bridge
+from beambam.cli import main
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -41,7 +41,7 @@ def _build_parser() -> argparse.ArgumentParser:
     # function source for the builder call. Even cleaner: call main()
     # with argv=["--help"] and short-circuit at the subparser step.
     #
-    # x2d_bridge.main signature: main() reading sys.argv. We monkey-patch
+    # main signature: main() reading sys.argv. We monkey-patch
     # ArgumentParser.parse_args to capture self at first call.
     captured: dict[str, argparse.ArgumentParser] = {}
     orig = argparse.ArgumentParser.parse_args
@@ -58,7 +58,7 @@ def _build_parser() -> argparse.ArgumentParser:
     try:
         try:
             with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
-                x2d_bridge.main()
+                main()
         except SystemExit:
             pass
     finally:

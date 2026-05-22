@@ -58,7 +58,7 @@ def test_cmd_download_default_local(tmp_path, monkeypatch):
     args = _parse("/cache/some-print.3mf")
     with patch("beambam.config.Creds.resolve") as resolve, \
          patch("beambam.ftps.download_file") as download:
-        from x2d_bridge import Creds as RealCreds
+        from beambam.config import Creds as RealCreds
         resolve.return_value = RealCreds(ip="1.2.3.4", code="ABCD1234",
                                           serial="FAKE")
         download.return_value = 1234
@@ -73,7 +73,7 @@ def test_cmd_download_explicit_local(tmp_path, capsys):
     args = _parse("/cache/x.3mf", str(tmp_path / "y.3mf"))
     with patch("beambam.config.Creds.resolve") as resolve, \
          patch("beambam.ftps.download_file") as download:
-        from x2d_bridge import Creds as RealCreds
+        from beambam.config import Creds as RealCreds
         resolve.return_value = RealCreds(ip="1.2.3.4", code="ABCD1234",
                                           serial="FAKE")
         download.return_value = 5678
@@ -92,7 +92,7 @@ def test_cmd_download_local_directory_appends_basename(tmp_path):
     args = _parse("/cache/eevee.3mf", str(dest_dir))
     with patch("beambam.config.Creds.resolve") as resolve, \
          patch("beambam.ftps.download_file") as download:
-        from x2d_bridge import Creds as RealCreds
+        from beambam.config import Creds as RealCreds
         resolve.return_value = RealCreds(ip="1.2.3.4", code="ABCD1234",
                                           serial="FAKE")
         download.return_value = 1
@@ -104,7 +104,7 @@ def test_cmd_download_quiet_suppresses_output(tmp_path, capsys):
     args = _parse("--quiet", "/cache/x.3mf", str(tmp_path / "y.3mf"))
     with patch("beambam.config.Creds.resolve") as resolve, \
          patch("beambam.ftps.download_file") as download:
-        from x2d_bridge import Creds as RealCreds
+        from beambam.config import Creds as RealCreds
         resolve.return_value = RealCreds(ip="1.2.3.4", code="ABCD1234",
                                           serial="FAKE")
         download.return_value = 1
@@ -116,7 +116,7 @@ def test_cmd_download_handles_ftps_error(tmp_path, capsys):
     args = _parse("/cache/x.3mf", str(tmp_path / "y.3mf"))
     with patch("beambam.config.Creds.resolve") as resolve, \
          patch("beambam.ftps.download_file") as download:
-        from x2d_bridge import Creds as RealCreds
+        from beambam.config import Creds as RealCreds
         resolve.return_value = RealCreds(ip="1.2.3.4", code="ABCD1234",
                                           serial="FAKE")
         download.side_effect = OSError("network unreachable")

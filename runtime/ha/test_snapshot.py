@@ -36,7 +36,8 @@ from amqtt.broker import Broker
 REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT))
 
-import x2d_bridge
+from beambam import _WEB_DIR_DEFAULT
+from beambam.serve_http import _serve_http
 from runtime.ha.publisher import HAPublisher
 
 
@@ -131,7 +132,7 @@ def main() -> int:
         def publish(self, p): self.published.append(p)
 
     threading.Thread(
-        target=x2d_bridge._serve_http,
+        target=_serve_http,
         kwargs={
             "bind":          f"127.0.0.1:{bridge_port}",
             "get_state":     lambda _p: {"print": {"nozzle_temper": 27.0}},
@@ -140,7 +141,7 @@ def main() -> int:
             "auth_token":    None,
             "printer_names": [""],
             "clients":       {"": M()},
-            "web_dir":       x2d_bridge._WEB_DIR_DEFAULT,
+            "web_dir":       _WEB_DIR_DEFAULT,
         },
         daemon=True, name="snap-test-bridge",
     ).start()

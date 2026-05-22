@@ -14,7 +14,7 @@ Each handler:
   1. Builds a payload dict via `_print_cmd(...)` or `_system_cmd(...)`
   2. Calls `_publish_one(args, payload)` → X2DClient.publish
 
-We mock X2DClient by replacing `x2d_bridge.X2DClient` with a capturing
+We mock X2DClient by replacing `X2DClient` with a capturing
 shim (same pattern as tests/test_ipcam_commands.py). The payload is
 captured; we assert verb + relevant params. Sequence-id changes per
 test invocation (global counter), so we don't pin it — just assert
@@ -29,6 +29,12 @@ import pytest
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
+
+# Compat alias — tests below do `getattr(x2d_bridge, fn_name)` where
+# fn_name is a parametrize string ("cmd_pause" etc.). All control verbs
+# moved to beambam.cli.control in v1.5; alias points there so the
+# getattr lookup resolves.
+from beambam.cli import control as x2d_bridge  # noqa: E402
 
 
 # ----- shared fixtures ----------------------------------------------------
@@ -53,9 +59,10 @@ class _CapturingClient:
 
 @pytest.fixture
 def captured(monkeypatch):
-    """Hijack x2d_bridge.X2DClient so every _publish_one() instance writes
+    """Hijack X2DClient so every _publish_one() instance writes
     into our shared list. Yields the list."""
-    import x2d_bridge
+    from beambam.cli.control import cmd_chamber_light, cmd_gcode, cmd_home, cmd_jog, cmd_level, cmd_pause, cmd_resume, cmd_set_temp
+    from beambam.mqtt import X2DClient
 
     bucket: list[dict] = []
 
@@ -63,7 +70,7 @@ def captured(monkeypatch):
         def publish(self, payload, qos=1, **kw):
             bucket.append(payload)
 
-    monkeypatch.setattr(x2d_bridge, "X2DClient", _Cli)
+    monkeypatch.setattr("beambam.mqtt.X2DClient", _Cli)
     return bucket
 
 
@@ -90,7 +97,8 @@ def _args(**kw) -> argparse.Namespace:
 ])
 def test_simple_print_control_verbs(captured, fn_name, expected_verb):
     """pause / resume / stop emit `{"print":{"command":<verb>,...}}`."""
-    import x2d_bridge
+    from beambam.cli.control import cmd_chamber_light, cmd_gcode, cmd_home, cmd_jog, cmd_level, cmd_pause, cmd_resume, cmd_set_temp
+    from beambam.mqtt import X2DClient
 
     rc = getattr(x2d_bridge, fn_name)(_args())
     assert rc == 0
@@ -109,9 +117,10 @@ def test_simple_print_control_verbs(captured, fn_name, expected_verb):
 def test_cmd_gcode_appends_newline_if_missing(captured):
     """`cmd_gcode` must terminate the line with `\\n` — Bambu firmware
     silently drops unterminated commands."""
-    import x2d_bridge
+    from beambam.cli.control import cmd_chamber_light, cmd_gcode, cmd_home, cmd_jog, cmd_level, cmd_pause, cmd_resume, cmd_set_temp
+    from beambam.mqtt import X2DClient
 
-    rc = x2d_bridge.cmd_gcode(_args(gcode="G1 X10"))
+    rc = cmd_gcode(_args(gcode="G1 X10"))
     assert rc == 0
     body = captured[0]["print"]
     assert body["command"] == "gcode_line"
@@ -120,17 +129,19 @@ def test_cmd_gcode_appends_newline_if_missing(captured):
 
 def test_cmd_gcode_preserves_existing_newline(captured):
     """If the user already added \\n, don't double-up."""
-    import x2d_bridge
+    from beambam.cli.control import cmd_chamber_light, cmd_gcode, cmd_home, cmd_jog, cmd_level, cmd_pause, cmd_resume, cmd_set_temp
+    from beambam.mqtt import X2DClient
 
-    rc = x2d_bridge.cmd_gcode(_args(gcode="M104 S200\n"))
+    rc = cmd_gcode(_args(gcode="M104 S200\n"))
     assert rc == 0
     assert captured[0]["print"]["param"] == "M104 S200\n"
 
 
 def test_cmd_home_sends_G28(captured):
-    import x2d_bridge
+    from beambam.cli.control import cmd_chamber_light, cmd_gcode, cmd_home, cmd_jog, cmd_level, cmd_pause, cmd_resume, cmd_set_temp
+    from beambam.mqtt import X2DClient
 
-    rc = x2d_bridge.cmd_home(_args())
+    rc = cmd_home(_args())
     assert rc == 0
     body = captured[0]["print"]
     assert body["command"] == "gcode_line"
@@ -139,9 +150,10 @@ def test_cmd_home_sends_G28(captured):
 
 def test_cmd_level_sends_G29(captured):
     """G29 = canonical auto-level gcode that X2D firmware accepts."""
-    import x2d_bridge
+    from beambam.cli.control import cmd_chamber_light, cmd_gcode, cmd_home, cmd_jog, cmd_level, cmd_pause, cmd_resume, cmd_set_temp
+    from beambam.mqtt import X2DClient
 
-    rc = x2d_bridge.cmd_level(_args())
+    rc = cmd_level(_args())
     assert rc == 0
     assert captured[0]["print"]["param"] == "G29\n"
 
@@ -150,9 +162,10 @@ def test_cmd_level_sends_G29(captured):
 
 
 def test_set_temp_bed_uses_set_bed_temp_verb(captured):
-    import x2d_bridge
+    from beambam.cli.control import cmd_chamber_light, cmd_gcode, cmd_home, cmd_jog, cmd_level, cmd_pause, cmd_resume, cmd_set_temp
+    from beambam.mqtt import X2DClient
 
-    rc = x2d_bridge.cmd_set_temp(_args(target="bed", value=60, idx=0))
+    rc = cmd_set_temp(_args(target="bed", value=60, idx=0))
     assert rc == 0
     body = captured[0]["print"]
     assert body["command"] == "set_bed_temp"
@@ -160,9 +173,10 @@ def test_set_temp_bed_uses_set_bed_temp_verb(captured):
 
 
 def test_set_temp_nozzle_uses_set_nozzle_temp_with_extruder_index(captured):
-    import x2d_bridge
+    from beambam.cli.control import cmd_chamber_light, cmd_gcode, cmd_home, cmd_jog, cmd_level, cmd_pause, cmd_resume, cmd_set_temp
+    from beambam.mqtt import X2DClient
 
-    rc = x2d_bridge.cmd_set_temp(_args(target="nozzle", value=220, idx=1))
+    rc = cmd_set_temp(_args(target="nozzle", value=220, idx=1))
     assert rc == 0
     body = captured[0]["print"]
     assert body["command"] == "set_nozzle_temp"
@@ -173,9 +187,10 @@ def test_set_temp_nozzle_uses_set_nozzle_temp_with_extruder_index(captured):
 def test_set_temp_chamber_falls_back_to_M141_gcode(captured):
     """No native chamber-temp MQTT verb in BambuStudio source — handler
     falls back to gcode_line + M141 Sxxx."""
-    import x2d_bridge
+    from beambam.cli.control import cmd_chamber_light, cmd_gcode, cmd_home, cmd_jog, cmd_level, cmd_pause, cmd_resume, cmd_set_temp
+    from beambam.mqtt import X2DClient
 
-    rc = x2d_bridge.cmd_set_temp(_args(target="chamber", value=45, idx=0))
+    rc = cmd_set_temp(_args(target="chamber", value=45, idx=0))
     assert rc == 0
     body = captured[0]["print"]
     assert body["command"] == "gcode_line"
@@ -185,10 +200,11 @@ def test_set_temp_chamber_falls_back_to_M141_gcode(captured):
 def test_set_temp_unknown_target_exits(captured):
     """Unknown --target should sys.exit (caught by argparse usually, but
     the handler validates again defensively)."""
-    import x2d_bridge
+    from beambam.cli.control import cmd_chamber_light, cmd_gcode, cmd_home, cmd_jog, cmd_level, cmd_pause, cmd_resume, cmd_set_temp
+    from beambam.mqtt import X2DClient
 
     with pytest.raises(SystemExit):
-        x2d_bridge.cmd_set_temp(_args(target="hotend", value=200, idx=0))
+        cmd_set_temp(_args(target="hotend", value=200, idx=0))
 
 
 # ----- cmd_chamber_light ------------------------------------------------
@@ -198,10 +214,11 @@ def test_set_temp_unknown_target_exits(captured):
 def test_chamber_light_valid_states(captured, state):
     """All three valid states emit a `{"system":{"command":"ledctrl",...}}`
     with the correct led_mode."""
-    import x2d_bridge
+    from beambam.cli.control import cmd_chamber_light, cmd_gcode, cmd_home, cmd_jog, cmd_level, cmd_pause, cmd_resume, cmd_set_temp
+    from beambam.mqtt import X2DClient
 
     args = _args(state=state, on_time=500, off_time=500, loops=1, interval=1000)
-    rc = x2d_bridge.cmd_chamber_light(args)
+    rc = cmd_chamber_light(args)
     assert rc == 0
     payload = captured[0]
     assert "system" in payload
@@ -213,19 +230,21 @@ def test_chamber_light_valid_states(captured, state):
 
 def test_chamber_light_invalid_state_exits():
     """state must be on/off/flashing — anything else sys.exits."""
-    import x2d_bridge
+    from beambam.cli.control import cmd_chamber_light, cmd_gcode, cmd_home, cmd_jog, cmd_level, cmd_pause, cmd_resume, cmd_set_temp
+    from beambam.mqtt import X2DClient
 
     with pytest.raises(SystemExit):
-        x2d_bridge.cmd_chamber_light(_args(state="strobe", on_time=0,
+        cmd_chamber_light(_args(state="strobe", on_time=0,
                                             off_time=0, loops=0, interval=0))
 
 
 def test_chamber_light_state_is_case_insensitive(captured):
     """`chamber-light ON` / `chamber-light On` should also work — handler
     lowercases before validating."""
-    import x2d_bridge
+    from beambam.cli.control import cmd_chamber_light, cmd_gcode, cmd_home, cmd_jog, cmd_level, cmd_pause, cmd_resume, cmd_set_temp
+    from beambam.mqtt import X2DClient
 
-    rc = x2d_bridge.cmd_chamber_light(_args(state="ON", on_time=0, off_time=0,
+    rc = cmd_chamber_light(_args(state="ON", on_time=0, off_time=0,
                                              loops=0, interval=0))
     assert rc == 0
     assert captured[0]["system"]["led_mode"] == "on"
@@ -243,9 +262,10 @@ def test_chamber_light_state_is_case_insensitive(captured):
 def test_jog_builds_relative_gcode_sequence(captured, axis, distance, feed):
     """Jog uses standard G91 (relative) / G1 / G90 (absolute) — same shape
     works on every Bambu firmware that accepts arbitrary gcode."""
-    import x2d_bridge
+    from beambam.cli.control import cmd_chamber_light, cmd_gcode, cmd_home, cmd_jog, cmd_level, cmd_pause, cmd_resume, cmd_set_temp
+    from beambam.mqtt import X2DClient
 
-    rc = x2d_bridge.cmd_jog(_args(axis=axis, distance=distance, feed=feed))
+    rc = cmd_jog(_args(axis=axis, distance=distance, feed=feed))
     assert rc == 0
     body = captured[0]["print"]
     assert body["command"] == "gcode_line"
@@ -259,10 +279,11 @@ def test_jog_builds_relative_gcode_sequence(captured, axis, distance, feed):
 
 def test_jog_invalid_axis_exits():
     """Only X/Y/Z/E are valid axes."""
-    import x2d_bridge
+    from beambam.cli.control import cmd_chamber_light, cmd_gcode, cmd_home, cmd_jog, cmd_level, cmd_pause, cmd_resume, cmd_set_temp
+    from beambam.mqtt import X2DClient
 
     with pytest.raises(SystemExit):
-        x2d_bridge.cmd_jog(_args(axis="W", distance=1.0, feed=600))
+        cmd_jog(_args(axis="W", distance=1.0, feed=600))
 
 
 # ----- coverage smoke: every handler advanced the seq counter -----------
@@ -271,10 +292,11 @@ def test_jog_invalid_axis_exits():
 def test_each_publish_has_unique_sequence_id(captured):
     """Sanity: two back-to-back commands must have different sequence_id
     (the seq counter is global and monotonic)."""
-    import x2d_bridge
+    from beambam.cli.control import cmd_chamber_light, cmd_gcode, cmd_home, cmd_jog, cmd_level, cmd_pause, cmd_resume, cmd_set_temp
+    from beambam.mqtt import X2DClient
 
-    x2d_bridge.cmd_pause(_args())
-    x2d_bridge.cmd_resume(_args())
+    cmd_pause(_args())
+    cmd_resume(_args())
     assert len(captured) == 2
     seq1 = captured[0]["print"]["sequence_id"]
     seq2 = captured[1]["print"]["sequence_id"]

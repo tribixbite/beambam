@@ -29,7 +29,8 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT))
 
-import x2d_bridge
+from beambam import _WEB_DIR_DEFAULT
+from beambam.serve_http import _serve_http
 from runtime.colorsync.mapper import match, state_for, _load_catalog
 
 
@@ -138,7 +139,7 @@ def main() -> int:
     # ----- 8. HTTP /colorsync/match + /colorsync/state ----------
     port = _free_port()
     threading.Thread(
-        target=x2d_bridge._serve_http,
+        target=_serve_http,
         kwargs={
             "bind":          f"127.0.0.1:{port}",
             "get_state":     lambda _p: fake_state,
@@ -147,7 +148,7 @@ def main() -> int:
             "auth_token":    None,
             "printer_names": [""],
             "clients":       {"": object()},
-            "web_dir":       x2d_bridge._WEB_DIR_DEFAULT,
+            "web_dir":       _WEB_DIR_DEFAULT,
         },
         daemon=True, name="cs-http-bridge",
     ).start()

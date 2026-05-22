@@ -171,19 +171,12 @@ def test_install_unknown_shell_raises(tmp_path: Path):
 
 
 def test_real_parser_discovery_includes_install_completion():
-    """Smoke: import the real x2d_bridge parser and verify our
-    own subcommand is wired up.
-
-    This test is gated — if cryptography (or other heavy deps) aren't
+    """Smoke: import the real CLI parser and verify our subcommand is
+    wired up. Gated — if cryptography (or other heavy deps) aren't
     importable, the smoke just gets skipped instead of failing.
     """
     try:
-        import x2d_bridge  # noqa: F401
+        import beambam.cli as bb_cli
     except Exception as e:
-        pytest.skip(f"x2d_bridge import failed: {e}")
-
-    # Re-build the parser by calling a small helper from x2d_bridge if
-    # one exists; otherwise just import-test that the module loads.
-    # Either way we don't want to actually call main() (it would parse
-    # sys.argv).
-    assert hasattr(x2d_bridge, "main")
+        pytest.skip(f"beambam.cli import failed: {e}")
+    assert hasattr(bb_cli, "main")

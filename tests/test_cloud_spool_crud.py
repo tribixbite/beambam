@@ -120,9 +120,9 @@ def test_spool_body_from_args_skips_None_fields():
     """Caller passed only --type + --color → body must contain just
     those + the manual createType default. Other fields shouldn't
     appear (server would interpret them as empty-string updates)."""
-    import x2d_bridge
+    from beambam.cli.cloud import _spool_body_from_args, cmd_cloud_spool_add, cmd_cloud_spool_delete, cmd_cloud_spool_update
     ns = _ns(type="PETG", color="#00FF00")
-    body = x2d_bridge._spool_body_from_args(ns)
+    body = _spool_body_from_args(ns)
     assert body == {
         "filamentType": "PETG",
         "color":        "#00FF00",
@@ -133,9 +133,9 @@ def test_spool_body_from_args_skips_None_fields():
 def test_spool_body_from_args_zero_weight_is_preserved():
     """0 g is a legitimate spool state (empty spool); make sure we
     don't accidentally treat it as falsey."""
-    import x2d_bridge
+    from beambam.cli.cloud import _spool_body_from_args, cmd_cloud_spool_add, cmd_cloud_spool_delete, cmd_cloud_spool_update
     ns = _ns(weight=0)
-    body = x2d_bridge._spool_body_from_args(ns)
+    body = _spool_body_from_args(ns)
     assert "weight" in body and body["weight"] == 0
 
 
@@ -145,7 +145,7 @@ def test_spool_body_from_args_zero_weight_is_preserved():
 def test_cloud_spool_add_refuses_without_allow_write(monkeypatch, capsys):
     """Without --allow-write the handler must exit 1 BEFORE touching
     CloudClient. Verify the CloudClient was never even instantiated."""
-    import x2d_bridge
+    from beambam.cli.cloud import _spool_body_from_args, cmd_cloud_spool_add, cmd_cloud_spool_delete, cmd_cloud_spool_update
 
     def _boom(cls):
         pytest.fail("CloudClient.load_or_anonymous called without "
@@ -153,7 +153,7 @@ def test_cloud_spool_add_refuses_without_allow_write(monkeypatch, capsys):
     monkeypatch.setattr(cloud_client.CloudClient, "load_or_anonymous",
                          classmethod(_boom))
 
-    rc = x2d_bridge.cmd_cloud_spool_add(_ns(filament_id="GFB02"))
+    rc = cmd_cloud_spool_add(_ns(filament_id="GFB02"))
     assert rc == 1
     err = capsys.readouterr().err
     assert "--allow-write" in err
@@ -161,24 +161,24 @@ def test_cloud_spool_add_refuses_without_allow_write(monkeypatch, capsys):
 
 
 def test_cloud_spool_update_refuses_without_allow_write(monkeypatch, capsys):
-    import x2d_bridge
+    from beambam.cli.cloud import _spool_body_from_args, cmd_cloud_spool_add, cmd_cloud_spool_delete, cmd_cloud_spool_update
 
     monkeypatch.setattr(cloud_client.CloudClient, "load_or_anonymous",
                          classmethod(lambda cls: pytest.fail("leaked")))
 
-    rc = x2d_bridge.cmd_cloud_spool_update(
+    rc = cmd_cloud_spool_update(
         _ns(filament_id="GFB02", color="#FF0000"))
     assert rc == 1
     assert "--allow-write" in capsys.readouterr().err
 
 
 def test_cloud_spool_delete_refuses_without_allow_write(monkeypatch, capsys):
-    import x2d_bridge
+    from beambam.cli.cloud import _spool_body_from_args, cmd_cloud_spool_add, cmd_cloud_spool_delete, cmd_cloud_spool_update
 
     monkeypatch.setattr(cloud_client.CloudClient, "load_or_anonymous",
                          classmethod(lambda cls: pytest.fail("leaked")))
 
-    rc = x2d_bridge.cmd_cloud_spool_delete(_ns(filament_id="GFB02"))
+    rc = cmd_cloud_spool_delete(_ns(filament_id="GFB02"))
     assert rc == 1
     assert "--allow-write" in capsys.readouterr().err
 
@@ -201,10 +201,10 @@ def fake_cli_loaded(monkeypatch):
 
 
 def test_cmd_cloud_spool_add_forwards_body(fake_cli_loaded, capsys):
-    import x2d_bridge
+    from beambam.cli.cloud import _spool_body_from_args, cmd_cloud_spool_add, cmd_cloud_spool_delete, cmd_cloud_spool_update
 
     fake_cli_loaded.add_spool.return_value = {"ok": True}
-    rc = x2d_bridge.cmd_cloud_spool_add(_ns(
+    rc = cmd_cloud_spool_add(_ns(
         allow_write=True, vendor="Bambu", type="PLA Basic",
         name="Galaxy Black", filament_id="GFB02", color="#0F0F0F",
         weight=1000))
@@ -222,10 +222,10 @@ def test_cmd_cloud_spool_update_excludes_filament_id_from_body(
         fake_cli_loaded):
     """filament_id is the path segment, not the body — body should
     contain ONLY the fields the user provided as updates."""
-    import x2d_bridge
+    from beambam.cli.cloud import _spool_body_from_args, cmd_cloud_spool_add, cmd_cloud_spool_delete, cmd_cloud_spool_update
 
     fake_cli_loaded.update_spool.return_value = {}
-    rc = x2d_bridge.cmd_cloud_spool_update(_ns(
+    rc = cmd_cloud_spool_update(_ns(
         allow_write=True, filament_id="GFB02", color="#FF0000"))
     assert rc == 0
     fake_cli_loaded.update_spool.assert_called_once_with(
@@ -235,9 +235,9 @@ def test_cmd_cloud_spool_update_excludes_filament_id_from_body(
 def test_cmd_cloud_spool_update_no_fields_returns_2(fake_cli_loaded, capsys):
     """`update GFB02` with NO override fields is a user error — surface
     an actionable message instead of sending an empty PUT."""
-    import x2d_bridge
+    from beambam.cli.cloud import _spool_body_from_args, cmd_cloud_spool_add, cmd_cloud_spool_delete, cmd_cloud_spool_update
 
-    rc = x2d_bridge.cmd_cloud_spool_update(_ns(
+    rc = cmd_cloud_spool_update(_ns(
         allow_write=True, filament_id="GFB02"))
     assert rc == 2
     assert "nothing to update" in capsys.readouterr().err
@@ -245,10 +245,10 @@ def test_cmd_cloud_spool_update_no_fields_returns_2(fake_cli_loaded, capsys):
 
 
 def test_cmd_cloud_spool_delete_forwards_id(fake_cli_loaded, capsys):
-    import x2d_bridge
+    from beambam.cli.cloud import _spool_body_from_args, cmd_cloud_spool_add, cmd_cloud_spool_delete, cmd_cloud_spool_update
 
     fake_cli_loaded.delete_spool.return_value = {}
-    rc = x2d_bridge.cmd_cloud_spool_delete(_ns(
+    rc = cmd_cloud_spool_delete(_ns(
         allow_write=True, filament_id="GFB02"))
     assert rc == 0
     fake_cli_loaded.delete_spool.assert_called_once_with("GFB02")
@@ -258,24 +258,24 @@ def test_cmd_cloud_spool_delete_forwards_id(fake_cli_loaded, capsys):
 def test_cmd_cloud_spool_add_cloud_error_returns_1(fake_cli_loaded, capsys):
     """CloudError from the client (e.g. server-side schema rejection)
     must surface as exit 1 + clean stderr, never a raw traceback."""
-    import x2d_bridge
+    from beambam.cli.cloud import _spool_body_from_args, cmd_cloud_spool_add, cmd_cloud_spool_delete, cmd_cloud_spool_update
 
     fake_cli_loaded.add_spool.side_effect = cloud_client.CloudError(
         "400 invalid filamentType")
-    rc = x2d_bridge.cmd_cloud_spool_add(_ns(
+    rc = cmd_cloud_spool_add(_ns(
         allow_write=True, vendor="Bambu", filament_id="GFB02"))
     assert rc == 1
     assert "cloud API failed" in capsys.readouterr().err
 
 
 def test_cmd_cloud_spool_add_logged_out_returns_1(monkeypatch, capsys):
-    import x2d_bridge
+    from beambam.cli.cloud import _spool_body_from_args, cmd_cloud_spool_add, cmd_cloud_spool_delete, cmd_cloud_spool_update
 
     anon = MagicMock(spec=cloud_client.CloudClient)
     anon.session = cloud_client.Session()  # empty
     monkeypatch.setattr(cloud_client.CloudClient, "load_or_anonymous",
                          classmethod(lambda cls: anon))
-    rc = x2d_bridge.cmd_cloud_spool_add(_ns(
+    rc = cmd_cloud_spool_add(_ns(
         allow_write=True, vendor="Bambu", filament_id="GFB02"))
     assert rc == 1
     assert "not logged in" in capsys.readouterr().err

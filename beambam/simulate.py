@@ -63,9 +63,10 @@ def simulate_start_print(
     """Build a start_print payload. Returns the SIGNED envelope (with
     cert + signature) by default; pass sign=False to get the inner
     unsigned dict."""
-    import x2d_bridge
+    from beambam.mqtt import sign_payload
+    from beambam.print_job import start_print
     client = _CapturingClient(serial=serial)
-    x2d_bridge.start_print(
+    start_print(
         client, gcode_filename,
         use_ams=use_ams, ams_slot=ams_slot,
         bed_type=bed_type, bed_temp=bed_temp,
@@ -77,7 +78,7 @@ def simulate_start_print(
         raise RuntimeError("start_print produced no payload")
     payload = client.captured[0]
     if sign:
-        return x2d_bridge.sign_payload(payload)
+        return sign_payload(payload)
     return payload
 
 
@@ -87,7 +88,8 @@ def simulate_simple(command: str, *, param: str | None = None,
                     sign: bool = True) -> dict[str, Any]:
     """Build a simple print-control payload (pause/resume/stop/gcode/
     ams_change_filament). Returns the SIGNED envelope by default."""
-    import x2d_bridge
+    from beambam.mqtt import sign_payload
+    from beambam.print_job import start_print
     inner: dict[str, Any] = {"sequence_id": "0", "command": command}
     if param is not None:
         inner["param"] = param
@@ -96,13 +98,14 @@ def simulate_simple(command: str, *, param: str | None = None,
         inner["curr_temp"] = 215
         inner["tar_temp"] = 215
     payload = {"print": inner}
-    return x2d_bridge.sign_payload(payload) if sign else payload
+    return sign_payload(payload) if sign else payload
 
 
 def simulate_light(*, on: bool, serial: str = "SIMULATED000000",
                    sign: bool = True) -> dict[str, Any]:
     """Build a chamber-light ledctrl payload."""
-    import x2d_bridge
+    from beambam.mqtt import sign_payload
+    from beambam.print_job import start_print
     payload = {
         "system": {
             "sequence_id": "0",
@@ -115,7 +118,7 @@ def simulate_light(*, on: bool, serial: str = "SIMULATED000000",
             "interval_time": 0,
         }
     }
-    return x2d_bridge.sign_payload(payload) if sign else payload
+    return sign_payload(payload) if sign else payload
 
 
 # ---------------------------------------------------------------------------

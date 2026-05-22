@@ -65,7 +65,8 @@ def _stub_analyze(flush_g: float):
 
 def test_dry_run_low_flush_returns_0(monkeypatch, capsys, tmp_path):
     """0.2 g of flush vs the default 10 g cap should pass with exit 0."""
-    import x2d_bridge
+    from beambam.cli.lan import cmd_print
+    from beambam.config import Creds
     from beambam import analyze as analyze_mod
 
     fake_3mf = tmp_path / "tiny.gcode.3mf"
@@ -79,9 +80,9 @@ def test_dry_run_low_flush_returns_0(monkeypatch, capsys, tmp_path):
     def _boom(*_a, **_kw):
         raise AssertionError(
             "Creds.resolve called even though --dry-run was set")
-    monkeypatch.setattr(x2d_bridge.Creds, "resolve", classmethod(_boom))
+    monkeypatch.setattr(Creds, "resolve", classmethod(_boom))
 
-    rc = x2d_bridge.cmd_print(_ns(file=str(fake_3mf)))
+    rc = cmd_print(_ns(file=str(fake_3mf)))
     assert rc == 0
     out = capsys.readouterr()
     assert "stub format_report" in out.out
@@ -92,7 +93,8 @@ def test_dry_run_low_flush_returns_0(monkeypatch, capsys, tmp_path):
 def test_dry_run_refuses_when_flush_exceeds_threshold(monkeypatch, capsys,
                                                        tmp_path):
     """15 g of flush vs default 10 g cap → refuse + exit 2."""
-    import x2d_bridge
+    from beambam.cli.lan import cmd_print
+    from beambam.config import Creds
     from beambam import analyze as analyze_mod
 
     fake_3mf = tmp_path / "huge.gcode.3mf"
@@ -102,7 +104,7 @@ def test_dry_run_refuses_when_flush_exceeds_threshold(monkeypatch, capsys,
     monkeypatch.setattr(analyze_mod, "analyze_3mf", analyze)
     monkeypatch.setattr(analyze_mod, "format_report", fmt)
 
-    rc = x2d_bridge.cmd_print(_ns(file=str(fake_3mf)))
+    rc = cmd_print(_ns(file=str(fake_3mf)))
     assert rc == 2
     err = capsys.readouterr().err
     assert "REFUSED" in err
@@ -112,7 +114,8 @@ def test_dry_run_refuses_when_flush_exceeds_threshold(monkeypatch, capsys,
 
 def test_dry_run_custom_threshold(monkeypatch, capsys, tmp_path):
     """`--max-flush-g 5` lowers the cap: 7g now refuses; 3g still passes."""
-    import x2d_bridge
+    from beambam.cli.lan import cmd_print
+    from beambam.config import Creds
     from beambam import analyze as analyze_mod
 
     fake_3mf = tmp_path / "f.gcode.3mf"
@@ -122,21 +125,22 @@ def test_dry_run_custom_threshold(monkeypatch, capsys, tmp_path):
     analyze, fmt = _stub_analyze(flush_g=7.0)
     monkeypatch.setattr(analyze_mod, "analyze_3mf", analyze)
     monkeypatch.setattr(analyze_mod, "format_report", fmt)
-    rc = x2d_bridge.cmd_print(_ns(file=str(fake_3mf), max_flush_g=5.0))
+    rc = cmd_print(_ns(file=str(fake_3mf), max_flush_g=5.0))
     assert rc == 2
 
     # Case 2: 3g vs threshold 5g → pass (re-stub for clean capsys)
     analyze, fmt = _stub_analyze(flush_g=3.0)
     monkeypatch.setattr(analyze_mod, "analyze_3mf", analyze)
     monkeypatch.setattr(analyze_mod, "format_report", fmt)
-    rc = x2d_bridge.cmd_print(_ns(file=str(fake_3mf), max_flush_g=5.0))
+    rc = cmd_print(_ns(file=str(fake_3mf), max_flush_g=5.0))
     assert rc == 0
 
 
 def test_dry_run_does_not_resolve_creds(monkeypatch, tmp_path):
     """Critical guarantee: dry-run works on a workstation with NO
     credentials file. Creds.resolve must never be reached."""
-    import x2d_bridge
+    from beambam.cli.lan import cmd_print
+    from beambam.config import Creds
     from beambam import analyze as analyze_mod
 
     fake_3mf = tmp_path / "x.gcode.3mf"
@@ -148,11 +152,11 @@ def test_dry_run_does_not_resolve_creds(monkeypatch, tmp_path):
     # Make Creds.resolve raise if anyone calls it.
     called = []
     monkeypatch.setattr(
-        x2d_bridge.Creds, "resolve",
+        Creds, "resolve",
         classmethod(lambda cls, _a: called.append(True) or "boom"),
     )
 
-    rc = x2d_bridge.cmd_print(_ns(file=str(fake_3mf)))
+    rc = cmd_print(_ns(file=str(fake_3mf)))
     assert rc == 0
     assert called == [], "Creds.resolve was called during --dry-run"
 
@@ -170,13 +174,14 @@ def test_dry_run_e2e_against_real_3mf_fixture(capsys):
     that ships in the repo. Touches the actual analyze code path (not
     the stub) — catches integration breakage between cmd_print and the
     Report → totals shape that monkeypatched unit tests would miss."""
-    import x2d_bridge
+    from beambam.cli.lan import cmd_print
+    from beambam.config import Creds
 
     repo_root = Path(__file__).resolve().parent.parent
     rumi = repo_root / "rumi_frame.gcode.3mf"
 
     args = _ns(file=str(rumi), max_flush_g=100.0)  # generous cap
-    rc = x2d_bridge.cmd_print(args)
+    rc = cmd_print(args)
     assert rc == 0
     out = capsys.readouterr()
     # The real format_report output prints the file path + size + filaments.

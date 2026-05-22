@@ -26,10 +26,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import pytest
 
 from beambam.state_hub import StateHub
-from x2d_bridge import _serve_http
-
-
-# macOS / Windows GHA runners are slower at HTTP round-trips under
+from beambam.serve_http import _serve_http
 # matrix-test load. `_wait_for_port` adapts its timeout based on platform
 # (60 s on darwin/win32, 15 s on linux) so the test passes on all three.
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Unit tests for the ams_mapping / ams_mapping2 wire shape that
-x2d_bridge.start_print emits.
+start_print emits.
 
 Single-color (one-filament) prints and multi-color (multi-filament,
 N-extruder X2D) prints exercise different shapes:
@@ -33,7 +33,7 @@ _SAFE_BED = {"bed_type": "cool_plate", "bed_temp": 35}
 
 
 class _MockClient:
-    """Stand-in for x2d_bridge.X2DClient that captures the published payload."""
+    """Stand-in for X2DClient that captures the published payload."""
     def __init__(self):
         self.creds = types.SimpleNamespace(serial="00M09A000000000")
         self.published: dict | None = None
@@ -43,9 +43,10 @@ class _MockClient:
 
 
 def test_single_filament_int_slot():
-    import x2d_bridge
+    from beambam.mqtt import X2DClient
+    from beambam.print_job import start_print
     cli = _MockClient()
-    x2d_bridge.start_print(cli, "test.gcode.3mf", use_ams=True, ams_slot=3,
+    start_print(cli, "test.gcode.3mf", use_ams=True, ams_slot=3,
                            **_SAFE_BED)
     p = cli.published["print"]
     assert p["ams_mapping"] == [3]
@@ -55,9 +56,10 @@ def test_single_filament_int_slot():
 
 def test_single_filament_global_slot_into_ams1():
     """slot 5 is AMS 1, tray 1 — verifies the //4 / %4 split for AMS#≥1."""
-    import x2d_bridge
+    from beambam.mqtt import X2DClient
+    from beambam.print_job import start_print
     cli = _MockClient()
-    x2d_bridge.start_print(cli, "test.gcode.3mf", use_ams=True, ams_slot=5,
+    start_print(cli, "test.gcode.3mf", use_ams=True, ams_slot=5,
                            **_SAFE_BED)
     p = cli.published["print"]
     assert p["ams_mapping2"] == [{"ams_id": 1, "slot_id": 1}]
@@ -65,9 +67,10 @@ def test_single_filament_global_slot_into_ams1():
 
 def test_multi_filament_list():
     """Two-color print: filament 0 -> AMS0 tray 1; filament 1 -> AMS1 tray 1."""
-    import x2d_bridge
+    from beambam.mqtt import X2DClient
+    from beambam.print_job import start_print
     cli = _MockClient()
-    x2d_bridge.start_print(cli, "two_color.gcode.3mf", use_ams=True,
+    start_print(cli, "two_color.gcode.3mf", use_ams=True,
                            ams_slot=[1, 5], **_SAFE_BED)
     p = cli.published["print"]
     assert p["ams_mapping"] == [1, 5]
@@ -78,9 +81,10 @@ def test_multi_filament_list():
 
 
 def test_no_ams_keeps_mappings_empty():
-    import x2d_bridge
+    from beambam.mqtt import X2DClient
+    from beambam.print_job import start_print
     cli = _MockClient()
-    x2d_bridge.start_print(cli, "ext_spool.gcode.3mf", use_ams=False,
+    start_print(cli, "ext_spool.gcode.3mf", use_ams=False,
                            ams_slot=0, **_SAFE_BED)
     p = cli.published["print"]
     assert p["use_ams"] is False
@@ -93,10 +97,11 @@ def test_use_ams_true_empty_list_rejects():
     raise rather than silently produce a malformed payload that the
     firmware would drop without an HMS code."""
     import pytest
-    import x2d_bridge
+    from beambam.mqtt import X2DClient
+    from beambam.print_job import start_print
     cli = _MockClient()
     with pytest.raises(ValueError):
-        x2d_bridge.start_print(cli, "test.gcode.3mf", use_ams=True,
+        start_print(cli, "test.gcode.3mf", use_ams=True,
                                ams_slot=[], **_SAFE_BED)
 
 
@@ -104,8 +109,9 @@ def test_signed_publish_envelope_shape():
     """Quick sanity check that the published payload is the inner dict
     BEFORE signing — sign_payload wraps it; we want to verify nothing
     accidentally moves the print block to a different key."""
-    import x2d_bridge
+    from beambam.mqtt import X2DClient
+    from beambam.print_job import start_print
     cli = _MockClient()
-    x2d_bridge.start_print(cli, "test.gcode.3mf", use_ams=True, ams_slot=0,
+    start_print(cli, "test.gcode.3mf", use_ams=True, ams_slot=0,
                            **_SAFE_BED)
     assert set(cli.published.keys()) == {"print"}

@@ -349,10 +349,11 @@ def main() -> int:
     ams_state = None
     if args.check_ams:
         try:
-            import x2d_bridge
+            from beambam.config import Creds
+            from beambam.mqtt import X2DClient
             class _A: ip=""; code=""; serial=""; printer=""
-            creds = x2d_bridge.Creds.resolve(_A())
-            cli = x2d_bridge.X2DClient(creds)
+            creds = Creds.resolve(_A())
+            cli = X2DClient(creds)
             cli.connect()
             ams_state = cli.request_state(timeout=8.0)
             cli.disconnect()

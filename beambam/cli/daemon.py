@@ -53,13 +53,14 @@ def cmd_daemon(args: argparse.Namespace) -> int:
         start_print,
     )
     from beambam.state_hub import StateHub
-    # Lazy thunks for bridge-internal helpers that haven't moved yet:
-    #   LOG_QUEUE          — module-scope logger configured by the
-    #                        monolith (queue dispatcher warnings).
-    #   _serve_http        — the ~580-LoC HTTP daemon body that backs
-    #                        the per-printer routing layer.
-    #   _WEB_DIR_DEFAULT   — path to the built-in /web static bundle.
-    from x2d_bridge import LOG_QUEUE, _serve_http, _WEB_DIR_DEFAULT
+    # Canonical homes for everything we need:
+    #   * `_serve_http`     — beambam.serve_http
+    #   * `_WEB_DIR_DEFAULT`— beambam package root (sibling of beambam/)
+    #   * `LOG_QUEUE`       — local stdlib logger; nothing else owns it
+    import logging
+    from beambam.serve_http import _serve_http
+    from beambam import _WEB_DIR_DEFAULT
+    LOG_QUEUE = logging.getLogger("x2d.queue")
 
     # Determine the set of printers to drive.
     if args.printer:

@@ -92,7 +92,8 @@ BAMBU_CERT_ID = "GLOF1000000000-524a37c80000c6a6a274a47b3281"
 def _validate(printer_section: str, timeout: float, json_out: bool, silent: bool) -> int:
     # Defer the heavy imports so `import bambu_cert` from a test stays cheap.
     sys.path.insert(0, str(Path(__file__).resolve().parent))
-    import x2d_bridge  # noqa: WPS433
+    from beambam.config import Creds
+    from beambam.mqtt import X2DClient
 
     class _A:
         ip = ""
@@ -101,7 +102,7 @@ def _validate(printer_section: str, timeout: float, json_out: bool, silent: bool
         printer = printer_section
 
     try:
-        creds = x2d_bridge.Creds.resolve(_A())
+        creds = Creds.resolve(_A())
     except SystemExit as e:
         if json_out:
             print(json.dumps({"ok": False, "stage": "creds", "error": str(e)}))
@@ -109,7 +110,7 @@ def _validate(printer_section: str, timeout: float, json_out: bool, silent: bool
             print(f"validate: cannot resolve credentials: {e}", file=sys.stderr)
         return 2
 
-    cli = x2d_bridge.X2DClient(creds)
+    cli = X2DClient(creds)
     started = time.time()
     err_code: int | None = None
     err_stage = ""

@@ -302,8 +302,7 @@ def _cmd_cam_start(args: argparse.Namespace) -> int:
     """Background-spawn `beambam camera` with the forwarded flags.
     Writes PID + log path to ~/.x2d/cam.pid so `cam stop` finds it."""
     import subprocess
-    import x2d_bridge
-    bridge = Path(x2d_bridge.__file__)
+    from beambam.cli import main  # noqa: F401  used by the in-process branch below
 
     # Block double-start.
     if _CAM_PID_FILE.exists():
@@ -333,12 +332,12 @@ def _cmd_cam_start(args: argparse.Namespace) -> int:
     if args.auth_token:  argv += ["--auth-token", args.auth_token]
 
     if args.foreground:
-        # Foreground mode: just exec into x2d_bridge.main with the
+        # Foreground mode: just exec into main with the
         # remapped argv so Ctrl+C semantics are unchanged.
         saved = sys.argv[:]
         try:
             sys.argv = ["x2d_bridge.py", *argv]
-            return x2d_bridge.main()
+            return main()
         finally:
             sys.argv = saved
 
@@ -346,7 +345,7 @@ def _cmd_cam_start(args: argparse.Namespace) -> int:
     log_fh = _CAM_LOG_FILE.open("ab")
     try:
         proc = subprocess.Popen(
-            [sys.executable, str(bridge), *argv],
+            [sys.executable, "-m", "beambam.cli", *argv],
             stdout=log_fh, stderr=subprocess.STDOUT,
             stdin=subprocess.DEVNULL,
             start_new_session=True,

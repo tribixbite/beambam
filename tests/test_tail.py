@@ -18,10 +18,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import pytest  # noqa: F401
 
-from x2d_bridge import _TailDispatcher, _tail_print
-
-
-# --- _TailDispatcher.events_for ---------------------------------------
+from beambam.cli.info import _TailDispatcher, _tail_print
 
 def test_state_transitions_emit_observed_then_arrows():
     """The first push reports `observed X`; subsequent transitions

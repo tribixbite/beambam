@@ -5,7 +5,7 @@ Extracted from x2d_bridge.py (Phase 5e batch 3). Used by:
   beambam.cli.daemon.cmd_camera   — calls `_x2d_search_roots()` to
                                     locate the lvl_local module under
                                     dev or dist install layouts.
-  x2d_bridge.ServeServer's _op_user_presets RPC handler — calls
+  ServeServer's _op_user_presets RPC handler — calls
                                     `_load_local_presets()` to merge
                                     Bambu's shipped JSON profiles
                                     with the community-curated set
@@ -47,17 +47,13 @@ def _stringify_preset_values(d: dict) -> dict[str, str]:
 
 def _x2d_search_roots() -> list[Path]:
     """Candidate roots for shipped data files. Try (in order):
-    - the script's own directory (dev tree, x2d_bridge.py at repo root)
-    - the parent (dist tree, x2d_bridge.py at <root>/helpers/)
+    - the install root (sibling of beambam/ — i.e. repo root in dev
+      checkouts, site-packages root in pip installs)
+    - the parent (dist tree variants)
     so the same code finds files in either layout.
-
-    Anchored on x2d_bridge.py because that's the user-facing entry
-    point — `beambam` console-script + GUI shim both spawn it by
-    pathname, so its location is the most reliable install-root proxy.
     """
-    import x2d_bridge
-    here = Path(x2d_bridge.__file__).parent
-    return [here, here.parent]
+    from beambam import X2D_ROOT_PATH
+    return [X2D_ROOT_PATH, X2D_ROOT_PATH.parent]
 
 
 def _local_preset_dirs() -> list[Path]:
