@@ -25,7 +25,7 @@
                 { name: 'stop',          desc: 'Abort current print (cannot resume).' },
                 { name: 'gcode',         desc: 'Send a raw G-code line.', example: 'beambam gcode "G28 Z"' },
                 { name: 'set-temp',      desc: 'Set heater target.', example: 'beambam set-temp bed 60' },
-                { name: 'chamber-light', desc: 'Toggle chamber LED.' },
+                { name: 'led',           desc: 'Toggle chamber LED. Alias: chamber-light.', v: 'v1.3' },
                 { name: 'jog',           desc: 'Manual XYZ axis jog.' },
                 { name: 'home',          desc: 'Home axes.' },
                 { name: 'level',         desc: 'Auto bed-level.' }
@@ -50,8 +50,8 @@
             title: 'Files',
             description: 'Push / pull / list / slice / analyze.',
             cmds: [
-                { name: 'upload',    desc: 'Upload .gcode.3mf to printer SD.' },
-                { name: 'download',  desc: 'Pull a file off the printer SD via FTPS.', example: "beambam download '/cache/x.3mf'", v: 'v1.2' },
+                { name: 'push',      desc: 'Push .gcode.3mf to printer SD via FTPS. Alias: upload.', v: 'v1.3' },
+                { name: 'pull',      desc: 'Pull a file off the printer SD via FTPS. Alias: download.', example: "beambam pull '/cache/x.3mf'", v: 'v1.3' },
                 { name: 'files',     desc: 'List printer SD contents.' },
                 { name: 'fetch',     desc: 'Download from MakerWorld / direct URL.' },
                 { name: 'slice',     desc: 'Standalone STL slice via BambuStudio CLI.', example: 'beambam slice model.stl -o out.gcode.3mf', v: 'v1.2' },
@@ -89,9 +89,10 @@
             title: 'Camera',
             description: 'Live view + snapshots.',
             cmds: [
+                { name: 'cam',       desc: 'One-shot snapshot save (bare verb).', v: 'v1.3' },
                 { name: 'cam watch', desc: 'Live terminal viewer (kitty / iTerm2 / blocks).', v: 'v1.2' },
-                { name: 'cam snap',  desc: 'One-shot snapshot save.', v: 'v1.2' },
-                { name: 'camera',    desc: 'Start RTSP camera proxy daemon.' },
+                { name: 'cam start', desc: 'Background RTSP→MJPEG proxy. Alias: camera.', v: 'v1.3' },
+                { name: 'cam stop',  desc: 'Kill the running proxy via ~/.x2d/cam.pid.', v: 'v1.3' },
                 { name: 'webrtc',    desc: 'WebRTC gateway for browser viewing.' }
             ]
         },
@@ -113,9 +114,9 @@
             title: 'Daemon',
             description: 'Long-running services.',
             cmds: [
-                { name: 'daemon',     desc: 'HTTP + SSE + Prometheus + HA + queue.', example: 'beambam daemon --http :8765 --queue --timelapse' },
+                { name: 'boo',        desc: 'HTTP + SSE + Prometheus + HA + queue. Alias: daemon.', example: 'beambam boo --http :8765 --queue --timelapse', v: 'v1.3' },
                 { name: 'serve',      desc: 'Unix-socket RPC for libbambu_networking.so.' },
-                { name: 'ha-publish', desc: 'One-shot HA MQTT discovery push.' },
+                { name: 'ha',         desc: 'One-shot HA MQTT discovery push. Alias: ha-publish.', v: 'v1.3' },
                 { name: 'watch',      desc: 'Tail state updates.' },
                 { name: 'timelapse',  desc: 'Start/stop on-printer timelapse.' }
             ]

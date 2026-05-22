@@ -2591,7 +2591,8 @@ def main() -> int:
     s.add_argument("--timeout", type=float, default=8.0)
     s.set_defaults(fn=cmd_status)
 
-    u = sub.add_parser("upload", help="FTPS-implicit-TLS upload .gcode.3mf")
+    u = sub.add_parser("push", aliases=["upload"],
+                        help="FTPS-implicit-TLS push (was: upload)")
     u.add_argument("file", help="Local file to upload")
     u.add_argument("--remote", help="Remote filename (default: basename(local))")
     u.set_defaults(fn=cmd_upload)
@@ -2639,7 +2640,9 @@ def main() -> int:
                          "you knowingly want a high-flush print.")
     pr.set_defaults(fn=cmd_print)
 
-    d = sub.add_parser("daemon", help="Long-running monitor; emits state to stdout")
+    d = sub.add_parser("boo", aliases=["daemon"],
+                        help="Long-running monitor; emits state to stdout "
+                             "(was: daemon)")
     d.add_argument("--interval", default=5,
                    help="Seconds between forced state polls (default 5)")
     d.add_argument("--http", default="",
@@ -2712,7 +2715,8 @@ def main() -> int:
                     help="Nozzle index (0=left/main, 1=right) — only used for target=nozzle")
     st.set_defaults(fn=cmd_set_temp)
 
-    cl = sub.add_parser("chamber-light", help="Set chamber LED state")
+    cl = sub.add_parser("led", aliases=["chamber-light"],
+                         help="Set chamber LED state (was: chamber-light)")
     cl.add_argument("state", choices=["on", "off", "flashing"])
     cl.add_argument("--on-time",   type=int, default=500)
     cl.add_argument("--off-time",  type=int, default=500)
@@ -3326,10 +3330,12 @@ def main() -> int:
     pl.set_defaults(fn=cmd_printers)
 
     ha = sub.add_parser(
-        "ha-publish",
+        "ha",
+        aliases=["ha-publish"],
         help="Bridge state from a running daemon to a Home Assistant "
              "MQTT broker via HA discovery (item #50). Forwards "
-             "command topics back to /control/<verb> on the daemon.",
+             "command topics back to /control/<verb> on the daemon. "
+             "(was: ha-publish)",
     )
     ha.add_argument("--broker", default="127.0.0.1:1883",
                     help="MQTT broker host:port (default 127.0.0.1:1883)")

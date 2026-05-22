@@ -76,6 +76,20 @@ def test_top_level_help_no_format_specifier_crash():
     assert "must be real number" not in r.stderr
 
 
+# Verbs that are argparse aliases of a renamed primary. Their --help
+# output shows the canonical name in `usage:` rather than the alias, so
+# the smoke test below allows either string to appear. Keep this list
+# in sync with `aliases=[...]` add_parser kwargs.
+_ALIASES = {
+    "daemon":        "boo",
+    "ha-publish":    "ha",
+    "chamber-light": "led",
+    "upload":        "push",
+    "download":      "pull",
+    "camera":        "cam",   # historical, separate top-level for now
+}
+
+
 @pytest.mark.parametrize("subcmd", SUBCOMMANDS)
 def test_subcommand_help_exits_zero(subcmd):
     """Every discovered subcommand must respond to `--help` cleanly."""
@@ -86,9 +100,11 @@ def test_subcommand_help_exits_zero(subcmd):
         f"stdout:\n{r.stdout[:500]}\n"
         f"stderr:\n{r.stderr[:500]}"
     )
-    # Sanity check: the help text mentions the subcommand name somewhere.
-    assert subcmd in r.stdout, \
-        f"`{subcmd} --help` output doesn't contain the subcommand name"
+    # Sanity check: the help mentions either the subcmd name OR its
+    # canonical (aliases route to the canonical add_parser).
+    expected = {subcmd, _ALIASES.get(subcmd, subcmd)}
+    assert any(e in r.stdout for e in expected), (
+        f"`{subcmd} --help` output mentions none of {expected!r}")
 
 
 def test_version_flag_works():

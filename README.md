@@ -486,8 +486,9 @@ x2d_bridge.py level                      # G29 — auto bed-level
 x2d_bridge.py set-temp bed     60        # set_bed_temp 60°C
 x2d_bridge.py set-temp nozzle 220 --idx 0  # set_nozzle_temp on extruder 0
 x2d_bridge.py set-temp chamber 35        # M141 S35 (chamber heater)
-x2d_bridge.py chamber-light on           # ledctrl on / off / flashing
-x2d_bridge.py chamber-light flashing --on-time 200 --off-time 200 --loops 5
+beambam led on                           # ledctrl on / off / flashing
+beambam led flashing --on-time 200 --off-time 200 --loops 5
+                                          # (alias kept: `chamber-light`)
 x2d_bridge.py ams-load 0 3 --tar-temp 220   # AMS 0 / slot 3, preheat to 220
 x2d_bridge.py ams-unload 0 --tar-temp 220   # unload from AMS 0
 x2d_bridge.py jog X 10                   # relative move +10 mm on X
@@ -521,9 +522,12 @@ proprietary protocol on TCP/6000 that requires the x86\_64-only
 Once enabled, run:
 
 ```
-x2d_bridge.py camera                     # bind 127.0.0.1:8766 by default
-x2d_bridge.py camera --bind 0.0.0.0:8766 # expose on LAN (be careful!)
-x2d_bridge.py camera --idle-timeout 60   # stop ffmpeg after 60s of no viewers
+beambam cam start                        # bind 127.0.0.1:8766 by default (was `camera`)
+beambam cam start --bind 0.0.0.0:8766    # expose on LAN (be careful!)
+beambam cam start --idle-timeout 60      # stop ffmpeg after 60s of no viewers
+beambam cam stop                         # kill running proxy (PID in ~/.x2d/cam.pid)
+beambam cam                              # one-shot snapshot to ./cam.jpg
+beambam cam watch                        # live in-terminal viewer
                                           # default 30s; set very high to keep
                                           # the pump permanently warm
 ```

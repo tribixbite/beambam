@@ -29,9 +29,10 @@ from pathlib import Path
 
 def add_subparser(sub: "argparse._SubParsersAction") -> argparse.ArgumentParser:
     p = sub.add_parser(
-        "download",
+        "pull",
+        aliases=["download"],
         help="Pull a file off the printer's SD card via FTPS. "
-             "Inverse of `upload`.",
+             "Inverse of `push`. (was: download)",
     )
     p.add_argument("remote",
                    help="Remote path on the printer (e.g. /cache/x.3mf, "

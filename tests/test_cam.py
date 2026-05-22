@@ -147,12 +147,16 @@ def test_watch_loop_handles_fetch_error_and_continues():
 # ----- cli ----------------------------------------------------------------
 
 
-def test_subparser_requires_cam_subcommand():
+def test_subparser_bare_cam_is_snap_default():
+    """Bare `beambam cam` now resolves to a snapshot (cam_cmd is None,
+    cmd_cam dispatches to _do_snap)."""
     p = argparse.ArgumentParser()
     sub = p.add_subparsers()
     add_subparser(sub)
-    with pytest.raises(SystemExit):
-        p.parse_args(["cam"])
+    args = p.parse_args(["cam"])
+    assert args.cam_cmd is None       # no sub → snap default
+    # parent parser supplies --url default
+    assert args.url.startswith("http")
 
 
 def test_subparser_watch_defaults():
@@ -205,3 +209,100 @@ def test_cmd_cam_snap_handles_fetch_error(capsys):
         rc = cmd_cam(args)
     assert rc == 1
     assert "snapshot failed" in capsys.readouterr().err
+
+
+# ----- cam start / stop (background proxy) -------------------------------
+
+
+def test_subparser_cam_start_forwards_flags():
+    """`cam start --bind X --port Y --proto Z` parses + populates argv."""
+    p = argparse.ArgumentParser()
+    sub = p.add_subparsers()
+    add_subparser(sub)
+    args = p.parse_args(["cam", "start",
+                          "--bind", "0.0.0.0:8888",
+                          "--port", "1234",
+                          "--proto", "local",
+                          "--idle-timeout", "60",
+                          "--skip-check"])
+    assert args.cam_cmd == "start"
+    assert args.bind == "0.0.0.0:8888"
+    assert args.port == 1234
+    assert args.proto == "local"
+    assert args.idle_timeout == 60.0
+    assert args.skip_check is True
+    assert args.foreground is False
+
+
+def test_subparser_cam_stop_default_signal():
+    p = argparse.ArgumentParser()
+    sub = p.add_subparsers()
+    add_subparser(sub)
+    args = p.parse_args(["cam", "stop"])
+    assert args.cam_cmd == "stop"
+    assert args.signal == "TERM"
+
+
+def test_cam_stop_no_pidfile_returns_1(tmp_path, capsys, monkeypatch):
+    """No PID file → clean error, exit 1."""
+    monkeypatch.setattr("beambam.cam._CAM_PID_FILE", tmp_path / "missing.pid")
+    args = argparse.Namespace(cam_cmd="stop", signal="TERM")
+    rc = cmd_cam(args)
+    assert rc == 1
+    assert "no PID file" in capsys.readouterr().err
+
+
+def test_cam_stop_sends_signal_and_removes_pidfile(tmp_path, capsys,
+                                                     monkeypatch):
+    """Happy path: PID file exists, os.kill called, file removed."""
+    pid_file = tmp_path / "cam.pid"
+    pid_file.write_text("4242\n")
+    monkeypatch.setattr("beambam.cam._CAM_PID_FILE", pid_file)
+    sent: list[tuple[int, int]] = []
+    monkeypatch.setattr("os.kill", lambda pid, sig: sent.append((pid, sig)))
+    rc = cmd_cam(argparse.Namespace(cam_cmd="stop", signal="TERM"))
+    assert rc == 0
+    assert len(sent) == 1 and sent[0][0] == 4242
+    assert not pid_file.exists()
+    assert "sent SIGTERM" in capsys.readouterr().out
+
+
+def test_cam_stop_stale_pidfile_still_cleans_up(tmp_path, capsys,
+                                                  monkeypatch):
+    """If the PID isn't a live process, the route still removes the
+    stale file rather than leaving it to confuse the next `cam start`."""
+    pid_file = tmp_path / "cam.pid"
+    pid_file.write_text("9999999\n")
+    monkeypatch.setattr("beambam.cam._CAM_PID_FILE", pid_file)
+    def _raise(*a, **kw): raise ProcessLookupError(3)
+    monkeypatch.setattr("os.kill", _raise)
+    rc = cmd_cam(argparse.Namespace(cam_cmd="stop", signal="TERM"))
+    assert rc == 0
+    assert not pid_file.exists()
+    assert "stale PID file" in capsys.readouterr().err
+
+
+def test_cam_stop_unknown_signal_returns_2(tmp_path, monkeypatch, capsys):
+    """`cam stop --signal NONSENSE` should refuse rather than silent-fail."""
+    pid_file = tmp_path / "cam.pid"
+    pid_file.write_text("4242\n")
+    monkeypatch.setattr("beambam.cam._CAM_PID_FILE", pid_file)
+    rc = cmd_cam(argparse.Namespace(cam_cmd="stop", signal="NONSENSE"))
+    assert rc == 2
+    assert "unknown signal" in capsys.readouterr().err
+
+
+def test_cam_start_blocks_double_start(tmp_path, monkeypatch, capsys):
+    """If a live PID exists in the file, `cam start` refuses."""
+    pid_file = tmp_path / "cam.pid"
+    pid_file.write_text("1111\n")
+    monkeypatch.setattr("beambam.cam._CAM_PID_FILE", pid_file)
+    # Make os.kill(pid, 0) treat the PID as alive (no exception).
+    monkeypatch.setattr("os.kill", lambda pid, sig: None)
+    args = argparse.Namespace(
+        cam_cmd="start", bind="127.0.0.1:8766", port=322, proto="rtsp",
+        idle_timeout=30.0, skip_check=False, auth_token="",
+        foreground=False)
+    rc = cmd_cam(args)
+    assert rc == 1
+    assert "already running" in capsys.readouterr().err
