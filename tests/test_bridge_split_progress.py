@@ -209,9 +209,14 @@ _MAX_CMD_HANDLERS_IN_BRIDGE = 0
 #           → beambam/cli/__init__.py. x2d_bridge.py keeps a re-export
 #           + the `if __name__ == "__main__"` block so the GUI shim's
 #           pathname-spawn still works.
-#
-# Target after 5e.6 (shim only): ~50
-_MAX_LOC_IN_BRIDGE = 646
+#     255 — Phase 5e.6 (CLOSES Phase 5e): collapsed all the bulk
+#           re-export blocks into one consolidated import. _publish_one
+#           + _signing_key + _WEB_DIR_DEFAULT + LOG_QUEUE stay inline
+#           (test monkeypatch + path-tied constants). x2d_bridge.py is
+#           now a pure backwards-compat shim — 0 cmd_*, 0 def beyond
+#           _publish_one + _signing_key, every other symbol is a
+#           re-export. Phase 5e CLOSED.
+_MAX_LOC_IN_BRIDGE = 255
 
 
 def _count_cmd_handlers() -> int:
