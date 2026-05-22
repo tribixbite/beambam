@@ -40,7 +40,9 @@
                 { name: 'ams info N',  desc: 'Detail for one tray by global slot 0..15.', v: 'v1.2' },
                 { name: 'ams load N',  desc: 'Load filament from slot N.' },
                 { name: 'ams unload',  desc: 'Unload current filament.' },
-                { name: 'ams dry',     desc: 'Start a drying cycle on an AMS unit.', example: 'beambam ams dry 0 --temp 55 --hours 8', v: 'v1.2' }
+                { name: 'ams dry',     desc: 'Start a drying cycle on an AMS unit.', example: 'beambam ams dry 0 --temp 55 --hours 8', v: 'v1.2' },
+                { name: 'ams set N P', desc: 'Push tray_info_idx + temps + color from a flat profile.', example: "beambam ams set 7 './eSUN PLA+.json' --color F98C36", v: 'v1.3' },
+                { name: 'ams sync',    desc: 'Batch-push every slot from flat-profiles/ams-sync.json.', example: 'beambam ams sync --dry-run', v: 'v1.3' }
             ]
         },
         {

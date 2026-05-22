@@ -230,6 +230,42 @@ class Printer(AbstractContextManager):
         bed, 'XYZ' (default) for everything."""
         self.gcode(f"G28 {' '.join(axes)}")
 
+    # --- AMS metadata push ------------------------------------------------
+
+    def set_tray_metadata(
+        self,
+        slot: int,
+        *,
+        tray_type: str,
+        tray_info_idx: str,
+        nozzle_temp_min: int,
+        nozzle_temp_max: int,
+        tray_color: str | None = None,
+        setting_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Publish `print.ams_filament_setting` for a single AMS tray.
+
+        `slot` is global (0..15: unit*4 + tray). `tray_color` is 8-char
+        RRGGBBAA hex (alpha auto-appended `FF` if 6 chars passed). When
+        `tray_color` is None the firmware keeps the existing color.
+
+        Returns the payload that was published, for caller logging.
+        For dry-run payload inspection (no MQTT connection), use
+        `beambam.ams.build_tray_metadata_payload` directly.
+        """
+        from beambam.ams import build_tray_metadata_payload
+        payload = build_tray_metadata_payload(
+            slot,
+            tray_type=tray_type,
+            tray_info_idx=tray_info_idx,
+            nozzle_temp_min=nozzle_temp_min,
+            nozzle_temp_max=nozzle_temp_max,
+            tray_color=tray_color,
+            setting_id=setting_id,
+        )
+        self.mqtt.publish(payload)
+        return payload
+
     # --- FTPS (no MQTT) ---------------------------------------------------
 
     def upload(self, local_path: str | Path,

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -266,6 +267,289 @@ def test_cmd_ams_dry_publishes_payload(capsys):
         assert payload["print"]["drying_temp"] == 55
         assert payload["print"]["drying_time"] == 6
     assert "drying cycle requested" in capsys.readouterr().out
+
+
+# ----- ams set / sync ------------------------------------------------------
+
+
+from beambam.ams import (
+    _current_tray_color,
+    _load_flat_profile,
+    _normalize_tray_color,
+    _profile_tray_fields,
+    build_tray_metadata_payload,
+)
+
+
+def test_build_tray_metadata_payload_canonicalizes_color():
+    p = build_tray_metadata_payload(
+        2, tray_type="PLA", tray_info_idx="GFL99",
+        nozzle_temp_min=190, nozzle_temp_max=240,
+        tray_color="#7c4b00",
+    )["print"]
+    # slot 2 → unit 0, tray 2; 6-char color gets FF alpha
+    assert p["ams_id"] == 0
+    assert p["slot_id"] == 2 and p["tray_id"] == 2
+    assert p["tray_color"] == "7C4B00FF"
+    assert p["command"] == "ams_filament_setting"
+
+
+def test_build_tray_metadata_payload_slot_crosses_units():
+    p = build_tray_metadata_payload(
+        9, tray_type="PETG", tray_info_idx="GFG99",
+        nozzle_temp_min=230, nozzle_temp_max=270,
+    )["print"]
+    # slot 9 → unit 2 tray 1
+    assert p["ams_id"] == 2 and p["slot_id"] == 1
+    assert "tray_color" not in p   # color omitted when None
+
+
+def test_build_tray_metadata_payload_rejects_bad_slot():
+    with pytest.raises(ValueError, match="out of range"):
+        build_tray_metadata_payload(16, tray_type="PLA",
+                                    tray_info_idx="GFL99",
+                                    nozzle_temp_min=190, nozzle_temp_max=240)
+
+
+def test_build_tray_metadata_payload_rejects_bad_color():
+    with pytest.raises(ValueError, match="must be RRGGBB"):
+        build_tray_metadata_payload(0, tray_type="PLA",
+                                    tray_info_idx="GFL99",
+                                    nozzle_temp_min=190, nozzle_temp_max=240,
+                                    tray_color="not-a-color")
+
+
+def test_normalize_tray_color_accepts_hash_and_alpha():
+    assert _normalize_tray_color("#abcdef") == "ABCDEFFF"
+    assert _normalize_tray_color("ABCDEF12") == "ABCDEF12"
+
+
+def test_profile_tray_fields_pulls_temps_and_idx(tmp_path):
+    prof = tmp_path / "demo.json"
+    prof.write_text(json.dumps({
+        "type": "filament",
+        "name": "DemoBrand Glow @BBL X2D 0.4 nozzle",
+        "filament_type": ["PETG"],
+        "nozzle_temperature_range_low": ["220"],
+        "nozzle_temperature_range_high": ["260"],
+        "setting_id": "GFSDEMO01",
+    }))
+    p = _load_flat_profile(str(prof))
+    fields = _profile_tray_fields(p)
+    assert fields["tray_type"] == "PETG"
+    assert fields["tray_info_idx"] == "GFG99"     # generic PETG
+    assert fields["nozzle_temp_min"] == 220
+    assert fields["nozzle_temp_max"] == 260
+    assert fields["setting_id"] == "GFSDEMO01"
+    assert fields["tray_sub_brands"] == "DemoBrand Glow"
+
+
+def test_profile_tray_fields_rejects_non_filament(tmp_path):
+    prof = tmp_path / "process.json"
+    prof.write_text(json.dumps({"type": "process", "name": "x"}))
+    with pytest.raises(ValueError, match="not a filament"):
+        _load_flat_profile(str(prof))
+
+
+def test_current_tray_color_reads_live_state():
+    block = {"ams": [{"id": "0", "tray": [
+        {"id": "0", "tray_color": "ABCDEF12"},
+        {"id": "1", "tray_color": ""},                # explicitly empty
+    ]}]}
+    assert _current_tray_color(block, 0) == "ABCDEF12"
+    assert _current_tray_color(block, 1) is None       # empty → None
+    assert _current_tray_color(block, 9) is None       # absent unit
+
+
+def test_cmd_ams_set_dry_run_emits_payload(tmp_path, capsys):
+    prof = tmp_path / "f.json"
+    prof.write_text(json.dumps({
+        "type": "filament", "name": "eSUN PLA+ @BBL X2D 0.4 nozzle",
+        "filament_type": ["PLA"],
+        "nozzle_temperature_range_low": ["190"],
+        "nozzle_temperature_range_high": ["240"],
+        "setting_id": "GFSE00",
+    }))
+    args = argparse.Namespace(
+        ams_cmd="set", slot=3, profile=str(prof),
+        color="00C896", dry_run=True,
+    )
+    # Patch Printer to prove the dry-run path never instantiates it.
+    with patch("beambam.Printer") as Printer:
+        rc = cmd_ams(args)
+        Printer.assert_not_called()
+    assert rc == 0
+    parsed = json.loads(capsys.readouterr().out)
+    assert parsed["print"]["ams_id"] == 0     # slot 3 → unit 0 tray 3
+    assert parsed["print"]["slot_id"] == 3
+    assert parsed["print"]["tray_color"] == "00C896FF"
+    assert parsed["print"]["nozzle_temp_min"] == 190
+
+
+def test_cmd_ams_set_dry_run_color_keep_omits_color(tmp_path, capsys):
+    """Without --color and with --dry-run, no live state pull happens
+    so tray_color must be omitted (firmware keeps existing)."""
+    prof = tmp_path / "f.json"
+    prof.write_text(json.dumps({
+        "type": "filament", "name": "test",
+        "filament_type": ["PLA"],
+        "nozzle_temperature_range_low": ["190"],
+        "nozzle_temperature_range_high": ["240"],
+    }))
+    args = argparse.Namespace(ams_cmd="set", slot=0, profile=str(prof),
+                              color=None, dry_run=True)
+    with patch("beambam.Printer") as Printer:
+        rc = cmd_ams(args)
+        Printer.assert_not_called()
+    assert rc == 0
+    parsed = json.loads(capsys.readouterr().out)
+    assert "tray_color" not in parsed["print"]
+
+
+def test_cmd_ams_set_missing_profile_returns_1(tmp_path, capsys):
+    args = argparse.Namespace(
+        ams_cmd="set", slot=0,
+        profile=str(tmp_path / "missing.json"),
+        color=None, dry_run=True,
+    )
+    rc = cmd_ams(args)
+    assert rc == 1
+    assert "failed to load profile" in capsys.readouterr().err
+
+
+def test_cmd_ams_set_publishes_via_printer(tmp_path, capsys):
+    prof = tmp_path / "f.json"
+    prof.write_text(json.dumps({
+        "type": "filament", "name": "eSUN PLA+ @BBL X2D 0.4",
+        "filament_type": ["PLA"],
+        "nozzle_temperature_range_low": ["190"],
+        "nozzle_temperature_range_high": ["240"],
+    }))
+    args = argparse.Namespace(
+        ams_cmd="set", slot=5, profile=str(prof),
+        color="FF0000", dry_run=False,
+    )
+    with patch("beambam.Printer") as Printer:
+        fake = MagicMock()
+        Printer.return_value.__enter__.return_value = fake
+        rc = cmd_ams(args)
+    assert rc == 0
+    fake.set_tray_metadata.assert_called_once()
+    kwargs = fake.set_tray_metadata.call_args.kwargs
+    assert kwargs["tray_type"] == "PLA"
+    assert kwargs["tray_color"] == "FF0000"
+    assert "tray_sub_brands" not in kwargs    # dropped from signature
+
+
+def test_cmd_ams_sync_dry_run_walks_map(tmp_path, capsys):
+    prof = tmp_path / "f.json"
+    prof.write_text(json.dumps({
+        "type": "filament", "name": "test",
+        "filament_type": ["PLA"],
+        "nozzle_temperature_range_low": ["190"],
+        "nozzle_temperature_range_high": ["240"],
+    }))
+    syncmap = tmp_path / "ams-sync.json"
+    syncmap.write_text(json.dumps({
+        "slots": [
+            {"slot": 0, "profile": "f.json", "color": "111111"},
+            {"slot": 1, "profile": "f.json"},
+        ],
+    }))
+    args = argparse.Namespace(
+        ams_cmd="sync", map_path=str(syncmap),
+        profiles_dir=None, dry_run=True,
+    )
+    with patch("beambam.Printer") as Printer:
+        rc = cmd_ams(args)
+        Printer.assert_not_called()
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "slot  0" in out and "color=111111" in out
+    assert "slot  1" in out and "(keep)" in out
+
+
+def test_cmd_ams_sync_missing_map_returns_1(tmp_path, capsys):
+    args = argparse.Namespace(
+        ams_cmd="sync", map_path=str(tmp_path / "no.json"),
+        profiles_dir=None, dry_run=True,
+    )
+    rc = cmd_ams(args)
+    assert rc == 1
+    assert "not found" in capsys.readouterr().err
+
+
+def test_cmd_ams_sync_empty_slots_returns_1(tmp_path, capsys):
+    syncmap = tmp_path / "ams-sync.json"
+    syncmap.write_text(json.dumps({"slots": []}))
+    args = argparse.Namespace(
+        ams_cmd="sync", map_path=str(syncmap),
+        profiles_dir=None, dry_run=True,
+    )
+    rc = cmd_ams(args)
+    assert rc == 1
+    assert "no 'slots'" in capsys.readouterr().err
+
+
+def test_cmd_ams_sync_aborts_before_publish_on_bad_profile(tmp_path, capsys):
+    """Half-batches are a footgun — verify the validate-up-front guard
+    refuses to publish any slot when one profile is broken."""
+    good = tmp_path / "good.json"
+    good.write_text(json.dumps({
+        "type": "filament", "name": "OK",
+        "filament_type": ["PLA"],
+        "nozzle_temperature_range_low": ["190"],
+        "nozzle_temperature_range_high": ["240"],
+    }))
+    syncmap = tmp_path / "ams-sync.json"
+    syncmap.write_text(json.dumps({
+        "slots": [
+            {"slot": 0, "profile": "good.json"},
+            {"slot": 1, "profile": "missing.json"},
+        ],
+    }))
+    args = argparse.Namespace(
+        ams_cmd="sync", map_path=str(syncmap),
+        profiles_dir=None, dry_run=False,
+    )
+    with patch("beambam.Printer") as Printer:
+        rc = cmd_ams(args)
+        Printer.assert_not_called()    # no half-batch
+    assert rc == 1
+    assert "missing.json" in capsys.readouterr().err
+
+
+# ----- subparser for set/sync ----------------------------------------------
+
+
+def test_subparser_set_requires_slot_and_profile():
+    p = argparse.ArgumentParser()
+    sub = p.add_subparsers()
+    add_subparser(sub)
+    with pytest.raises(SystemExit):
+        p.parse_args(["ams", "set"])         # missing both
+    with pytest.raises(SystemExit):
+        p.parse_args(["ams", "set", "3"])    # missing profile
+
+
+def test_subparser_set_full():
+    p = argparse.ArgumentParser()
+    sub = p.add_subparsers()
+    add_subparser(sub)
+    args = p.parse_args(["ams", "set", "3", "/tmp/x.json",
+                         "--color", "ABCDEF", "--dry-run"])
+    assert args.ams_cmd == "set" and args.slot == 3
+    assert args.profile == "/tmp/x.json"
+    assert args.color == "ABCDEF" and args.dry_run is True
+
+
+def test_subparser_sync_optional_map():
+    p = argparse.ArgumentParser()
+    sub = p.add_subparsers()
+    add_subparser(sub)
+    args = p.parse_args(["ams", "sync"])
+    assert args.ams_cmd == "sync"
+    assert args.map_path is None and args.dry_run is False
 
 
 # ----- live ---------------------------------------------------------------

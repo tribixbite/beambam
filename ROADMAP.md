@@ -360,8 +360,9 @@ phase staging.
   phase2 smoke is too heavy for CI). Path forward for full conversion
   to `def test_*` assert-style stays open; the wrapper just buys CI
   coverage immediately.
-- [ ] **Delete the stranded `tribixbite/beambam-boo` repo** — needs `gh auth refresh
-  -s delete_repo` then `gh repo delete tribixbite/beambam-boo --yes`. User-only.
+- [x] **Delete the stranded `tribixbite/beambam-boo` repo** — done by user
+  (2026-05-21) outside this session; `tribixbite/beambam` remains the only
+  remote namespace.
 
 ---
 

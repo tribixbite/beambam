@@ -493,7 +493,18 @@ x2d_bridge.py ams-unload 0 --tar-temp 220   # unload from AMS 0
 x2d_bridge.py jog X 10                   # relative move +10 mm on X
 x2d_bridge.py jog Z -5 --feed 600        # relative -5 mm on Z @ 600 mm/min
 x2d_bridge.py gcode "M115"               # send arbitrary gcode_line
+
+# AMS slot metadata — push tray_info_idx / temps / color to one slot or
+# the whole bank in one command. Profile files live in flat-profiles/.
+beambam ams set 7 'flat-profiles/eSUN PLA+ @BBL X2D 0.4 nozzle.json' \
+    --color F98C36                       # one slot, explicit color
+beambam ams sync                         # batch from flat-profiles/ams-sync.json
+beambam ams sync --dry-run               # preview (no MQTT, no creds needed)
 ```
+
+See [`flat-profiles/AMS_MAPPING.md`](flat-profiles/AMS_MAPPING.md) for
+the bundled 13-slot sync map and the schema each profile JSON must
+follow.
 
 Payload schemas reverse-engineered from
 `bs-bionic/src/slic3r/GUI/DeviceManager.cpp::MachineObject::command_*`
