@@ -132,6 +132,55 @@ def test_cmd_slice_omits_optional_flags_when_unset():
     assert "--keep-graft" not in argv
 
 
+def test_cmd_slice_forwards_resize_and_copies_flags():
+    """New flags (2026-05-21) — --scale-pct / --mm / --copies — must
+    reach x2d_slice.main's argv when set."""
+    args = argparse.Namespace(
+        stl=Path("m.stl"), out=Path("m.3mf"),
+        template=Path("t.3mf"), plate=0, scale=1.0,
+        scale_pct=50.0, mm=120.0, copies=4,
+        color=None, bed=None, keep_graft=False,
+    )
+    captured_argv: list[list[str]] = []
+
+    def fake_main():
+        captured_argv.append(sys.argv[:])
+        return 0
+
+    saved = sys.argv[:]
+    with patch("x2d_slice.main", side_effect=fake_main):
+        cmd_slice(args)
+    sys.argv = saved
+    argv = captured_argv[0]
+    assert "--scale-pct" in argv and "50.0" in argv
+    assert "--mm" in argv and "120.0" in argv
+    assert "--copies" in argv and "4" in argv
+
+
+def test_cmd_slice_omits_new_flags_at_defaults():
+    """copies=1 + scale_pct=None + mm=None: NO flag in forwarded argv."""
+    args = argparse.Namespace(
+        stl=Path("m.stl"), out=Path("m.3mf"),
+        template=Path("t.3mf"), plate=0, scale=1.0,
+        scale_pct=None, mm=None, copies=1,
+        color=None, bed=None, keep_graft=False,
+    )
+    captured_argv: list[list[str]] = []
+
+    def fake_main():
+        captured_argv.append(sys.argv[:])
+        return 0
+
+    saved = sys.argv[:]
+    with patch("x2d_slice.main", side_effect=fake_main):
+        cmd_slice(args)
+    sys.argv = saved
+    argv = captured_argv[0]
+    assert "--scale-pct" not in argv
+    assert "--mm" not in argv
+    assert "--copies" not in argv
+
+
 def test_cmd_slice_restores_argv_on_error():
     """Even if x2d_slice.main raises, sys.argv must be restored."""
     args = argparse.Namespace(

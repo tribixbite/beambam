@@ -158,6 +158,9 @@ cloud-design-remixes / cloud-favorites / cloud-liked / cloud-presets /
 cloud-app-config.
 Shipped in commit 75cba23: cloud-pull-design / cloud-print-design.
 Shipped in commit 0115af6: cloud-like / cloud-comments / print-search.
+Shipped 2026-05-21: cloud-profile / cloud-points / cloud-unread — closes
+the 5 cloud-only-method gap from the 2026-05-21 endpoint audit (every
+shipped CloudClient method now has a CLI verb).
 Remaining endpoints from the catalog worth wiring:
 - [ ] `cloud-project [list|show <id>]` — `/v1/iot-service/api/user/project`
   is POST-only (creates a new project). GET fails 405. Wiring write-side

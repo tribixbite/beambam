@@ -423,3 +423,118 @@ def test_cloud_comment_reply_cloud_error_returns_1(fake_cli, capsys):
     assert rc == 1
     assert "cloud API failed" in capsys.readouterr().err
     assert "403" in capsys.readouterr().err or True  # already consumed above
+
+
+# ===== cmd_cloud_profile ==================================================
+
+
+def test_cloud_profile_pretty_prints_known_fields(fake_cli, capsys):
+    import x2d_bridge
+    fake_cli.get_my_profile.return_value = {
+        "uid": 42, "handle": "claude", "name": "Claude",
+        "bio": "test", "designCount": 7, "fanCount": 3,
+        "followCount": 11, "likeCount": 99,
+        "futureFieldWeIgnore": "shrug",
+    }
+    rc = x2d_bridge.cmd_cloud_profile(_ns())
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "uid" in out and "42" in out
+    assert "handle" in out and "claude" in out
+    assert "designs" in out and "7" in out
+    # Unknown field should be silently ignored, not crash.
+    assert "futureFieldWeIgnore" not in out
+
+
+def test_cloud_profile_json_round_trips(fake_cli, capsys):
+    import x2d_bridge
+    fake_cli.get_my_profile.return_value = {"uid": 1, "handle": "x"}
+    rc = x2d_bridge.cmd_cloud_profile(_ns(json=True))
+    assert rc == 0
+    assert json.loads(capsys.readouterr().out)["uid"] == 1
+
+
+def test_cloud_profile_logged_out_returns_1(anon_cli):
+    import x2d_bridge
+    rc = x2d_bridge.cmd_cloud_profile(_ns())
+    assert rc == 1
+
+
+def test_cloud_profile_cloud_error_returns_1(fake_cli, capsys):
+    import x2d_bridge
+    fake_cli.get_my_profile.side_effect = cloud_client.CloudError("500")
+    rc = x2d_bridge.cmd_cloud_profile(_ns())
+    assert rc == 1
+    assert "cloud API failed" in capsys.readouterr().err
+
+
+# ===== cmd_cloud_points ===================================================
+
+
+def test_cloud_points_prints_each_leaf(fake_cli, capsys):
+    import x2d_bridge
+    fake_cli.get_points_progress.return_value = {
+        "totalPoints": 1234,
+        "weeklyEarned": 50,
+        "rewards": [{"id": 1}, {"id": 2}],   # nested list compacted
+    }
+    rc = x2d_bridge.cmd_cloud_points(_ns())
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "totalPoints" in out and "1234" in out
+    assert "rewards" in out
+    assert "[{" in out                          # JSON-compacted list
+
+
+def test_cloud_points_json_flag(fake_cli, capsys):
+    import x2d_bridge
+    fake_cli.get_points_progress.return_value = {"totalPoints": 1234}
+    rc = x2d_bridge.cmd_cloud_points(_ns(json=True))
+    assert rc == 0
+    assert json.loads(capsys.readouterr().out)["totalPoints"] == 1234
+
+
+def test_cloud_points_logged_out_returns_1(anon_cli):
+    import x2d_bridge
+    rc = x2d_bridge.cmd_cloud_points(_ns())
+    assert rc == 1
+
+
+# ===== cmd_cloud_unread ===================================================
+
+
+def test_cloud_unread_sums_both_endpoints(fake_cli, capsys):
+    import x2d_bridge
+    fake_cli.get_trouble_unread_count.return_value = 3
+    fake_cli.get_makerworld_unread_count.return_value = 5
+    rc = x2d_bridge.cmd_cloud_unread(_ns())
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "aftersale_tickets" in out and " 3" in out
+    assert "makerworld" in out and " 5" in out
+    assert "total" in out and " 8" in out
+
+
+def test_cloud_unread_json_shape(fake_cli, capsys):
+    import x2d_bridge
+    fake_cli.get_trouble_unread_count.return_value = 2
+    fake_cli.get_makerworld_unread_count.return_value = 4
+    rc = x2d_bridge.cmd_cloud_unread(_ns(json=True))
+    assert rc == 0
+    parsed = json.loads(capsys.readouterr().out)
+    assert parsed == {"aftersale_tickets": 2, "makerworld": 4, "total": 6}
+
+
+def test_cloud_unread_logged_out_returns_1(anon_cli):
+    import x2d_bridge
+    rc = x2d_bridge.cmd_cloud_unread(_ns())
+    assert rc == 1
+
+
+def test_cloud_unread_cloud_error_returns_1(fake_cli, capsys):
+    import x2d_bridge
+    fake_cli.get_trouble_unread_count.side_effect = cloud_client.CloudError(
+        "401")
+    rc = x2d_bridge.cmd_cloud_unread(_ns())
+    assert rc == 1
+    assert "cloud API failed" in capsys.readouterr().err

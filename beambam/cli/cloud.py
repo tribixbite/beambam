@@ -372,6 +372,79 @@ def cmd_cloud_search_suggest(_args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_cloud_profile(args: argparse.Namespace) -> int:
+    """Show the logged-in user's MakerWorld profile — uid, handle, name,
+    avatar, bio, follow + design counts."""
+    import cloud_client
+    cli = cloud_client.CloudClient.load_or_anonymous()
+    if cli.session.empty:
+        print("not logged in", file=sys.stderr); return 1
+    try:
+        prof = cli.get_my_profile()
+    except cloud_client.CloudError as e:
+        print(f"cloud API failed: {e}", file=sys.stderr); return 1
+    if args.json:
+        print(json.dumps(prof, indent=2, default=str)); return 0
+    # Pretty-print the common fields, gracefully degrading when Bambu
+    # renames keys (they have before).
+    fields = [
+        ("uid",          "uid"),
+        ("handle",       "handle"),
+        ("name",         "name"),
+        ("bio",          "bio"),
+        ("designs",      "designCount"),
+        ("followers",    "fanCount"),
+        ("following",    "followCount"),
+        ("likes",        "likeCount"),
+    ]
+    for label, key in fields:
+        if key in prof:
+            print(f"  {label:<10} {prof[key]}")
+    return 0
+
+
+def cmd_cloud_points(args: argparse.Namespace) -> int:
+    """Show Bambu gamification points / progress breakdown."""
+    import cloud_client
+    cli = cloud_client.CloudClient.load_or_anonymous()
+    if cli.session.empty:
+        print("not logged in", file=sys.stderr); return 1
+    try:
+        progress = cli.get_points_progress()
+    except cloud_client.CloudError as e:
+        print(f"cloud API failed: {e}", file=sys.stderr); return 1
+    if args.json:
+        print(json.dumps(progress, indent=2, default=str)); return 0
+    # Bambu's payload shape isn't fully documented; dump every leaf.
+    for k, v in progress.items():
+        if isinstance(v, (dict, list)):
+            print(f"  {k}: {json.dumps(v, default=str)[:120]}")
+        else:
+            print(f"  {k:<24} {v}")
+    return 0
+
+
+def cmd_cloud_unread(args: argparse.Namespace) -> int:
+    """Show unread-message counts (aftersale tickets + MakerWorld
+    notifications)."""
+    import cloud_client
+    cli = cloud_client.CloudClient.load_or_anonymous()
+    if cli.session.empty:
+        print("not logged in", file=sys.stderr); return 1
+    try:
+        trouble = cli.get_trouble_unread_count()
+        makerworld = cli.get_makerworld_unread_count()
+    except cloud_client.CloudError as e:
+        print(f"cloud API failed: {e}", file=sys.stderr); return 1
+    counts = {"aftersale_tickets": trouble, "makerworld": makerworld,
+              "total": trouble + makerworld}
+    if args.json:
+        print(json.dumps(counts, indent=2)); return 0
+    for k, v in counts.items():
+        print(f"  {k:<20} {v}")
+    return 0
+
+
 def cmd_cloud_app_config(args: argparse.Namespace) -> int:
     """Global app feature-flag manifest."""
     import cloud_client
@@ -1742,6 +1815,26 @@ def add_subparser(sub: "argparse._SubParsersAction") -> None:
              "feature flags.")
     cli_cfg.add_argument("--json", action="store_true")
     cli_cfg.set_defaults(fn=cmd_cloud_app_config)
+
+    cli_prof = sub.add_parser(
+        "cloud-profile",
+        help="Show the logged-in MakerWorld profile (handle, follower "
+             "count, design count, bio).")
+    cli_prof.add_argument("--json", action="store_true")
+    cli_prof.set_defaults(fn=cmd_cloud_profile)
+
+    cli_pts = sub.add_parser(
+        "cloud-points",
+        help="Show Bambu gamification points / progress breakdown.")
+    cli_pts.add_argument("--json", action="store_true")
+    cli_pts.set_defaults(fn=cmd_cloud_points)
+
+    cli_unr = sub.add_parser(
+        "cloud-unread",
+        help="Count of unread aftersale tickets + MakerWorld "
+             "notifications.")
+    cli_unr.add_argument("--json", action="store_true")
+    cli_unr.set_defaults(fn=cmd_cloud_unread)
 
     cli_ttc = sub.add_parser(
         "cloud-ttcode",

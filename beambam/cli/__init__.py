@@ -73,6 +73,9 @@ _COMMAND_GROUPS: list[tuple[str, list[tuple[str, str]]]] = [
         ("cloud-filaments","Spool inventory (AMS RFID + manual)"),
         ("cloud-presets",  "Cloud-synced slicer presets"),
         ("cloud-app-config","Global app feature-flag manifest"),
+        ("cloud-profile",  "Logged-in user's MakerWorld profile"),
+        ("cloud-points",   "Bambu gamification points / progress"),
+        ("cloud-unread",   "Unread aftersale + MakerWorld counts"),
     ]),
     ("Cloud control", [
         ("cloud-print",    "Cloud-route start-print"),

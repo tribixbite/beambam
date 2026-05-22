@@ -2480,6 +2480,14 @@ from beambam.cli.cloud import (  # noqa: E402, F401
 # cmd_cloud_app_config moved to beambam/cli/cloud.py (Phase 5b).
 from beambam.cli.cloud import cmd_cloud_app_config  # noqa: E402, F401
 
+# cmd_cloud_profile / points / unread added 2026-05-21 to close the
+# remaining 5 cloud-only endpoint-audit gaps.
+from beambam.cli.cloud import (  # noqa: E402, F401
+    cmd_cloud_points,
+    cmd_cloud_profile,
+    cmd_cloud_unread,
+)
+
 
 # cmd_cloud_get_access_code moved to beambam/cli/cloud.py (Phase 5b
 # batch 9). Re-exported below.

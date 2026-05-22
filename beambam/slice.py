@@ -47,6 +47,17 @@ def add_subparser(sub: "argparse._SubParsersAction") -> argparse.ArgumentParser:
                    help="Plate to slice (0 = all)")
     p.add_argument("--scale", type=float, default=1.0,
                    help="Uniform STL scale (1.0 = original)")
+    p.add_argument("--scale-pct", type=float, default=None,
+                   help="Percentage scale (75 = 75%%); wins over --scale "
+                        "if both given.")
+    p.add_argument("--mm", type=float, default=None,
+                   help="Target absolute size (mm) on the largest axis; "
+                        "computes a uniform scale to match.")
+    p.add_argument("--copies", "--quantity", "-n", type=int, default=1,
+                   dest="copies",
+                   help="Tile N copies of the model on the plate via 3MF "
+                        "instance multipliers. Pre-validates that the "
+                        "grid fits the 256x256mm X2D build volume.")
     p.add_argument("--color",
                    help="Primary filament color: #RRGGBB hex or Bambu name "
                         "(e.g. 'Gold', 'PLA Silk Gold')")
@@ -74,6 +85,13 @@ def cmd_slice(args: argparse.Namespace) -> int:
                 "--template", str(args.template),
                 "--plate", str(args.plate),
                 "--scale", str(args.scale)]
+    if getattr(args, "scale_pct", None) is not None:
+        new_argv += ["--scale-pct", str(args.scale_pct)]
+    if getattr(args, "mm", None) is not None:
+        new_argv += ["--mm", str(args.mm)]
+    copies = getattr(args, "copies", 1) or 1
+    if copies != 1:
+        new_argv += ["--copies", str(copies)]
     if args.color:
         new_argv += ["--color", args.color]
     if args.bed:
