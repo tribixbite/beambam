@@ -198,12 +198,13 @@ _MAX_CMD_HANDLERS_IN_BRIDGE = 0
 #   3,462 — Phase 5e.1: PACKAGE_VERSION → beambam/_version.py
 #   2,501 — Phase 5e.2: ServeServer + _PrinterSession + _ConnHandler
 #           + 14 _op_* + _OPS table → beambam/serve_socket.py
+#   1,543 — Phase 5e.3: _serve_http (~960 LoC HTTP daemon body) →
+#           beambam/serve_http.py
 #
-# Target after 5e.3 (extract _serve_http body): ~1,540
 # Target after 5e.4 (extract _publish_one + helpers): ~1,490
 # Target after 5e.5 (extract main()): ~600
 # Target after 5e.6 (shim only): ~50
-_MAX_LOC_IN_BRIDGE = 2501
+_MAX_LOC_IN_BRIDGE = 1543
 
 
 def _count_cmd_handlers() -> int:
