@@ -200,11 +200,15 @@ _MAX_CMD_HANDLERS_IN_BRIDGE = 0
 #           + 14 _op_* + _OPS table → beambam/serve_socket.py
 #   1,543 — Phase 5e.3: _serve_http (~960 LoC HTTP daemon body) →
 #           beambam/serve_http.py
+#   1,531 — Phase 5e.4 (partial): _reboot_payload + _REBOOT_GCODE →
+#           beambam/cli/control.py. `_publish_one` stayed inline —
+#           moving it broke 23 tests that monkeypatch
+#           `x2d_bridge.X2DClient`; the 9-LoC saving wasn't worth the
+#           test-coupling rework.
 #
-# Target after 5e.4 (extract _publish_one + helpers): ~1,490
 # Target after 5e.5 (extract main()): ~600
 # Target after 5e.6 (shim only): ~50
-_MAX_LOC_IN_BRIDGE = 1543
+_MAX_LOC_IN_BRIDGE = 1531
 
 
 def _count_cmd_handlers() -> int:

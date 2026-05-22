@@ -113,17 +113,32 @@ def cmd_chamber_light(args: argparse.Namespace) -> int:
     return _publish(args, payload)
 
 
+# Constant + helper used by cmd_reboot and its unit tests so the wire
+# payload is reachable without instantiating an argparse.Namespace.
+_REBOOT_GCODE = "M999"
+
+
+def _reboot_payload() -> dict:
+    """The wire payload `beambam reboot --confirm` sends.
+
+    M999 is the Marlin "restart from emergency stop" gcode. On Bambu
+    firmware it clears the printer's halt/error flags and re-arms the
+    motion system; it does NOT power-cycle the SoC, the MQTT broker,
+    or the network stack. There is no documented MQTT verb for a true
+    soft reboot on current X-series firmware — the only paths are the
+    physical power button or an OTA firmware update."""
+    from beambam.cli._helpers import _print_cmd
+    return _print_cmd("gcode_line", param=f"{_REBOOT_GCODE}\n")
+
+
 def cmd_reboot(args: argparse.Namespace) -> int:
     """Send `M999` to the printer (gcode error-clear).
 
     Defaults to dry-run because the wording "reboot" is broader than
     what the firmware actually exposes: M999 clears the halt/error
     flag set, but it does NOT power-cycle the SoC, restart MQTT, or
-    flush the network plugin. Pass --confirm to actually send. The
-    `_reboot_payload` helper + `_REBOOT_GCODE` constant stay in
-    x2d_bridge.py so existing test imports keep working."""
+    flush the network plugin. Pass --confirm to actually send."""
     import json
-    from x2d_bridge import _reboot_payload
     payload = _reboot_payload()
     if not args.confirm:
         print("[reboot] DRY-RUN — pass --confirm to actually send.",

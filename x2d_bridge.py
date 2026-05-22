@@ -303,6 +303,13 @@ from beambam.serve_socket import (  # noqa: E402, F401
 # ---------------------------------------------------------------------------
 
 def _publish_one(args: argparse.Namespace, payload: dict) -> int:
+    """Connect, publish one signed-MQTT payload, disconnect, echo JSON.
+
+    Stays inline here (rather than moving to beambam.cli._helpers in
+    Phase 5e.4) because ~8 test files monkeypatch
+    `x2d_bridge.X2DClient` and rely on this function's `X2DClient(...)`
+    lookup resolving from THIS module's namespace. Moving it broke 23
+    tests; the cost outweighed the 9 LoC saved."""
     creds = Creds.resolve(args)
     cli = X2DClient(creds)
     cli.connect()
@@ -314,34 +321,15 @@ def _publish_one(args: argparse.Namespace, payload: dict) -> int:
     return 0
 
 
-# _print_cmd / _system_cmd / _camera_cmd now live in
-# beambam/cli/_helpers.py (Phase 5b). Re-exported at the top.
-
-
-# _xcam_cmd moved to beambam/cli/_helpers.py (Phase 5a batch 3). Imported
-# at the top of this file alongside the other helpers.
+# `_reboot_payload` + `_REBOOT_GCODE` moved to beambam/cli/control.py
+# next to `cmd_reboot` (Phase 5e batch 4). Re-exported here for
+# back-compat — tests/test_reboot.py reaches for these on the
+# x2d_bridge surface.
 from beambam.cli._helpers import _xcam_cmd  # noqa: E402, F401
-
-
-# cmd_pause / cmd_resume / cmd_stop moved to beambam/cli/control.py
-# (Phase 5a). Re-exported below alongside the other LAN control verbs.
-
-
-# Constant + helper used by cmd_reboot and its unit tests so the wire
-# payload is reachable without instantiating an argparse.Namespace.
-_REBOOT_GCODE = "M999"
-
-
-def _reboot_payload() -> dict:
-    """The wire payload `beambam reboot --confirm` sends.
-
-    M999 is the Marlin "restart from emergency stop" gcode. On Bambu
-    firmware it clears the printer's halt/error flags and re-arms the
-    motion system; it does NOT power-cycle the SoC, the MQTT broker,
-    or the network stack. There is no documented MQTT verb for a true
-    soft reboot on current X-series firmware — the only paths are the
-    physical power button or an OTA firmware update."""
-    return _print_cmd("gcode_line", param=f"{_REBOOT_GCODE}\n")
+from beambam.cli.control import (  # noqa: E402, F401
+    _REBOOT_GCODE,
+    _reboot_payload,
+)
 
 
 # cmd_reboot moved to beambam/cli/control.py (Phase 5a batch 2). The
