@@ -207,6 +207,14 @@ from beambam.serve_http_helpers import (  # noqa: E402, F401
 _WEB_DIR_DEFAULT = Path(__file__).resolve().parent / "web"
 
 
+# Logger used by the queue dispatcher inside `cmd_daemon` (which lives
+# in beambam.cli.daemon and lazy-imports this back). Each LOG_QUEUE.*
+# call lands in the standard `logging` tree under the "x2d.queue"
+# namespace so operators can filter daemon logs by stream.
+import logging  # noqa: E402
+LOG_QUEUE = logging.getLogger("x2d.queue")
+
+
 def _serve_http(bind: str,
                 get_state: Callable[[str], dict | None],
                 get_last_ts: Callable[[str], float] | None = None,
