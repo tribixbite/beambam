@@ -270,13 +270,13 @@ def cmd_serve(args: argparse.Namespace) -> int:
     """Run the UNIX-socket daemon that the libbambu_networking.so shim
     talks to. See runtime/network_shim/PROTOCOL.md for the wire format.
 
-    The ServeServer class (~1080 LoC including its supporting
-    _PrinterSession / _ConnHandler / _OpError types) still lives in
-    x2d_bridge.py — extracting it is a separate Phase 5d batch. The
-    handler itself is just three lines: open socket path, instantiate
-    server, serve forever."""
+    The ServeServer class (~960 LoC including its supporting
+    _PrinterSession / _ConnHandler / _OpError types + the 14 _op_*
+    handlers) lives in `beambam/serve_socket.py` as of Phase 5e batch 2.
+    `x2d_bridge` re-exports `ServeServer` for back-compat with anything
+    inspecting the old surface."""
     from pathlib import Path
-    from x2d_bridge import ServeServer
+    from beambam.serve_socket import ServeServer
     sock_path = Path(args.sock).expanduser()
     server = ServeServer(sock_path)
     return server.serve_forever()

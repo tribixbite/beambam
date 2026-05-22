@@ -187,6 +187,25 @@ BRIDGE = REPO / "x2d_bridge.py"
 _MAX_CMD_HANDLERS_IN_BRIDGE = 0
 
 
+# x2d_bridge.py LoC ratchet — new in Phase 5e. With cmd_* at floor,
+# the only useful drainage signal left is "did x2d_bridge.py shrink?".
+# Lower this ceiling in the same commit that does the work; never
+# raise it without an explicit reason in the commit message.
+#
+# History (file is gitignored from old artefacts — these LoC counts
+# come from `wc -l x2d_bridge.py` at commit time):
+#   3,470 — Phase 5d closed (cmd_* hit 0)
+#   3,462 — Phase 5e.1: PACKAGE_VERSION → beambam/_version.py
+#   2,501 — Phase 5e.2: ServeServer + _PrinterSession + _ConnHandler
+#           + 14 _op_* + _OPS table → beambam/serve_socket.py
+#
+# Target after 5e.3 (extract _serve_http body): ~1,540
+# Target after 5e.4 (extract _publish_one + helpers): ~1,490
+# Target after 5e.5 (extract main()): ~600
+# Target after 5e.6 (shim only): ~50
+_MAX_LOC_IN_BRIDGE = 2501
+
+
 def _count_cmd_handlers() -> int:
     """Count top-level `def cmd_*` declarations in x2d_bridge.py.
 
@@ -194,6 +213,41 @@ def _count_cmd_handlers() -> int:
     don't count as new public CLI handlers."""
     src = BRIDGE.read_text(encoding="utf-8")
     return len(re.findall(r"^def cmd_", src, re.MULTILINE))
+
+
+def _count_loc() -> int:
+    """Total lines in x2d_bridge.py. Same number `wc -l` reports —
+    counts newlines, so the last-line-without-trailing-newline edge
+    case isn't double-counted."""
+    return BRIDGE.read_text(encoding="utf-8").count("\n")
+
+
+def test_bridge_loc_does_not_grow():
+    """The monolith should only shrink. If you grew it because of a
+    feature add: STOP, put the code in `beambam/<module>.py` and
+    re-export from x2d_bridge if back-compat needs it."""
+    actual = _count_loc()
+    assert actual <= _MAX_LOC_IN_BRIDGE, (
+        f"x2d_bridge.py is {actual} LoC; pinned ceiling is "
+        f"{_MAX_LOC_IN_BRIDGE}. New code belongs in beambam/<module>.py — "
+        "see `docs/BRIDGE_SPLIT_PLAN.md` for Phase 5e batch ordering. "
+        "If you genuinely need to bypass the guard, lower the ceiling "
+        "in the same commit and document why."
+    )
+
+
+def test_bridge_loc_pin_is_not_stale():
+    """If you finished a Phase 5e batch but forgot to lower the pin,
+    progress is hidden behind a stale ceiling. Allow up to 50 LoC of
+    drift for incidental cleanup; beyond that, lower the ceiling."""
+    actual = _count_loc()
+    drift = _MAX_LOC_IN_BRIDGE - actual
+    assert drift <= 50, (
+        f"x2d_bridge.py is {actual} LoC but the pinned ceiling is "
+        f"{_MAX_LOC_IN_BRIDGE} (drift {drift}). Lower "
+        "`_MAX_LOC_IN_BRIDGE` in tests/test_bridge_split_progress.py "
+        "to match — visible progress is the point of this test."
+    )
 
 
 def test_cmd_handler_count_does_not_grow():
