@@ -2,6 +2,61 @@
 
 All notable changes to this project.
 
+## v1.5.0 — `x2d_bridge.py` removed (unreleased)
+
+Final step of the bridge-split: the 255-LoC back-compat shim is gone.
+Everything ships from `beambam.cli` proper.
+
+**Removed**
+- `x2d_bridge.py` — every caller now imports from the canonical home
+  (`beambam.cli.control`, `beambam.mqtt`, `beambam.config`,
+  `beambam.serve_http`, `beambam.ftps`, etc.).
+- `tests/test_bridge_split_progress.py` — guard ratchet retired; the
+  monolith it guarded no longer exists.
+- pyproject.toml `force-include` + sdist `include` entries for
+  `x2d_bridge.py`.
+
+**Added**
+- `x2d_bridge = "beambam.cli:main"` console-script alias in
+  `[project.scripts]`. Gives `libbambu_networking.so` a stable PATH-
+  lookup target after the literal-pathname spawn was rewritten.
+- `beambam/cli/__main__.py` — `python -m beambam.cli` entry point.
+
+**Changed**
+- `runtime/network_shim/src/bridge_client.cpp` — spawns
+  `python3 -m beambam.cli serve` instead of the three hardcoded
+  `.../x2d_bridge.py` candidates. Falls back to `x2d_bridge` /
+  `beambam` console-scripts on PATH. Live-verified end-to-end against
+  real X2D `00M09A000000000 @ 192.168.1.42` via
+  `runtime/network_shim/tests/test_shim_e2e.py`.
+- `runtime/mcp/server.py` — `_run_bridge` defaults to
+  `python -m beambam.cli`. `$X2D_BRIDGE` still honored for legacy
+  pathname overrides.
+- `runtime/mcp/test_live_client.py` + `runtime/mcp/test_mcp.py` +
+  `runtime/test_phase2_smoke.py` — spawn via `-m beambam.cli`.
+- `tests/test_cli_help_smoke.py` — discovers subcommands via
+  `python -m beambam.cli --help`.
+- `beambam/__init__.py` — `X2D_ROOT_PATH` + `_WEB_DIR_DEFAULT` are
+  now module-level constants (hoisted out of the shim). Source-
+  fallback version bumped to `1.5.0+source`.
+- `beambam/cli/control.py` — `_publish_one` inlined with module-
+  attribute lookup (`_config.Creds`, `_mqtt.X2DClient`) so
+  monkeypatch can reach the publish path.
+- `beambam/cam.py` — spawns `python -m beambam.cli` instead of
+  `x2d_bridge.py`.
+
+**Migration note for downstream users**
+- `from x2d_bridge import X` → `from beambam.<canonical_module> import X`
+  (most common: `beambam.mqtt.X2DClient`, `beambam.config.Creds`,
+  `beambam.ftps.{upload_file, download_file, list_files}`).
+- `python3 x2d_bridge.py <verb>` → `beambam <verb>` (or
+  `python3 -m beambam.cli <verb>`).
+- `x2d_bridge` itself still resolves on PATH as a console-script
+  alias of `beambam` (same `main()` entry point).
+
+Tests: 1027 passed, 9 skipped (live-printer guards). Shim e2e green
+against live X2D.
+
 ## v1.4.0 — Phase 5e bridge split complete (2026-05-22)
 
 The `x2d_bridge.py` monolith decomposition finished. The single

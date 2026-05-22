@@ -289,12 +289,16 @@ Remaining endpoints from the catalog worth wiring:
   (commit 50aa9d9) reads from `~/.x2d/snapshots/`.
 
 ### Refactor (boring but actively blocking v2.0 surface)
-**Status — `x2d_bridge.py` is down to ~3,470 LoC with 0 `cmd_*`
-handlers (was ~7,800 / 74 at session start).** Phases 4 + 5a–5d
-shipped. Phase 5e is in flight — see
-[BRIDGE_SPLIT_PLAN.md](docs/BRIDGE_SPLIT_PLAN.md) for batch list.
-The `tests/test_bridge_split_progress.py` ratchet records every
-batch in its history comment.
+**Status — `x2d_bridge.py` is GONE** (v1.5.0). Phase 5e closed at
+commit d21006a (255-LoC pure shim); the shim itself was removed in
+v1.5.0 after rewriting `libbambu_networking.so`'s spawn target from
+`python3 x2d_bridge.py serve` to `python3 -m beambam.cli serve`. A
+`x2d_bridge` console-script alias in `pyproject.toml [project.scripts]`
+preserves PATH-lookup back-compat for any caller that still expects
+the bare name. The ratchet test
+`tests/test_bridge_split_progress.py` was retired in the same commit
+— its purpose (drain the monolith) is satisfied. See
+[BRIDGE_SPLIT_PLAN.md](docs/BRIDGE_SPLIT_PLAN.md) for the full ledger.
 
 - [x] **Phase 4** (this round) — moved `X2DClient` + the metrics
   helpers (`metric_inc` / `metric_global_inc` / `metrics_snapshot`,

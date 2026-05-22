@@ -6,7 +6,7 @@
   3. Not crash the argparse formatter (e.g. literal `%` in help text)
 
 The list of subcommands is *discovered* from the parser at test time —
-adding a new subcommand to x2d_bridge.py automatically picks up coverage.
+adding a new subcommand to beambam.cli automatically picks up coverage.
 This catches:
 
   * Format-specifier bugs in help strings (`%` not escaped as `%%`)
@@ -25,14 +25,14 @@ from pathlib import Path
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-BRIDGE = REPO_ROOT / "x2d_bridge.py"
 
 
 def _discover_subcommands() -> list[str]:
     """Pull every registered subcommand name from the parser's top-level
     --help. The output's usage line has them between `{...}` braces."""
-    r = subprocess.run([sys.executable, str(BRIDGE), "--help"],
-                       capture_output=True, text=True, timeout=20)
+    r = subprocess.run([sys.executable, "-m", "beambam.cli", "--help"],
+                       capture_output=True, text=True, timeout=20,
+                       cwd=str(REPO_ROOT))
     assert r.returncode == 0, f"top-level --help failed:\n{r.stderr}"
     out = r.stdout
     # Find the {a,b,c,...} choice list — it's the first usage block
@@ -53,7 +53,7 @@ def test_top_level_help_lists_subcommands():
 
 def test_top_level_help_has_grouped_epilog():
     """The grouped TOC epilog (added in commit 50aa9d9) should be present."""
-    r = subprocess.run([sys.executable, str(BRIDGE), "--help"],
+    r = subprocess.run([sys.executable, "-m", "beambam.cli", "--help"],
                        capture_output=True, text=True, timeout=20)
     assert "Commands by topic:" in r.stdout, \
         "grouped TOC epilog missing — _build_epilog() not wired up"
@@ -68,7 +68,7 @@ def test_top_level_help_no_format_specifier_crash():
 
     Pre-existing bug found this session: `P%` in the `watch` help
     crashed `--help` with `unsupported format character`."""
-    r = subprocess.run([sys.executable, str(BRIDGE), "--help"],
+    r = subprocess.run([sys.executable, "-m", "beambam.cli", "--help"],
                        capture_output=True, text=True, timeout=20)
     assert r.returncode == 0, f"--help crashed:\n{r.stderr}"
     # Any `%`-related error message from argparse would show in stderr
@@ -93,8 +93,9 @@ _ALIASES = {
 @pytest.mark.parametrize("subcmd", SUBCOMMANDS)
 def test_subcommand_help_exits_zero(subcmd):
     """Every discovered subcommand must respond to `--help` cleanly."""
-    r = subprocess.run([sys.executable, str(BRIDGE), subcmd, "--help"],
-                       capture_output=True, text=True, timeout=20)
+    r = subprocess.run(
+        [sys.executable, "-m", "beambam.cli", subcmd, "--help"],
+        capture_output=True, text=True, timeout=20, cwd=str(REPO_ROOT))
     assert r.returncode == 0, (
         f"`{subcmd} --help` exited {r.returncode}\n"
         f"stdout:\n{r.stdout[:500]}\n"
@@ -108,7 +109,8 @@ def test_subcommand_help_exits_zero(subcmd):
 
 
 def test_version_flag_works():
-    r = subprocess.run([sys.executable, str(BRIDGE), "--version"],
-                       capture_output=True, text=True, timeout=10)
+    r = subprocess.run([sys.executable, "-m", "beambam.cli", "--version"],
+                       capture_output=True, text=True, timeout=10,
+                       cwd=str(REPO_ROOT))
     assert r.returncode == 0
     assert "beambam" in r.stdout

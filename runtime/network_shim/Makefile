@@ -1,7 +1,8 @@
 # runtime/network_shim/Makefile
 # ----------------------------------------------------------------------
 # Builds libbambu_networking.so — the aarch64-Termux stub plug-in that
-# proxies BambuStudio's NetworkAgent calls to x2d_bridge.py over a
+# proxies BambuStudio's NetworkAgent calls to `beambam serve` (spawned
+# as `python3 -m beambam.cli serve` by the C++ shim itself) over a
 # Unix-domain socket.  Drop the resulting .so at
 #   ~/.config/BambuStudio/plugins/libbambu_networking.so
 # and BambuStudio's `initialize_network_module` will pick it up.

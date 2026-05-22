@@ -62,10 +62,15 @@ bool BridgeClient::ensure_socket() {
 
 bool BridgeClient::spawn_bridge_subprocess() {
     log_info("bridge socket missing at " + sock_path_ +
-             "; spawning x2d_bridge.py serve");
-    // The shim doesn't know its install prefix at runtime. We try the
-    // canonical script path first, then fall back to PATH lookup. The
-    // child uses double-fork so we don't have to wait() for it.
+             "; spawning `python3 -m beambam.cli serve`");
+    // The shim resolves the bridge via Python's module loader instead
+    // of a literal pathname — `pip install beambam` puts beambam.cli on
+    // every interpreter's import path, and editable / source checkouts
+    // get there via PYTHONPATH or an `-e` install. If python3 isn't
+    // configured (no cryptography / paho), the `x2d_bridge` console-
+    // script alias declared in pyproject.toml [project.scripts] picks
+    // up the slack via plain PATH lookup. The child uses double-fork
+    // so we don't have to wait() for it.
     pid_t pid = ::fork();
     if (pid < 0) {
         log_err(std::string("fork() failed: ") + std::strerror(errno));
@@ -82,27 +87,20 @@ bool BridgeClient::spawn_bridge_subprocess() {
             ::dup2(dnull, 0); ::dup2(dnull, 1); ::dup2(dnull, 2);
             if (dnull > 2) ::close(dnull);
         }
-        const char* candidates[] = {
-            "/data/data/com.termux/files/home/git/x2d/x2d_bridge.py",
-            "/usr/local/lib/x2d/x2d_bridge.py",
-            "/data/data/com.termux/files/usr/lib/x2d/x2d_bridge.py",
-            nullptr
-        };
         // Prefer python3.12 first because that's where Termux installs the
-        // optional `cryptography` + `paho-mqtt` packages that x2d_bridge
-        // imports; the bare `python3` symlink might be a slimmer build
-        // missing them. Fall back to python3 so a clean install with
-        // `pip install -t ...python3` still works.
-        for (auto** c = candidates; *c; ++c) {
-            if (::access(*c, R_OK) == 0) {
-                ::execlp("python3.12", "python3.12", *c, "serve",
-                         "--sock", sock_path_.c_str(), (char*)nullptr);
-                ::execlp("python3", "python3", *c, "serve", "--sock",
-                         sock_path_.c_str(), (char*)nullptr);
-            }
-        }
-        // Last resort: hope it's on PATH
+        // optional `cryptography` + `paho-mqtt` packages beambam imports;
+        // the bare `python3` symlink might be a slimmer build missing
+        // them. Then fall back to plain `python3`, then to the
+        // `x2d_bridge` console-script on PATH (installed by `pip install
+        // beambam`).
+        ::execlp("python3.12", "python3.12", "-m", "beambam.cli",
+                 "serve", "--sock", sock_path_.c_str(), (char*)nullptr);
+        ::execlp("python3", "python3", "-m", "beambam.cli",
+                 "serve", "--sock", sock_path_.c_str(), (char*)nullptr);
         ::execlp("x2d_bridge", "x2d_bridge", "serve",
+                 "--sock", sock_path_.c_str(), (char*)nullptr);
+        // Final fallback: `beambam` console-script (same entry point).
+        ::execlp("beambam", "beambam", "serve",
                  "--sock", sock_path_.c_str(), (char*)nullptr);
         ::_exit(127);
     }

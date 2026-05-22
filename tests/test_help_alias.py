@@ -14,13 +14,13 @@ from pathlib import Path
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-BRIDGE = REPO_ROOT / "x2d_bridge.py"
 
 
 def _run(*argv: str) -> subprocess.CompletedProcess:
     return subprocess.run(
-        [sys.executable, str(BRIDGE), *argv],
+        [sys.executable, "-m", "beambam.cli", *argv],
         capture_output=True, text=True, timeout=20,
+        cwd=str(REPO_ROOT),
     )
 
 

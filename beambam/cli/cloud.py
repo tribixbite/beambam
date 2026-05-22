@@ -1328,14 +1328,16 @@ def _print_search_printables(args: argparse.Namespace) -> int:
     import subprocess
     import tempfile
     from pathlib import Path
-    from beambam import X2D_ROOT_PATH
-
-    bridge = X2D_ROOT_PATH / "x2d_bridge.py"
+    # Phase 5e.6 removed x2d_bridge.py from the repo; the `x2d_bridge`
+    # console-script entry now resolves to `beambam.cli:main`. The most
+    # portable spawn target is `python -m beambam.cli` — works from
+    # source checkout AND from any installed env, no PATH lookups.
+    bridge_argv = [sys.executable, "-m", "beambam.cli"]
     with tempfile.TemporaryDirectory(prefix="print_search_pr_") as td:
         td_p = Path(td)
         # Step 1: fetch the model via the existing Printables GraphQL
         # path in cmd_fetch. --json lets us parse the saved paths back.
-        fetch_cmd = [sys.executable, str(bridge), "fetch", url,
+        fetch_cmd = bridge_argv + ["fetch", url,
                      "--out-dir", str(td_p), "--json"]
         try:
             res = subprocess.run(fetch_cmd, capture_output=True,
@@ -1369,7 +1371,7 @@ def _print_search_printables(args: argparse.Namespace) -> int:
 
         # Step 2: slice + (maybe) upload + (maybe) print. Same flag
         # forwarding shape as cmd_cloud_print_design.
-        cmd = [sys.executable, str(bridge), "slice-print", str(printable)]
+        cmd = bridge_argv + ["slice-print", str(printable)]
         if args.printer: cmd.extend(["--printer", args.printer])
         if args.ip:      cmd.extend(["--ip", args.ip])
         if args.code:    cmd.extend(["--code", args.code])
@@ -1469,9 +1471,9 @@ def cmd_print_search(args: argparse.Namespace) -> int:
         print("(--dry-run-pick: stopped before download/slice/print)")
         return 0
 
-    # Chain into cloud-print-design
-    bridge = X2D_ROOT_PATH / "x2d_bridge.py"
-    cmd = [_sys.executable, str(bridge),
+    # Chain into cloud-print-design (Phase 5e.6: x2d_bridge.py gone,
+    # use `python -m beambam.cli` for portable spawn).
+    cmd = [_sys.executable, "-m", "beambam.cli",
            "cloud-print-design", str(design_id)]
     if args.printer: cmd.extend(["--printer", args.printer])
     if args.ip:      cmd.extend(["--ip", args.ip])
@@ -1566,8 +1568,8 @@ def cmd_cloud_print_design(args: argparse.Namespace) -> int:
         # Build the slice-print invocation. We use the same x2d_bridge
         # but via subprocess so all the existing arg validation +
         # helpers fire.
-        bridge = X2D_ROOT_PATH / "x2d_bridge.py"
-        cmd = [_sys.executable, str(bridge), "slice-print",
+        # Phase 5e.6: x2d_bridge.py removed; use `python -m beambam.cli`.
+        cmd = [_sys.executable, "-m", "beambam.cli", "slice-print",
                str(three_mf)]
         if args.printer: cmd.extend(["--printer", args.printer])
         if args.ip:      cmd.extend(["--ip", args.ip])

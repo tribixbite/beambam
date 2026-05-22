@@ -299,18 +299,20 @@ def test_print_search_subparser_accepts_source_choices():
     """argparse must accept both choices + reject others."""
     import subprocess
 
-    bridge = Path(__file__).resolve().parents[1] / "x2d_bridge.py"
+    repo_root = Path(__file__).resolve().parents[1]
     for src in ("makerworld", "printables"):
         r = subprocess.run(
-            [sys.executable, str(bridge), "print-search", "--source", src,
-             "x", "--help"],
-            capture_output=True, text=True, timeout=15)
+            [sys.executable, "-m", "beambam.cli",
+             "print-search", "--source", src, "x", "--help"],
+            capture_output=True, text=True, timeout=15,
+            cwd=str(repo_root))
         assert r.returncode == 0, (src, r.stderr)
 
     r = subprocess.run(
-        [sys.executable, str(bridge), "print-search",
+        [sys.executable, "-m", "beambam.cli", "print-search",
          "--source", "thingiverse", "x", "--help"],
-        capture_output=True, text=True, timeout=15)
+        capture_output=True, text=True, timeout=15,
+        cwd=str(repo_root))
     # argparse rejects invalid choices with exit 2.
     assert r.returncode == 2
     assert "invalid choice" in r.stderr or "invalid choice" in r.stdout

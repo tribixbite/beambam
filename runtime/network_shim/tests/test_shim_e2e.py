@@ -2,8 +2,9 @@
 """Self-test for libbambu_networking.so.
 
 Drives every entry point on the LAN-mode happy path the way BambuStudio
-itself would, and asserts each round-trips through to x2d_bridge.py
-serve and back. Run after every shim rebuild.
+itself would, and asserts each round-trips through to `beambam.cli
+serve` (spawned the same way the C++ shim does — `python3 -m
+beambam.cli serve`) and back. Run after every shim rebuild.
 
 What this proves:
   1. The .so loads cleanly via dlopen (no missing-symbol errors).
@@ -21,7 +22,7 @@ Requires:
     file).
   * ~/.x2d/credentials with [printer] ip/code/serial pointing at a
     real X2D on the LAN.
-  * python3.12 with cryptography + paho-mqtt (same as x2d_bridge.py).
+  * python3.12 with cryptography + paho-mqtt (same as beambam.cli serve).
 
 Each test is idempotent — the harness cleans up its bridge subprocess
 on exit even if an assertion fires.
@@ -130,14 +131,21 @@ def check_required_symbols(lib: ctypes.CDLL, repo_root: Path) -> None:
 # ---------------------------------------------------------------------------
 
 def spawn_bridge(repo_root: Path, sock_path: Path) -> subprocess.Popen:
-    bridge = repo_root / "x2d_bridge.py"
-    if not bridge.exists():
-        fail(f"bridge script missing: {bridge}")
+    """Launch the bridge serve loop the same way the C++ shim does
+    (`python3 -m beambam.cli serve`), with PYTHONPATH set so the source
+    checkout resolves without an install."""
     if sock_path.exists():
         sock_path.unlink()
+    import os
+    env = os.environ.copy()
+    existing = env.get("PYTHONPATH", "")
+    env["PYTHONPATH"] = (
+        f"{repo_root}{os.pathsep}{existing}" if existing else str(repo_root)
+    )
     p = subprocess.Popen(
-        ["python3.12", str(bridge), "serve", "--sock", str(sock_path)],
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        ["python3.12", "-m", "beambam.cli", "serve",
+         "--sock", str(sock_path)],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env,
     )
     deadline = time.time() + 5
     while time.time() < deadline:
@@ -263,7 +271,7 @@ def main() -> int:
     p.add_argument("--so", default=str(default_so),
                    help=f"Path to libbambu_networking.so (default: {default_so})")
     p.add_argument("--repo", default=str(default_repo),
-                   help="x2d repo root, used to locate x2d_bridge.py + NetworkAgent.cpp")
+                   help="x2d repo root, sets PYTHONPATH for the bridge + locates NetworkAgent.cpp")
     p.add_argument("--creds", default=str(Path.home() / ".x2d/credentials"),
                    help="INI file with [printer] ip/code/serial")
     p.add_argument("--skip-printer", action="store_true",

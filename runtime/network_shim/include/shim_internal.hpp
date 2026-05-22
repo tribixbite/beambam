@@ -198,8 +198,8 @@ public:
     BridgeClient();
     ~BridgeClient();
 
-    // Connects to bridge. Spawns x2d_bridge.py serve as a subprocess if
-    // the socket path doesn't exist yet. Returns false on failure;
+    // Connects to bridge. Spawns `python3 -m beambam.cli serve` as a
+    // subprocess if the socket path doesn't exist yet. Returns false on failure;
     // callers should treat that as "shim cannot proceed". Idempotent.
     bool connect();
 

@@ -21,12 +21,12 @@ What this script does NOT do:
 Usage::
 
     # bridge daemon + camera daemon must be running first
-    python3.12 x2d_bridge.py daemon --http 127.0.0.1:8765 &
-    python3.12 x2d_bridge.py camera --bind 127.0.0.1:8766 &  # camera on
-                                                              # different
-                                                              # port if you
-                                                              # don't want
-                                                              # them sharing
+    python3.12 -m beambam.cli daemon --http 127.0.0.1:8765 &
+    python3.12 -m beambam.cli camera --bind 127.0.0.1:8766 &  # camera on
+                                                               # different
+                                                               # port if you
+                                                               # don't want
+                                                               # them sharing
     python3.12 runtime/mcp/test_live_client.py
 
 The script is verbose by design — every JSON-RPC frame goes to stderr
@@ -203,8 +203,8 @@ def main() -> int:
     if not args.no_spawn_helpers:
         if not _is_listening(daemon_http + "/healthz"):
             helpers.append(_spawn_helper(
-                "x2d_bridge daemon",
-                [sys.executable, str(REPO_ROOT / "x2d_bridge.py"),
+                "beambam daemon",
+                [sys.executable, "-m", "beambam.cli",
                  "daemon", "--http", f"127.0.0.1:{daemon_port}",
                  "--quiet", "--interval", "5"],
                 log_dir / "daemon.log",
@@ -215,8 +215,8 @@ def main() -> int:
             # the MCP plumbing assertion still has a real binary
             # round-trip to verify.
             cam_proc = _spawn_helper(
-                "x2d_bridge camera",
-                [sys.executable, str(REPO_ROOT / "x2d_bridge.py"),
+                "beambam camera",
+                [sys.executable, "-m", "beambam.cli",
                  "camera", "--bind", f"127.0.0.1:{camera_port}"],
                 log_dir / "camera.log",
             )
@@ -244,7 +244,10 @@ def main() -> int:
                   "continuing anyway", file=sys.stderr)
 
     env = dict(os.environ)
-    env["X2D_BRIDGE"] = str(REPO_ROOT / "x2d_bridge.py")
+    # MCP server resolves the bridge via `python -m beambam.cli` when
+    # X2D_BRIDGE is unset; leave it unset here so we exercise the
+    # default path.
+    env.pop("X2D_BRIDGE", None)
     env["X2D_DAEMON_HTTP"] = camera_url  # camera_snapshot reads /cam.jpg from here
 
     server = subprocess.Popen(

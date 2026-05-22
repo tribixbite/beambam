@@ -24,11 +24,12 @@ long-tail backlog. Per-release notes in [`CHANGELOG.md`](CHANGELOG.md).
 
 **Three things in one repo:**
 
-1. **`x2d_bridge.py`** — a pure-Python LAN client that speaks Bambu's
-   signed-MQTT control plane. Pause / resume / stop / G-code / temp /
-   chamber light / AMS load / jog / FTPS upload + start print — same
-   wire format the cloud plug-in uses, but readable, hackable, and
-   running where you want.
+1. **`beambam` CLI** (`pip install beambam`) — a pure-Python LAN client
+   that speaks Bambu's signed-MQTT control plane. Pause / resume / stop
+   / G-code / temp / chamber light / AMS load / jog / FTPS upload + start
+   print — same wire format the cloud plug-in uses, but readable,
+   hackable, and running where you want. (`x2d_bridge` survives as a
+   console-script alias of `beambam` for back-compat.)
 2. **A six-surface daemon stack** built on top: REST API,
    Server-Sent Events, Prometheus metrics, structured access log,
    Home Assistant MQTT auto-discovery, WebRTC chamber-camera streaming,
@@ -238,7 +239,11 @@ Layout:
 ├── web/                      # static HTML/CSS/JS for the thin web UI
 ├── docs/                     # per-feature documentation
 ├── run_gui_clean.sh          # canonical GUI launcher
-├── x2d_bridge.py             # signed-MQTT LAN client + multi-surface daemon
+├── beambam/                  # signed-MQTT LAN client + multi-surface daemon
+│   ├── cli/                  #   subcommand handlers (control / cloud / info / daemon / lan)
+│   ├── mqtt.py               #   X2DClient + sign_payload (Bambu's signed control plane)
+│   ├── ftps.py               #   implicit-TLS FTPS for SD-card upload/download
+│   └── …                     #   31 modules, see `python -m beambam.cli --help`
 ├── bambu_cert.py             # publicly-leaked Bambu Connect signing key
 ├── lan_upload.py             # FTPS:990 implicit-TLS uploader (helper subset)
 ├── lan_print.py              # upload + start_print combo
@@ -344,9 +349,11 @@ macOS, so on aarch64 Termux the GUI's "Connect / AMS / Print" buttons
 have nothing to dlopen. `runtime/network_shim/` builds a drop-in
 replacement that exports the entire NetworkAgent ABI (103 `bambu_network_*`
 symbols + 21 `ft_*` symbols) and forwards the LAN-relevant calls over a
-Unix-domain socket to a long-running `x2d_bridge.py serve` process.
-Cloud-only entry points return success-with-empty so the GUI's cloud
-panels stay quiet but the LAN flow works end-to-end.
+Unix-domain socket to a long-running `beambam serve` process (spawned
+as `python3 -m beambam.cli serve` by the shim, with `x2d_bridge` /
+`beambam` console-scripts as PATH-lookup fallbacks). Cloud-only entry
+points return success-with-empty so the GUI's cloud panels stay quiet
+but the LAN flow works end-to-end.
 
 ```
 cd runtime/network_shim
@@ -356,7 +363,7 @@ make install    # → ~/.config/BambuStudioInternal/plugins/
 
 A self-test harness lives at `runtime/network_shim/tests/test_shim_e2e.py`.
 It dlopens the .so, asserts every host-expected symbol is exported, then
-spawns a fresh `x2d_bridge.py serve` and round-trips through the protocol
+spawns a fresh bridge subprocess and round-trips through the protocol
 against a real X2D (handshake → connect → state event → disconnect):
 
 ```
@@ -364,11 +371,11 @@ python3.12 runtime/network_shim/tests/test_shim_e2e.py
 ```
 
 Wire format and op set are spec'd in `runtime/network_shim/PROTOCOL.md`.
-The shim spawns `x2d_bridge.py serve` itself if no socket is found at
+The shim spawns the bridge itself if no socket is found at
 `$X2D_BRIDGE_SOCK` (default `~/.x2d/bridge.sock`), so the GUI launch
 flow is just: install the .so once, then `./run_gui.sh`.
 
-## Using the LAN bridge (`x2d_bridge.py`)
+## Using the LAN bridge (`beambam` CLI)
 
 Save credentials once. Either a single `[printer]` section (the
 default, used when no `--printer NAME` is passed) or as many named
@@ -405,13 +412,13 @@ Then:
 
 ```
 # One-shot state dump
-x2d_bridge.py status
+beambam status
 
 # Upload + start print on AMS slot 4
-x2d_bridge.py print myfile.gcode.3mf --slot 3
+beambam print myfile.gcode.3mf --slot 3
 
 # Long-running monitor — polls every 5s, exposes JSON at http://127.0.0.1:8765/state
-x2d_bridge.py daemon --http 127.0.0.1:8765 --quiet
+beambam daemon --http 127.0.0.1:8765 --quiet
 
 # Same daemon also exposes /healthz for uptime monitoring:
 #   200 + {"healthy": true,  ...} when fresh state arrived recently
@@ -452,10 +459,10 @@ python3.12 x2d_slice.py model.stl --out out.gcode.3mf \
                                      # textured/supertack OR int 1..5
 
 # One-shot slice → upload → queue
-x2d_bridge.py slice-print model.stl --slot 3 --color Gold --bed 5 --timelapse
+beambam slice-print model.stl --slot 3 --color Gold --bed 5 --timelapse
 
 # Send an already-sliced .gcode.3mf
-x2d_bridge.py print model.gcode.3mf --slot 3 --timelapse
+beambam print model.gcode.3mf --slot 3 --timelapse
     # bed_type + bed_temp auto-derived from the 3MF; refuses on AMS
     # slot empty / wrong-class filament. Pass --force to bypass soft
     # brand/colour mismatches; hard guards never bypassable.
@@ -478,22 +485,22 @@ command exits as soon as the printer ACKs the publish.
 > after the bridge has uploaded the 3MF.
 
 ```
-x2d_bridge.py pause                      # pause the current print
-x2d_bridge.py resume                     # resume after pause
-x2d_bridge.py stop                       # abort the current print
-x2d_bridge.py home                       # G28 — home all axes
-x2d_bridge.py level                      # G29 — auto bed-level
-x2d_bridge.py set-temp bed     60        # set_bed_temp 60°C
-x2d_bridge.py set-temp nozzle 220 --idx 0  # set_nozzle_temp on extruder 0
-x2d_bridge.py set-temp chamber 35        # M141 S35 (chamber heater)
+beambam pause                      # pause the current print
+beambam resume                     # resume after pause
+beambam stop                       # abort the current print
+beambam home                       # G28 — home all axes
+beambam level                      # G29 — auto bed-level
+beambam set-temp bed     60        # set_bed_temp 60°C
+beambam set-temp nozzle 220 --idx 0  # set_nozzle_temp on extruder 0
+beambam set-temp chamber 35        # M141 S35 (chamber heater)
 beambam led on                           # ledctrl on / off / flashing
 beambam led flashing --on-time 200 --off-time 200 --loops 5
                                           # (alias kept: `chamber-light`)
-x2d_bridge.py ams-load 0 3 --tar-temp 220   # AMS 0 / slot 3, preheat to 220
-x2d_bridge.py ams-unload 0 --tar-temp 220   # unload from AMS 0
-x2d_bridge.py jog X 10                   # relative move +10 mm on X
-x2d_bridge.py jog Z -5 --feed 600        # relative -5 mm on Z @ 600 mm/min
-x2d_bridge.py gcode "M115"               # send arbitrary gcode_line
+beambam ams-load 0 3 --tar-temp 220   # AMS 0 / slot 3, preheat to 220
+beambam ams-unload 0 --tar-temp 220   # unload from AMS 0
+beambam jog X 10                   # relative move +10 mm on X
+beambam jog Z -5 --feed 600        # relative -5 mm on Z @ 600 mm/min
+beambam gcode "M115"               # send arbitrary gcode_line
 
 # AMS slot metadata — push tray_info_idx / temps / color to one slot or
 # the whole bank in one command. Profile files live in flat-profiles/.
@@ -579,8 +586,8 @@ otherwise every request returns `401 Unauthorized` with a
 ```
 # Generate a long random token, then:
 export X2D_AUTH_TOKEN=$(openssl rand -hex 32)
-x2d_bridge.py daemon --http 0.0.0.0:8765
-x2d_bridge.py camera --bind 0.0.0.0:8766
+beambam daemon --http 0.0.0.0:8765
+beambam camera --bind 0.0.0.0:8766
 
 # From another box on the LAN:
 curl -H "Authorization: Bearer $X2D_AUTH_TOKEN" http://<phone>:8765/healthz
@@ -616,9 +623,9 @@ GUI surfaces that the shim was previously stubbing — `is_user_login`,
 session, those calls keep returning empty (LAN-only flow is unaffected).
 
 ```
-x2d_bridge.py cloud-login --email me@example.com --password '…'
-x2d_bridge.py cloud-status     # confirms session, expiry, region
-x2d_bridge.py cloud-logout     # wipes ~/.x2d/cloud_session.json
+beambam cloud-login --email me@example.com --password '…'
+beambam cloud-status     # confirms session, expiry, region
+beambam cloud-logout     # wipes ~/.x2d/cloud_session.json
 ```
 
 Tokens land at `~/.x2d/cloud_session.json` (chmod 600). The bridge
@@ -640,9 +647,9 @@ LAN-direct `print.*` is blocked by the per-installation-cert wall
 installation cert needed.
 
 ```
-x2d_bridge.py cloud-state                          # remote monitoring
-x2d_bridge.py cloud-pause                          # remote control
-x2d_bridge.py cloud-print rumi_frame.gcode.3mf     # full upload + print
+beambam cloud-state                          # remote monitoring
+beambam cloud-pause                          # remote control
+beambam cloud-print rumi_frame.gcode.3mf     # full upload + print
 ```
 
 Same `--http :8765` daemon also exposes `/cloud/{status,printers,state,publish}`
@@ -661,7 +668,7 @@ between `/cam.jpg` snapshot polling, native HLS at `/cam.m3u8`, and
 WebRTC at `/cam.webrtc/offer`.
 
 ```bash
-python3.12 x2d_bridge.py daemon --http 0.0.0.0:8765 --auth-token "$X2D_AUTH_TOKEN"
+beambam daemon --http 0.0.0.0:8765 --auth-token "$X2D_AUTH_TOKEN"
 # Then open http://<phone-ip>:8765/ in any modern browser.
 ```
 
@@ -710,7 +717,7 @@ Full per-platform install + Termux-via-SSH setup in [`docs/MCP.md`](docs/MCP.md)
 | GUI runs ~20s then dies on first GL draw with `zink_kopper.c:720` assert | Mesa picks zink (Vulkan→GL); kopper needs DRI3/Present which termux-x11 lacks | `run_gui_clean.sh` forces `GALLIUM_DRIVER=llvmpipe` |
 | Cancel buttons / AMS spool taps / sidebar buttons silently dropped | custom `Button::mouseReleased` strict bounds check vs. touch-drift | `patches/{Button,AxisCtrlButton,SideButton,TabButton}.cpp.termux.patch` |
 | Maximize button does nothing / window goes off-screen in portrait | termux-x11 has no WM; BBLTopbar relies on `wxFrame::Maximize()`; min-size 1000×600 exceeds portrait width | `patches/BBLTopbar.{cpp,hpp}.termux.patch` |
-| LAN connect / AMS sync / print impossible | Network Plug-in is x86\_64 only | `runtime/network_shim/` (libbambu\_networking.so stub) + `x2d_bridge.py serve` |
+| LAN connect / AMS sync / print impossible | Network Plug-in is x86\_64 only | `runtime/network_shim/` (libbambu\_networking.so stub) + `beambam serve` |
 | `mqtt message verify failed` (err\_code 84033543) on every command | Jan-2025+ firmware requires RSA-SHA256 signature in `header` block | `bambu_cert.py` (publicly-leaked Bambu Connect cert) |
 
 ## Provenance

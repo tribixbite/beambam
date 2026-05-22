@@ -99,13 +99,15 @@ Issues = "https://github.com/tribixbite/beambam/issues"
 Changelog = "https://github.com/tribixbite/beambam/blob/main/CHANGELOG.md"
 
 [project.scripts]
-# `main()` moved to `beambam.cli` in Phase 5e.5. x2d_bridge.py re-exports
-# `main` for back-compat — both bindings resolve the same function.
-# The libbambu_networking.so GUI shim keeps spawning `python3
-# x2d_bridge.py` by literal pathname via the `if __name__ == "__main__"`
-# block in the shim file.
+# `main()` lives in beambam.cli (Phase 5e.5). The `x2d_bridge` alias
+# below is the PATH-lookup name that libbambu_networking.so falls back
+# to when its hardcoded `.py` candidates are absent (see
+# runtime/network_shim/src/bridge_client.cpp `execlp("x2d_bridge", …)`).
+# Keeping this entry means the C++ shim has a stable spawn target even
+# after the x2d_bridge.py file is removed from the repo.
 beambam = "beambam.cli:main"
 bb = "beambam.cli:main"
+x2d_bridge = "beambam.cli:main"
 beambam-mcp = "runtime.mcp.server:main"
 beambam-slice = "x2d_slice:main"
 beambam-upload = "lan_upload:main"
@@ -113,16 +115,18 @@ beambam-print = "lan_print:main"
 
 # --- Build configuration ---------------------------------------------------
 # Transitional v1.1.0 layout: package `beambam/` wraps the existing top-level
-# modules (x2d_bridge.py, cloud_client.py, runtime/, etc.) as re-exports.
-# A future refactor (task #3) will move the implementations under
-# src/beambam/ proper; for now we force-include them so the wheel ships a
-# functional CLI without breaking the existing internal call sites.
+# modules (cloud_client.py, lan_print.py, x2d_slice.py, etc.) as re-exports.
+# A future refactor will move the implementations under src/beambam/ proper;
+# for now we force-include them so the wheel ships a functional CLI without
+# breaking the existing internal call sites. (x2d_bridge.py was removed in
+# v1.5.0 — `python -m beambam.cli` is the canonical entry point; the
+# `x2d_bridge` console-script alias in [project.scripts] preserves PATH-
+# lookup back-compat for libbambu_networking.so.)
 
 [tool.hatch.build.targets.wheel]
 packages = ["beambam", "runtime"]
 
 [tool.hatch.build.targets.wheel.force-include]
-"x2d_bridge.py" = "x2d_bridge.py"
 "cloud_client.py" = "cloud_client.py"
 "lan_print.py" = "lan_print.py"
 "lan_upload.py" = "lan_upload.py"
@@ -147,7 +151,6 @@ exclude = [
 [tool.hatch.build.targets.sdist]
 include = [
     "/beambam",
-    "/x2d_bridge.py",
     "/cloud_client.py",
     "/lan_print.py",
     "/lan_upload.py",
@@ -204,10 +207,11 @@ warn_unused_ignores = true
 warn_redundant_casts = true
 ignore_missing_imports = true
 files = ["beambam"]
-# Don't recurse into non-beambam modules — x2d_bridge.py + runtime/*
-# pre-date strict typing and have ~80 errors. Walking only beambam keeps
-# the type contract for the public surface honest without the legacy
-# noise blocking CI.
+# Don't recurse into non-beambam modules — top-level legacy shims
+# (cloud_client.py, lan_print.py, etc.) + runtime/* pre-date strict
+# typing and have ~80 errors. Walking only beambam keeps the type
+# contract for the public surface honest without the legacy noise
+# blocking CI.
 follow_imports = "skip"
 
 [tool.pytest.ini_options]

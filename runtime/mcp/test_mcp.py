@@ -38,8 +38,14 @@ def _read_response(proc: subprocess.Popen, expected_id: int | str | None) -> dic
 
 def main() -> int:
     env = dict(os.environ)
-    # Force the MCP server to use the in-tree bridge.
-    env["X2D_BRIDGE"] = str(REPO_ROOT / "x2d_bridge.py")
+    # MCP server uses `python -m beambam.cli` when X2D_BRIDGE is unset;
+    # ensure that's the path under test.
+    env.pop("X2D_BRIDGE", None)
+    # Set PYTHONPATH=repo so the source checkout resolves without an install.
+    existing = env.get("PYTHONPATH", "")
+    env["PYTHONPATH"] = (
+        f"{REPO_ROOT}{os.pathsep}{existing}" if existing else str(REPO_ROOT)
+    )
     # Don't let it try to hit a daemon that isn't running.
     env["X2D_DAEMON_HTTP"] = "http://127.0.0.1:1"  # guaranteed-refused
 

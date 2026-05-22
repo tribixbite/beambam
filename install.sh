@@ -120,7 +120,7 @@ else
     c_green "paho-mqtt already importable"
 fi
 
-# Optional: install the WebRTC stack so `x2d_bridge.py webrtc` works.
+# Optional: install the WebRTC stack so `beambam webrtc` works.
 # Skip silently if deps fail to build — the rest of the toolkit still
 # functions without WebRTC. On Termux this needs libsrtp built from
 # source; see docs/WEBRTC.md.
@@ -359,9 +359,10 @@ section "Termux:Boot autostart"
 if [ -d "$BOOT_DIR" ]; then
     cat > "$BOOT_DIR/x2d-bridge" <<EOF
 #!/usr/bin/env bash
-# Auto-spawned by Termux:Boot on phone power-on. Starts the x2d
+# Auto-spawned by Termux:Boot on phone power-on. Starts the beambam
 # bridge daemon so the GUI shim can immediately reach the printer.
-exec python3 "$INSTALL_ROOT/helpers/x2d_bridge.py" daemon \\
+export PYTHONPATH="$INSTALL_ROOT:\${PYTHONPATH:-}"
+exec python3 -m beambam.cli daemon \\
     --interval 5 --http 127.0.0.1:8765 --quiet
 EOF
     chmod +x "$BOOT_DIR/x2d-bridge"
@@ -388,7 +389,7 @@ Next steps:
   3. Launch the GUI:
           $INSTALL_ROOT/run_gui.sh
   4. Test the bridge from CLI without the GUI:
-          python3 $INSTALL_ROOT/helpers/x2d_bridge.py status
+          PYTHONPATH=$INSTALL_ROOT python3 -m beambam.cli status
 
 Re-run this installer any time to upgrade to the newest release —
 your AppConfig and credentials file are preserved.

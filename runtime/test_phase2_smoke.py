@@ -431,7 +431,7 @@ def main() -> int:
 
     bridge = _Daemon(
         "bridge",
-        [sys.executable, str(REPO_ROOT / "x2d_bridge.py"),
+        [sys.executable, "-m", "beambam.cli",
          "daemon", "--http", f"127.0.0.1:{daemon_port}",
          "--quiet", "--interval", "5"],
         ready_url=daemon_url + "/healthz",
@@ -442,7 +442,7 @@ def main() -> int:
 
     webrtc = _Daemon(
         "webrtc",
-        [sys.executable, str(REPO_ROOT / "x2d_bridge.py"),
+        [sys.executable, "-m", "beambam.cli",
          "webrtc", "--bind", f"127.0.0.1:{rtc_port}",
          "--camera-url", f"http://127.0.0.1:{cam_port}",
          "--frame-hz", "10"],
@@ -453,7 +453,8 @@ def main() -> int:
     print(f"[phase2] webrtc up pid={webrtc.proc.pid}")
 
     mcp_env = os.environ.copy()
-    mcp_env["X2D_BRIDGE"] = str(REPO_ROOT / "x2d_bridge.py")
+    # MCP server uses `python -m beambam.cli` when X2D_BRIDGE is unset.
+    mcp_env.pop("X2D_BRIDGE", None)
     mcp_env["X2D_DAEMON_HTTP"] = daemon_url
     mcp_proc = subprocess.Popen(
         [sys.executable, "-m", "mcp_x2d"],

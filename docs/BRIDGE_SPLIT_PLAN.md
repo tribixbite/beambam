@@ -1,10 +1,15 @@
-# Splitting `x2d_bridge.py` into modules — current state + remaining phases
+# Splitting `x2d_bridge.py` into modules — DONE (v1.5.0)
 
-**Last touched:** 2026-05-21 (post-Phase-5d). **State:** Phases 1–4
-and 5a–5d **shipped**. Phase 5e is in flight (HTTP-server extraction
-in batches). The monolith is down from ~7,800 LoC / 74 `cmd_*` to
-**~3,470 LoC / 0 `cmd_*`** — see commit history of
-`tests/test_bridge_split_progress.py` for the batch-by-batch ledger.
+**Last touched:** 2026-05-22 (v1.5.0). **State:** All phases shipped;
+**`x2d_bridge.py` itself was removed in v1.5.0.** This document is
+preserved as a record of the migration. The monolith went 7,800 LoC
+/ 74 `cmd_*` → 255-LoC shim (Phase 5e.6, commit d21006a) → deleted
+entirely (v1.5.0).
+
+The `libbambu_networking.so` C++ shim now spawns
+`python3 -m beambam.cli serve` directly. A `x2d_bridge` console-
+script alias in `pyproject.toml [project.scripts]` preserves PATH-
+lookup back-compat for callers that still expect the bare name.
 
 ## Why this plan exists
 
@@ -135,12 +140,20 @@ E2E test (`runtime/network_shim/tests/test_shim_e2e.py`) is the
 regression gate; it spins up a real Unix socket against the actual
 bridge and exercises the full op set.
 
-## What is NOT changing in 5e
+## What changed in v1.5.0 (file removal)
 
 * The `beambam` and `bb` console-script entry points still work.
-* `python3 x2d_bridge.py status` still works (via the shim).
-* `libbambu_networking.so` still spawns `x2d_bridge.py serve` by
-  pathname. The shim's `if __name__ == "__main__"` path stays valid.
-* All public `from x2d_bridge import X2DClient, sign_payload, Creds,
-  upload_file, download_file, list_files, start_print`-style imports
-  keep working via re-exports — `runtime/*` doesn't have to change.
+* `python3 x2d_bridge.py …` **no longer works** — the file is gone.
+  Use `beambam …` or `python3 -m beambam.cli …` instead.
+* The `x2d_bridge` console-script alias is added in
+  `pyproject.toml [project.scripts]` so `x2d_bridge …` on PATH keeps
+  working after `pip install beambam`.
+* `libbambu_networking.so` spawns `python3 -m beambam.cli serve`
+  directly. The C++ shim was rewritten in `bridge_client.cpp` and
+  the `.so` rebuilt + verified end-to-end against a live X2D.
+* Public `from x2d_bridge import X` imports **break** — callers must
+  switch to the canonical homes:
+    - `beambam.mqtt.X2DClient` / `beambam.mqtt.sign_payload`
+    - `beambam.config.Creds`
+    - `beambam.ftps.{upload_file, download_file, list_files}`
+    - `beambam.print_job.start_print`

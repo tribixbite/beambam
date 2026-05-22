@@ -26,10 +26,14 @@ import urllib.request
 from pathlib import Path
 from typing import Any, Callable
 
-# Default to the on-disk x2d_bridge.py next to the repo root. Overrideable
-# via $X2D_BRIDGE so a packaged install can point at a system path.
+# Bridge invocation: prefer `python3 -m beambam.cli` (resolves via the
+# installed package or PYTHONPATH=repo source checkout). $X2D_BRIDGE
+# overrides — historically a `.py` path; if set, we honor it for back-
+# compat. $X2D_BRIDGE_PYTHON overrides the interpreter (default:
+# current sys.executable).
 _REPO_ROOT = Path(__file__).resolve().parents[2]
-BRIDGE_PATH = Path(os.environ.get("X2D_BRIDGE", _REPO_ROOT / "x2d_bridge.py"))
+BRIDGE_PATH_OVERRIDE = os.environ.get("X2D_BRIDGE")          # legacy: path to .py
+BRIDGE_PATH = Path(BRIDGE_PATH_OVERRIDE) if BRIDGE_PATH_OVERRIDE else None
 BRIDGE_PYTHON = os.environ.get("X2D_BRIDGE_PYTHON", sys.executable)
 DAEMON_HTTP = os.environ.get("X2D_DAEMON_HTTP", "http://127.0.0.1:8765")
 DAEMON_AUTH = os.environ.get("X2D_DAEMON_TOKEN", "")
@@ -218,7 +222,7 @@ TOOLS: list[dict] = [
 
     _build("camera_snapshot",
            "Fetch the most recent JPEG frame from the running camera "
-           "daemon (x2d_bridge.py camera). The frame is returned as a "
+           "daemon (beambam camera). The frame is returned as a "
            "base64-encoded image content block. Errors if the camera "
            "daemon isn't running.",
            lambda _a: []),  # handled specially in _call_tool
@@ -329,7 +333,7 @@ RESOURCES = [
         "uri": "x2d://camera/snapshot",
         "name": "Latest camera snapshot",
         "description": "Most recent JPEG frame from the camera daemon. "
-                       "Requires `x2d_bridge.py camera` to be running.",
+                       "Requires `beambam camera` to be running.",
         "mimeType": "image/jpeg",
     },
 ]
@@ -340,18 +344,24 @@ RESOURCES = [
 # ---------------------------------------------------------------------------
 
 def _run_bridge(argv: list[str]) -> tuple[int, str, str]:
-    """Spawn `BRIDGE_PYTHON BRIDGE_PATH …argv` and capture output.
-    Returns (returncode, stdout, stderr). Times out at CALL_TIMEOUT_S.
+    """Spawn the bridge CLI and capture output.
+
+    Default invocation is `BRIDGE_PYTHON -m beambam.cli …argv`. If
+    $X2D_BRIDGE is set (legacy: pathname to a .py launcher), we spawn
+    `BRIDGE_PYTHON <BRIDGE_PATH> …argv` instead. Returns (returncode,
+    stdout, stderr). Times out at CALL_TIMEOUT_S.
     """
-    if not BRIDGE_PATH.exists():
-        return (127, "", f"x2d_bridge.py not found at {BRIDGE_PATH}")
+    if BRIDGE_PATH is not None:
+        if not BRIDGE_PATH.exists():
+            return (127, "",
+                    f"X2D_BRIDGE points at missing file: {BRIDGE_PATH}")
+        cmd = [BRIDGE_PYTHON, str(BRIDGE_PATH), *argv]
+    else:
+        cmd = [BRIDGE_PYTHON, "-m", "beambam.cli", *argv]
     try:
         proc = subprocess.run(
-            [BRIDGE_PYTHON, str(BRIDGE_PATH), *argv],
-            capture_output=True,
-            text=True,
-            timeout=CALL_TIMEOUT_S,
-            cwd=str(_REPO_ROOT),
+            cmd, capture_output=True, text=True,
+            timeout=CALL_TIMEOUT_S, cwd=str(_REPO_ROOT),
         )
     except subprocess.TimeoutExpired as e:
         return (124, e.stdout or "", (e.stderr or "") +
@@ -463,7 +473,7 @@ def _camera_snapshot() -> dict:
         return {
             "content": [{"type": "text", "text":
                 "Camera daemon unreachable at " + DAEMON_HTTP + "/cam.jpg.\n"
-                "Run `x2d_bridge.py camera --bind 127.0.0.1:8765` first.\n"
+                "Run `beambam camera --bind 127.0.0.1:8765` first.\n"
                 "Override the URL via $X2D_DAEMON_HTTP."}],
             "isError": True,
         }
@@ -490,7 +500,7 @@ def _http_text_tool(path: str, accept: str = "application/json") -> dict:
         return {
             "content": [{"type": "text", "text":
                 f"Bridge daemon unreachable at {DAEMON_HTTP}{path}.\n"
-                "Run `x2d_bridge.py daemon --http 127.0.0.1:8765` first.\n"
+                "Run `beambam daemon --http 127.0.0.1:8765` first.\n"
                 "Override the URL via $X2D_DAEMON_HTTP."}],
             "isError": True,
         }
@@ -531,7 +541,7 @@ def _read_resource(params: dict) -> dict:
         if status != 200 or not body:
             raise _ToolError(
                 f"x2d://camera/snapshot unreachable (status={status}, "
-                f"daemon={DAEMON_HTTP}); run `x2d_bridge.py camera` first.")
+                f"daemon={DAEMON_HTTP}); run `beambam camera` first.")
         return {
             "contents": [{
                 "uri": uri,
@@ -597,7 +607,8 @@ def _handle(message: dict) -> dict | None:
 def serve_stdio(stdin=None, stdout=None) -> int:
     stdin = stdin or sys.stdin
     stdout = stdout or sys.stdout
-    print(f"[mcp] x2d-bridge MCP server up (bridge={BRIDGE_PATH}, "
+    bridge_label = str(BRIDGE_PATH) if BRIDGE_PATH else "python -m beambam.cli"
+    print(f"[mcp] x2d-bridge MCP server up (bridge={bridge_label}, "
           f"daemon={DAEMON_HTTP})", file=sys.stderr, flush=True)
     while True:
         line = stdin.readline()

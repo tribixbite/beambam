@@ -1,7 +1,8 @@
 # Bridge ↔ shim wire protocol
 
-`libbambu_networking.so` (the shim) talks to `x2d_bridge.py serve` (the
-bridge daemon) over a single Unix-domain socket at
+`libbambu_networking.so` (the shim) talks to `beambam serve` (spawned
+as `python3 -m beambam.cli serve`; the bridge daemon) over a single
+Unix-domain socket at
 `$HOME/.x2d/bridge.sock` (path can be overridden via the
 `X2D_BRIDGE_SOCK` env var inherited from the parent BambuStudio process).
 
@@ -172,8 +173,8 @@ host's GTK thread via the host-registered `QueueOnMainFn`.
    handle.
 4. Host calls `bambu_network_start(agent)`. Shim:
    * Reads `X2D_BRIDGE_SOCK` (default `$HOME/.x2d/bridge.sock`).
-   * Spawns a background daemon if no socket exists yet (`x2d_bridge.py
-     serve --sock $X2D_BRIDGE_SOCK`).
+   * Spawns a background daemon if no socket exists yet
+     (`python3 -m beambam.cli serve --sock $X2D_BRIDGE_SOCK`).
    * Connects, sends `hello`, awaits `rsp`.
    * Spins up the worker thread that owns the socket.
 5. Host calls `connect_printer` → shim sends `req:connect_printer` →
