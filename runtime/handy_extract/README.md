@@ -36,7 +36,31 @@ packer scans for vanilla `frida-server` symbols + process names.
 | `setup_rooted_device.sh` | One-shot: pushes StrongR-Frida server, installs Bambu Handy from your local backup tarball, exposes :27042 via `adb forward`. |
 | `handy_hook.js` | The Frida script — hooks crypto, sniffs decrypts, emits structured events. |
 | `dump_keys.py` | Host runner — feeds the hook in, reassembles PKCS#8 PEMs from BIGNUM hex, classifies sniffed blobs, writes a session dir. |
+| `capture_f3mf_token.js` | Standalone Frida hook — captures Handy's plaintext HTTP request to `/api/v1/design-service/instance/<id>/f3mf` right before TLS encrypts, including the SHIELD-baked auth header(s) that bypass Bambu's 418-captcha rate limit. |
+| `capture_f3mf_token.py` | Host runner for `capture_f3mf_token.js`. Writes each captured request to `./captured_tokens/<ts>.txt` and exports the most-recent auth set to `~/.x2d/handy_token.json`. The beambam `cloud_client.get_instance_download_url` auto-replays this token (if <30 min old) on every `/f3mf` call → bypasses captcha. |
 | `cache/` | Cached frida-server binaries (gitignored). |
+
+## /f3mf captcha bypass — quick runbook
+
+The `/api/v1/design-service/instance/<id>/f3mf?type=download` endpoint hard-rate-limits at ~10 anonymous-ish calls per IP per window (HTTP 418 with `captchaId`). Bambu Handy never hits this because the SHIELD-packed `libapp.so` injects a per-session auth header set our Python client doesn't have. Capture them once, replay from beambam:
+
+```bash
+# 1) Bootstrap a rooted device + frida-server (same as the cert-extraction runbook).
+adb forward tcp:27042 tcp:27042
+
+# 2) Run the capture hook. Spawns Handy and watches every TLS-bound SSL_write.
+python3 capture_f3mf_token.py
+
+# 3) On the device: open ANY MakerWorld design → tap Download. The hook
+#    fires once. ~/.x2d/handy_token.json is written.
+
+# 4) Ctrl-C the runner. From now on, beambam's cloud_client auto-includes
+#    the captured headers when they're <30 min old. Try:
+beambam cloud-pull-design 2706164 --instance-id 3 --out-dir /tmp/charm
+# (would have 418'd before — now succeeds while the token is fresh)
+```
+
+Tokens rotate quickly (≈30 min Bambu-side TTL). When beambam starts returning 418 again, re-capture.
 
 ## Runbook
 

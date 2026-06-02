@@ -839,9 +839,33 @@ class CloudClient:
         valid for ~5 minutes (`exp` parameter in the URL).
 
         Response shape: `{"name": "<title>.3mf", "url": "https://makerworld.bblmw.com/...?exp=...&key=..."}`
+
+        Captcha bypass: if `~/.x2d/handy_token.json` exists (captured via
+        runtime/handy_extract/capture_f3mf_token.py), its auth headers
+        are merged into the request. This bypasses Bambu's 418-captcha
+        rate-limit by replaying the SHIELD-baked token Handy uses.
         """
-        return self._authed_get(
-            f"/v1/design-service/instance/{instance_id}/f3mf?type={kind}")
+        from pathlib import Path as _P
+        token_file = _P.home() / ".x2d" / "handy_token.json"
+        extra_headers: dict[str, str] = {}
+        if token_file.is_file():
+            try:
+                td = json.loads(token_file.read_text())
+                # Skip if older than 30 min — Handy tokens rotate quickly.
+                age = time.time() - float(td.get("captured_at", 0))
+                if age < 1800:
+                    extra_headers.update(td.get("headers", {}))
+            except Exception:                                  # noqa: BLE001
+                pass
+        path = f"/v1/design-service/instance/{instance_id}/f3mf?type={kind}"
+        if extra_headers:
+            # Bypass _authed_get to inject extra headers alongside our Bearer.
+            self._ensure_fresh()
+            url = REGIONS[self.session.region]["iot"] + path
+            hdrs = {"Authorization": f"Bearer {self.session.access_token}"}
+            hdrs.update(extra_headers)
+            return _request("GET", url, headers=hdrs)
+        return self._authed_get(path)
 
     def pull_design_3mf(self, design_id: int | str, dest_dir: Path | str,
                         instance_index: int = 0) -> Path:

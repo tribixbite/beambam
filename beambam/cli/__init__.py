@@ -186,6 +186,7 @@ from beambam.cli.cloud import (
     cmd_cloud_spool_update, cmd_cloud_spool_delete,
     cmd_cloud_get_access_code, cmd_cloud_publish,
     cmd_cloud_pull_design, cmd_cloud_print_design,
+    cmd_cloud_start_print, cmd_cloud_task_export,
     cmd_printables_search, cmd_print_search,
 )
 from beambam.cli.info import (
@@ -490,6 +491,42 @@ def main() -> int:
     sp.add_argument("--color",
                     help="Primary filament color #RRGGBB (forwards to "
                          "x2d_slice.py --color; ignored for 3MF input)")
+    # Multi-filament + cross-printer-profile re-slice (3MF inputs only).
+    # Forwarded verbatim to `bambu-studio --slice 0`. Lets a project .3mf
+    # authored for A1/X1 etc. be re-sliced for X2D with proper per-AMS-slot
+    # filament JSONs and per-object filament-id mapping (so dual-nozzle
+    # prints distribute colors per nozzle without AMS swaps).
+    sp.add_argument("--load-filaments", dest="load_filaments",
+                    help="Semicolon-joined filament JSON paths. Mirrors "
+                         "bambu-studio --load-filaments. (3MF input only)")
+    sp.add_argument("--load-settings", dest="load_settings",
+                    help="Semicolon-joined process + printer JSON paths. "
+                         "Mirrors bambu-studio --load-settings. "
+                         "(3MF input only)")
+    sp.add_argument("--load-filament-ids", dest="load_filament_ids",
+                    help="Comma-joined 1-based filament ids per object "
+                         "(e.g. '1,2,3,1'). Mirrors bambu-studio "
+                         "--load-filament-ids. (3MF input only)")
+    sp.add_argument("--load-defaultfila", dest="load_defaultfila",
+                    action="store_true",
+                    help="Use first filament as fallback for objects with "
+                         "no explicit filament id. (3MF input only)")
+    sp.add_argument("--uptodate", dest="uptodate", action="store_true",
+                    help="Update embedded configs in the 3MF to the latest "
+                         "from --load-filaments/--load-settings. "
+                         "(3MF input only)")
+    sp.add_argument("--allow-newer-3mf", dest="allow_newer_3mf",
+                    action="store_true",
+                    help="Allow re-slicing a 3MF whose recorded slicer "
+                         "version is newer than ours. (3MF input only)")
+    sp.add_argument("--allow-multicolor-oneplate",
+                    dest="allow_multicolor_oneplate", action="store_true",
+                    help="Allow multiple colors on one plate during "
+                         "auto-arrange. (3MF input only)")
+    sp.add_argument("--repetitions", "--qty", dest="repetitions",
+                    type=int, default=1,
+                    help="Repeat the whole plate N times. Mirrors "
+                         "bambu-studio --repetitions. (3MF input only)")
     sp.add_argument("--remote", help="Remote filename on printer "
                                      "(default: input basename)")
     sp.add_argument("--slot", type=int, default=0,
@@ -884,6 +921,27 @@ def main() -> int:
     cli_cpd.add_argument("--color", help="Primary filament colour (hex or name)")
     cli_cpd.add_argument("--slot", type=int, default=0)
     cli_cpd.add_argument("--no-ams", action="store_true")
+    # Forward to slice-print for cross-printer-profile re-slice of
+    # MakerWorld projects authored for A1/X1 etc. See slice-print --help.
+    cli_cpd.add_argument("--load-filaments", dest="load_filaments")
+    cli_cpd.add_argument("--load-settings",  dest="load_settings")
+    cli_cpd.add_argument("--load-filament-ids", dest="load_filament_ids")
+    cli_cpd.add_argument("--load-defaultfila", action="store_true",
+                         dest="load_defaultfila")
+    cli_cpd.add_argument("--uptodate",       action="store_true")
+    cli_cpd.add_argument("--allow-newer-3mf", action="store_true",
+                         dest="allow_newer_3mf")
+    cli_cpd.add_argument("--allow-multicolor-oneplate", action="store_true",
+                         dest="allow_multicolor_oneplate")
+    cli_cpd.add_argument("--repetitions", "--qty", dest="repetitions",
+                         type=int, default=1,
+                         help="Repeat the whole plate N times (3MF re-slice).")
+    cli_cpd.add_argument("--from-3mf", dest="from_3mf",
+                         help="Use a local .3mf instead of pulling from "
+                              "MakerWorld. Bypasses the captcha-gated "
+                              "/f3mf endpoint when iterating. design_id is "
+                              "still required positionally for the slice "
+                              "metadata pipeline but the file isn't fetched.")
     cli_cpd.add_argument("--dry-run", action="store_true",
                          help="Download + slice, but don't upload/print")
     cli_cpd.add_argument("--printer")
@@ -891,6 +949,50 @@ def main() -> int:
     cli_cpd.add_argument("--code")
     cli_cpd.add_argument("--serial")
     cli_cpd.set_defaults(fn=cmd_cloud_print_design)
+
+    cli_csp = sub.add_parser(
+        "cloud-start-print",
+        help="Start a print of a file already on the printer SD via "
+             "the CLOUD broker (bypasses LAN MQTT firmware allowlist "
+             "that blocks `project_file` on X2D/H2D Jan-2025+ fw).")
+    cli_csp.add_argument("filename", help="Remote SD filename (e.g. "
+                          "'Squirtle_50pct.gcode.3mf')")
+    cli_csp.add_argument("--ams-slots",
+                          help="Comma-separated AMS slot indices (0..15) "
+                               "per project filament — e.g. '7,10,7' for "
+                               "filaments 1,2,3 going to slots 7,10,7.")
+    cli_csp.add_argument("--md5", default="",
+                          help="MD5 of the uploaded .gcode.3mf (firmware "
+                               "verifies; empty skips verify)")
+    cli_csp.add_argument("--bed-type", default="auto",
+                          help="Bed enum (textured_plate / cool_plate / "
+                               "supertack_plate / hot_plate / auto)")
+    cli_csp.add_argument("--bed-temp", default=0,
+                          help="Bed temp °C; 0 = let firmware decide")
+    cli_csp.add_argument("--no-bed-level", action="store_true")
+    cli_csp.add_argument("--flow-cali", action="store_true")
+    cli_csp.add_argument("--timelapse", action="store_true")
+    cli_csp.add_argument("--vib-cali", action="store_true")
+    cli_csp.add_argument("--no-ams", action="store_true")
+    cli_csp.add_argument("--serial",
+                          help="Override printer serial (defaults to "
+                               "your single bound device)")
+    cli_csp.set_defaults(fn=cmd_cloud_start_print)
+
+    cli_cte = sub.add_parser(
+        "cloud-task-export",
+        help="Dump a past print-task's slicer metadata + thumbnails to "
+             "a local dir via AWS S3 signed URLs (no captcha). Useful "
+             "for recovering exact configs from a past print. NOTE: "
+             "3D mesh + sliced gcode NOT included — context exposes "
+             "Metadata/* only.")
+    cli_cte.add_argument("task_id", type=int,
+                          help="Task ID (from `cloud-history` or "
+                               "printer state's task_id field)")
+    cli_cte.add_argument("--out-dir", default="~/Downloads/x2d-task",
+                          help="Where to write the files "
+                               "(default %(default)s)")
+    cli_cte.set_defaults(fn=cmd_cloud_task_export)
 
     cli_fcm = sub.add_parser(
         "fcm-harvest",

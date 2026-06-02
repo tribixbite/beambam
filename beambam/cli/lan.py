@@ -226,19 +226,49 @@ def cmd_slice_print(args: argparse.Namespace) -> int:
     with tempfile.TemporaryDirectory(prefix="x2d_sp_") as td:
         out_3mf = Path(td) / f"{stl.stem}.gcode.3mf"
         if stl.suffix.lower() == ".3mf":
-            # Already a 3mf — just re-slice via BS CLI directly to
-            # refresh metadata.
+            # Already a 3mf — re-slice via BS CLI. For project .3mfs
+            # authored for another printer (A1, etc.) or with multi-color
+            # AMS-swap that needs per-nozzle distribution, the caller can
+            # pass `--load-filaments` / `--load-settings` /
+            # `--load-filament-ids` / `--allow-newer-3mf` / `--uptodate`
+            # / `--load-defaultfila` to feed bambu-studio the right
+            # context. These mirror BS CLI's own flag names verbatim so
+            # existing BS docs apply.
             print(f"[slice-print] input already a 3mf, re-slicing in "
                   f"place", file=sys.stderr)
             bs_bin = (X2D_ROOT_PATH / "bs-bionic" / "build" / "src"
                       / "bambu-studio")
-            rc = subprocess.call([
+            cmd = [
                 str(bs_bin), "--slice", "0",
                 "--outputdir", str(out_3mf.parent),
                 "--export-3mf", out_3mf.name,
-                str(stl),
-            ], env={**os.environ,
-                    "DISPLAY": os.environ.get("DISPLAY", ":1")})
+            ]
+            if getattr(args, "load_filaments", None):
+                cmd.extend(["--load-filaments", args.load_filaments])
+            if getattr(args, "load_settings", None):
+                cmd.extend(["--load-settings", args.load_settings])
+            if getattr(args, "load_filament_ids", None):
+                cmd.extend(["--load-filament-ids", args.load_filament_ids])
+            if getattr(args, "load_defaultfila", False):
+                cmd.append("--load-defaultfila")
+            if getattr(args, "uptodate", False):
+                cmd.append("--uptodate")
+            if getattr(args, "allow_newer_3mf", False):
+                # BS v02.06.00.51 names this --allow-newer-file (not -3mf
+                # as older docs say); takes `=1` to enable (space-form
+                # gets parsed as positional). Keep our CLI arg friendly.
+                cmd.append("--allow-newer-file=1")
+            if getattr(args, "allow_multicolor_oneplate", False):
+                cmd.append("--allow-multicolor-oneplate")
+            if getattr(args, "repetitions", None) and int(args.repetitions) > 1:
+                # BS CLI: repeat the whole plate N times. Different from
+                # x2d_slice.py's --copies (which tiles one model).
+                cmd.extend(["--repetitions", str(int(args.repetitions))])
+            cmd.append(str(stl))
+            rc = subprocess.call(cmd, env={
+                **os.environ,
+                "DISPLAY": os.environ.get("DISPLAY", ":1"),
+            })
         else:
             # STL/OBJ/STEP — graft into template and slice
             cmd = [str(slice_bin), str(stl), "--out", str(out_3mf)]

@@ -860,6 +860,117 @@ def _cloud_publish_payload(serial: str, payload: dict,
     return 0
 
 
+def cloud_start_print(
+    serial: str,
+    *,
+    gcode_filename: str,
+    md5_hex: str = "",
+    ams_slots: list[int] | None = None,
+    bed_type: str = "auto",
+    bed_temp: int = 0,
+    bed_levelling: bool = True,
+    flow_cali: bool = False,
+    timelapse: bool = False,
+    vibration_cali: bool = False,
+    use_ams: bool = True,
+    timeout: float = 12.0,
+) -> int:
+    """Publish a `print.project_file` start-print command via Bambu's
+    CLOUD broker (account-JWT-authenticated) instead of LAN MQTT
+    (which the X2D firmware allowlist rejects with "mqtt message verify
+    failed" for the leaked Bambu Connect cert as of fw 01.01.00.65).
+
+    Payload shape mirrors `beambam.print_job.start_print` (per the
+    captured BS-Windows wire format). Differences for cloud route:
+      * `job_type = 1` (not 0)
+      * Published via Bambu's cloud broker with username = user JWT
+      * No `header.sign_string` needed (cloud broker authorises by JWT)
+    """
+    import time as _time
+    if ams_slots is None:
+        ams_slots = [0] if use_ams else []
+    ams_mapping_legacy = list(ams_slots) if use_ams else []
+    ams_mapping_v2 = (
+        [{"ams_id": s // 4, "slot_id": s % 4} for s in ams_slots]
+        if use_ams else []
+    )
+    job_id_int = int(_time.time()) * 10
+    job_id_str = str(job_id_int)
+    name_no_3mf = gcode_filename
+    if name_no_3mf.endswith(".gcode.3mf"):
+        name_no_3mf = name_no_3mf[: -len(".3mf")]
+    elif name_no_3mf.endswith(".3mf"):
+        name_no_3mf = name_no_3mf[: -len(".3mf")] + ".gcode"
+    payload = {
+        "print": {
+            "sequence_id":              str(int(_time.time())),
+            "command":                  "project_file",
+            "param":                    "Metadata/plate_1.gcode",
+            "file":                     gcode_filename,
+            "url":                      f"ftp:///{gcode_filename}",
+            "md5":                      md5_hex,
+            "task_id":                  job_id_str,
+            "subtask_id":               job_id_str,
+            "subtask_name":             name_no_3mf,
+            "job_id":                   job_id_int,
+            "project_id":               job_id_str,
+            "profile_id":               "0",
+            "design_id":                "0",
+            "model_id":                 "0",
+            "plate_idx":                1,
+            "dev_id":                   serial,
+            "job_type":                 1,                 # cloud
+            "timestamp":                int(_time.time()),
+            "bed_type":                 bed_type,
+            "bed_temp":                 int(bed_temp),
+            "auto_bed_leveling":        1 if bed_levelling else 0,
+            "extrude_cali_flag":        1 if flow_cali else 0,
+            "nozzle_offset_cali":       0,
+            "extrude_cali_manual_mode": 0,
+            "flow_cali":                bool(flow_cali),
+            "bed_leveling":             bool(bed_levelling),
+            "vibration_cali":           bool(vibration_cali),
+            "timelapse":                bool(timelapse),
+            "layer_inspect":            False,
+            "use_ams":                  bool(use_ams),
+            "ams_mapping":              ams_mapping_legacy,
+            "ams_mapping2":             ams_mapping_v2,
+            "skip_objects":             None,
+            "cfg":                      "0",
+        }
+    }
+    return _cloud_publish_payload(serial, payload, timeout=timeout)
+
+
+def cmd_cloud_start_print(args: argparse.Namespace) -> int:
+    """`beambam cloud-start-print <remote_filename>` — start a print of
+    a file that's already on the printer's SD via the CLOUD broker.
+    Use when the LAN `project_file` MQTT is firmware-gated (X2D / H2D
+    on Jan-2025+ fw)."""
+    serial = _resolve_serial_or_exit(args)
+    slots: list[int] | None = None
+    if args.ams_slots:
+        try:
+            slots = [int(s) for s in args.ams_slots.split(",")]
+        except ValueError:
+            print("--ams-slots must be CSV ints (e.g. '7,10,7')",
+                  file=sys.stderr)
+            return 1
+    return cloud_start_print(
+        serial,
+        gcode_filename=args.filename,
+        md5_hex=args.md5 or "",
+        ams_slots=slots,
+        bed_type=args.bed_type,
+        bed_temp=int(args.bed_temp) if args.bed_temp else 0,
+        bed_levelling=not args.no_bed_level,
+        flow_cali=args.flow_cali,
+        timelapse=args.timelapse,
+        vibration_cali=args.vib_cali,
+        use_ams=not args.no_ams,
+    )
+
+
 def _resolve_cloud_serial(args: argparse.Namespace) -> str | None:
     """Mirror of cmd_cloud_state's auto-discovery: --serial wins, else
     X2D_SERIAL env, else if exactly one printer is bound to the
@@ -1388,6 +1499,25 @@ def _print_search_printables(args: argparse.Namespace) -> int:
         if args.slot:    cmd.extend(["--slot", str(args.slot)])
         if args.no_ams:  cmd.append("--no-ams")
         if args.dry_run: cmd.append("--dry-run")
+        # Multi-color / cross-printer-profile re-slice flags — mirror BS
+        # CLI's --load-* so a MakerWorld project authored for A1 can be
+        # re-sliced for X2D dual-nozzle with per-AMS-slot filaments.
+        if getattr(args, "load_filaments", None):
+            cmd.extend(["--load-filaments", args.load_filaments])
+        if getattr(args, "load_settings", None):
+            cmd.extend(["--load-settings", args.load_settings])
+        if getattr(args, "load_filament_ids", None):
+            cmd.extend(["--load-filament-ids", args.load_filament_ids])
+        if getattr(args, "load_defaultfila", False):
+            cmd.append("--load-defaultfila")
+        if getattr(args, "uptodate", False):
+            cmd.append("--uptodate")
+        if getattr(args, "allow_newer_3mf", False):
+            cmd.append("--allow-newer-3mf")
+        if getattr(args, "allow_multicolor_oneplate", False):
+            cmd.append("--allow-multicolor-oneplate")
+        if getattr(args, "repetitions", None) and int(args.repetitions) > 1:
+            cmd.extend(["--repetitions", str(int(args.repetitions))])
         return subprocess.call(cmd)
 
 
@@ -1494,6 +1624,109 @@ def cmd_print_search(args: argparse.Namespace) -> int:
     return subprocess.call(cmd)
 
 
+def cmd_cloud_task_export(args: argparse.Namespace) -> int:
+    """Export a past print-task's slicer metadata + thumbnails to a local
+    directory by following the AWS S3 signed URLs in the task's
+    `context` field.
+
+    Why this exists: Bambu's `/api/v1/design-service/instance/<id>/f3mf`
+    download endpoint is captcha-rate-limited after ~10 calls per IP
+    window. The task-context S3 URLs are NOT — they are pre-signed by
+    the backend at print time, valid for 24 hours, and have no anti-bot
+    check.
+
+    Limitation: the context only exposes Metadata/* files (configs +
+    thumbnails). 3D mesh data and sliced gcode are NOT included. So
+    this is useful for:
+      * Recovering exact slicer configs from a past print
+      * Cross-printer config replay
+      * Auditing print history
+    NOT for re-printing without re-downloading (the mesh is still on
+    Bambu's S3 but not in the signed-URL list).
+
+    Usage:
+        beambam cloud-task-export 968321425 [--out-dir /tmp/audit]
+    """
+    from pathlib import Path
+    import cloud_client
+    import urllib.request
+
+    cli = cloud_client.CloudClient.load_or_anonymous()
+    if cli.session.empty:
+        print("not logged in", file=sys.stderr)
+        return 1
+    try:
+        t = cli.get_task(args.task_id)
+    except cloud_client.CloudError as e:
+        print(f"cloud API failed: {e}", file=sys.stderr)
+        return 1
+    ctx = t.get("context") or {}
+    if isinstance(ctx, str):
+        # Bambu's API sometimes returns context as Python-repr-formatted
+        # JSON (single-quoted). Normalise.
+        try:
+            ctx = json.loads(ctx)
+        except json.JSONDecodeError:
+            try:
+                ctx = json.loads(ctx.replace("'", '"'))
+            except json.JSONDecodeError:
+                print(f"task {args.task_id} has no parseable context",
+                      file=sys.stderr)
+                return 1
+
+    out_dir = Path(args.out_dir).expanduser()
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    # Walk the context tree for every signed-URL we can find.
+    def _walk(obj):
+        if isinstance(obj, dict):
+            url = obj.get("url")
+            name = obj.get("name")
+            sub = obj.get("dir", "")
+            if url and "X-Amz-Signature" in url and name:
+                yield (sub, name, url)
+            for v in obj.values():
+                yield from _walk(v)
+        elif isinstance(obj, list):
+            for v in obj:
+                yield from _walk(v)
+
+    seen: dict[tuple[str, str], str] = {}
+    for sub, name, url in _walk(ctx):
+        seen[(sub, name)] = url
+
+    if not seen:
+        print(f"task {args.task_id} has zero signed S3 URLs in context",
+              file=sys.stderr)
+        return 1
+
+    print(f"[cloud-task-export] task {args.task_id} → {len(seen)} files "
+          f"into {out_dir}")
+    written = 0
+    for (sub, name), url in sorted(seen.items()):
+        target_dir = out_dir / sub if sub else out_dir
+        target_dir.mkdir(parents=True, exist_ok=True)
+        target = target_dir / name
+        try:
+            r = urllib.request.urlopen(url, timeout=15)
+            data = r.read()
+            target.write_bytes(data)
+            print(f"  {sub:12s}/{name:<35s} {len(data):>10,} B")
+            written += 1
+        except Exception as e:                                  # noqa: BLE001
+            print(f"  ! {sub}/{name}: {str(e)[:100]}",
+                  file=sys.stderr)
+
+    # Also dump the task record itself for completeness
+    (out_dir / "_task.json").write_text(
+        json.dumps(t, indent=2, default=str))
+
+    print(f"\ndone: {written}/{len(seen)} files in {out_dir}")
+    print("  (3D mesh + sliced gcode NOT included — Bambu's context "
+          "endpoint exposes Metadata/* + thumbnails only)")
+    return 0
+
+
 def cmd_cloud_pull_design(args: argparse.Namespace) -> int:
     """Download a MakerWorld design's .3mf bundle to a local directory.
 
@@ -1547,23 +1780,52 @@ def cmd_cloud_print_design(args: argparse.Namespace) -> int:
     # cmd_fetch in beambam.cli.info.
     from beambam import X2D_ROOT_PATH
 
-    cli = cloud_client.CloudClient.load_or_anonymous()
-    if cli.session.empty:
-        print("not logged in", file=sys.stderr)
-        return 1
-
-    with tempfile.TemporaryDirectory(
-            prefix="cloud_print_design_") as td:
-        td_p = Path(td)
+    # Local-file bypass — `--from-3mf <path>` skips the cloud download
+    # entirely (the f3mf endpoint is captcha-rate-limited after ~10 calls
+    # in a window; for the file-already-on-disk path that's pure overhead).
+    # Lets the user grab the .3mf via browser/BS Studio/MW one time and
+    # then re-run cloud-print-design with the same flags for iteration.
+    from_3mf = getattr(args, "from_3mf", None)
+    if from_3mf:
+        three_mf_local = Path(from_3mf).expanduser()
+        if not three_mf_local.is_file():
+            print(f"--from-3mf path does not exist: {three_mf_local}",
+                  file=sys.stderr)
+            return 1
+        # Skip cloud auth + skip pull
+        td_ctx = tempfile.TemporaryDirectory(prefix="cloud_print_design_local_")
+        td_p = Path(td_ctx.name)
+        three_mf = three_mf_local
+        print(f"[cloud-print-design] using local 3mf {three_mf}  "
+              f"({three_mf.stat().st_size:,} B; cloud download skipped)",
+              file=sys.stderr)
+    else:
+        cli = cloud_client.CloudClient.load_or_anonymous()
+        if cli.session.empty:
+            print("not logged in (or pass --from-3mf <path> to skip cloud "
+                  "download)", file=sys.stderr)
+            return 1
+        td_ctx = tempfile.TemporaryDirectory(prefix="cloud_print_design_")
+        td_p = Path(td_ctx.name)
         try:
             three_mf = cli.pull_design_3mf(
                 args.design_id, td_p,
                 instance_index=int(args.instance_index or 0))
         except cloud_client.CloudError as e:
             print(f"cloud API failed: {e}", file=sys.stderr)
+            if "418" in str(e) or "captcha" in str(e).lower():
+                print("\nHINT: the /f3mf endpoint is captcha-rate-limited "
+                      "after ~10 API downloads in a short window. "
+                      "Workaround: download the .3mf manually (browser / "
+                      "BS Studio / Bambu Handy) and re-run with "
+                      "`--from-3mf <path>` to skip cloud download.",
+                      file=sys.stderr)
+            td_ctx.cleanup()
             return 1
         print(f"[cloud-print-design] downloaded {three_mf.name}  "
               f"({three_mf.stat().st_size:,} B)", file=sys.stderr)
+
+    with td_ctx:
 
         # Build the slice-print invocation. We use the same x2d_bridge
         # but via subprocess so all the existing arg validation +
@@ -1587,6 +1849,23 @@ def cmd_cloud_print_design(args: argparse.Namespace) -> int:
         if args.slot:    cmd.extend(["--slot", str(args.slot)])
         if args.no_ams:  cmd.append("--no-ams")
         if args.dry_run: cmd.append("--dry-run")
+        # Multi-color / cross-printer-profile flags (forwarded to slice-print)
+        if getattr(args, "load_filaments", None):
+            cmd.extend(["--load-filaments", args.load_filaments])
+        if getattr(args, "load_settings", None):
+            cmd.extend(["--load-settings", args.load_settings])
+        if getattr(args, "load_filament_ids", None):
+            cmd.extend(["--load-filament-ids", args.load_filament_ids])
+        if getattr(args, "load_defaultfila", False):
+            cmd.append("--load-defaultfila")
+        if getattr(args, "uptodate", False):
+            cmd.append("--uptodate")
+        if getattr(args, "allow_newer_3mf", False):
+            cmd.append("--allow-newer-3mf")
+        if getattr(args, "allow_multicolor_oneplate", False):
+            cmd.append("--allow-multicolor-oneplate")
+        if getattr(args, "repetitions", None) and int(args.repetitions) > 1:
+            cmd.extend(["--repetitions", str(int(args.repetitions))])
         return subprocess.call(cmd)
 
 
