@@ -218,6 +218,23 @@ def main() -> int:
             dev.resume(pid)
         except Exception as e:                              # noqa: BLE001
             print(f"[runner] resume failed: {e}", file=sys.stderr)
+
+    # The in-app Stalker guard starves Frida's JS timer loop, so we drive
+    # the SSL_write rescan from here (Python is not instrumented). Poll
+    # every second — each call re-hunts SSL_write across freshly-loaded
+    # modules and emits the one-time DIAG.
+    import threading as _threading
+
+    def _poll_rescan() -> None:
+        while True:
+            try:
+                script.exports_sync.rescan()
+            except Exception:                              # noqa: BLE001
+                return  # script unloaded / process gone
+            time.sleep(1.0)
+
+    _t = _threading.Thread(target=_poll_rescan, daemon=True)
+    _t.start()
     print(f"[runner] hook loaded; PID={pid}; "
           f"open ANY MakerWorld design → Download to trigger capture")
     print(f"[runner] captures dir: {CAPTURES_DIR}")

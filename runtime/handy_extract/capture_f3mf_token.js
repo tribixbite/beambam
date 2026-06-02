@@ -32,6 +32,47 @@
 // LIMITATION: tokens are short-lived (best-effort 30 min). Re-capture
 // when beambam starts returning 418 again.
 //
+// ============================================================
+// 2026-06-02 STATUS — what works, and the remaining wall
+// ============================================================
+// WORKS (verified against bbl.intl.bambulab.com v3.19.0, frida 17.9.3,
+// rooted Android 14):
+//   * Spawn-gated injection defeats the Promon SHIELD anti-instrumentation
+//     — the agent injects at zygote-fork before SHIELD arms; the
+//     concatenated stalker_syscalls.js then SUPPRESSES SHIELD's raw `svc`
+//     tamper-response (verified: "suppressed svc nr=131 (tgkill)"), so the
+//     hook loads + survives where late-attach times out.
+//   * Frida-17 module API (Module.findExportByName was REMOVED — we use
+//     Process.enumerateModules + module.findExportByName / getGlobalExportByName).
+//   * The in-app Stalker STARVES Frida's JS event loop — setTimeout AND
+//     setInterval AND rpc callbacks never fire. So the SSL_write rescan is
+//     driven from the dlopen Interceptor callback (app-thread-driven, works)
+//     and from the Python side. NEVER rely on JS timers under stalker.
+//   * SSL_write IS found + hooked on the SYSTEM libssl.so (554 exports,
+//     SSL_read+SSL_write present).
+//
+// THE WALL:
+//   * Bambu Handy sends ZERO HTTP through system libssl.so — its dart:io /
+//     HTTP stack uses a BUNDLED BoringSSL. That BoringSSL is NOT a named
+//     module: the SHIELD packer (assets/kqkticwjgzy.dat encrypted payload,
+//     l6a18f19c loader stub) DECRYPTS the real code, including BoringSSL,
+//     into ANONYMOUS RX memory at runtime. enumerateModules() shows only
+//     base.odex / libssl / libcrypto — never libflutter.so / libapp.so.
+//   * So SSL_write lives in unnamed executable memory. To hook it the next
+//     iteration must EITHER:
+//       (a) Memory.scan every RX anon range for the AArch64 BoringSSL
+//           SSL_write prologue signature, then Interceptor.attach the match
+//           (this is the same anon-memory code-scan the cert-extraction
+//           hook in handy_hook.js wrestles with — share that machinery), OR
+//       (b) hook the Dart VM's HttpClient at the Dart-runtime level
+//           (needs Dart AOT snapshot RE), OR
+//       (c) hook sendto/sendmsg syscalls — but that's POST-TLS-encryption,
+//           so it yields ciphertext, not the plaintext auth headers we need.
+//   Approach (a) is the most tractable. The captured `headers` plumbing,
+//   token-export, and beambam-side replay (cloud_client) are all DONE and
+//   waiting for a working SSL_write address.
+// ============================================================
+//
 // Author convention: parallel to handy_hook.js — keep the script
 // stand-alone so it can be loaded WITHOUT the heavy crypto hooks.
 
@@ -74,6 +115,8 @@ function resolveInModule(modname, name) {
   return null;
 }
 
+let _dlopen_logged = 0;
+let _http_logged = 0;
 function install_dlopen_watch() {
   const names = ['android_dlopen_ext', 'dlopen'];
   for (const n of names) {
@@ -84,12 +127,18 @@ function install_dlopen_watch() {
         onEnter(args) { try { this.path = args[0].readCString(); } catch (_) { } },
         onLeave() {
           if (!this.path) return;
-          if (this.path.indexOf('ssl') >= 0 ||
-              this.path.indexOf('flutter') >= 0 ||
-              this.path.indexOf('libapp') >= 0) {
-            LOG('dlopen ' + this.path + ' → re-scanning SSL_write');
-            hook_ssl_write_everywhere();
+          // Log every dlopen (first 80) so we can see exactly what libs
+          // Handy loads + when the SSL/flutter lib appears. This runs on
+          // the APP's thread (Interceptor callback), so it executes even
+          // though Frida's own event loop is stalker-starved.
+          if (_dlopen_logged < 80) {
+            _dlopen_logged++;
+            LOG('dlopen[' + _dlopen_logged + '] ' + this.path);
           }
+          // Rescan SSL_write on EVERY dlopen — cheap (deduped via
+          // SEEN_ADDRS) and guarantees we catch the SSL lib the moment a
+          // native lib loads, regardless of its path substring.
+          hook_ssl_write_everywhere();
         },
       });
       LOG('watching ' + n + ' for SSL lib loads');
@@ -135,6 +184,22 @@ function attach_ssl_write(addr, label) {
             .map((b) => String.fromCharCode(b))
             .join('');
 
+          // DIAGNOSTIC: log the request-line of EVERY HTTP request seen
+          // through this SSL_write (first 60) so we can confirm whether
+          // Handy's MakerWorld traffic — and specifically /f3mf — flows
+          // through this (system libssl) SSL_write at all. Set
+          // F3MF_LOG_ALL=0 in env-less builds to disable; here always on
+          // until we've confirmed the path.
+          const reqline = txt.split('\r\n')[0] || '';
+          if (_http_logged < 60 &&
+              /^(GET|POST|PUT|DELETE|HEAD) /.test(reqline)) {
+            _http_logged++;
+            // Pull the Host header too for context.
+            const hm = txt.match(/\r\nHost:\s*([^\r\n]+)/i);
+            LOG('HTTP[' + _http_logged + '] ' + reqline.substring(0, 90) +
+                '  Host=' + (hm ? hm[1] : '?'));
+          }
+
           if (txt.indexOf(URL_NEEDLE) < 0) return;
           if (txt.indexOf(PATH_NEEDLE) < 0) return;
 
@@ -164,7 +229,60 @@ function attach_ssl_write(addr, label) {
 // Handy bundles BoringSSL inside libflutter.so AND can also link the
 // system libssl.so. The Frida default Module.getExportByName('libssl.so',
 // 'SSL_write') sometimes misses the in-flutter copy.
+let _diag_runs = 0;
+let _flutter_found = false;
 function hook_ssl_write_everywhere() {
+  // Diagnostic — re-runs (throttled) until the Flutter engine lib loads,
+  // since at early-spawn it isn't mapped yet. Confirms what SSL surface
+  // is reachable + locates the bundled-BoringSSL host for pattern-scan.
+  if (!_flutter_found && _diag_runs < 40) {
+    _diag_runs++;
+    try {
+      const mods = Process.enumerateModules();
+      const ssl_mods = mods.filter((m) =>
+        /ssl|crypto|flutter|libapp|boring|conscrypt/i.test(m.name));
+      LOG(`DIAG: ${mods.length} modules; ssl-ish: ` +
+          ssl_mods.map((m) => m.name).join(', '));
+      // List Flutter/Dart/app native libs explicitly — these hold the
+      // bundled BoringSSL that Handy's dart:io HttpClient actually uses
+      // (system libssl carries ZERO Handy traffic, confirmed). The next
+      // iteration must pattern-scan SSL_write inside whichever of these
+      // is the Flutter engine lib (symbols are stripped).
+      const flutter_mods = mods.filter((m) =>
+        /flutter|libapp\.so|dart/i.test(m.name) ||
+        /base\.apk|split_config|\.bambulab/i.test(m.path || ''));
+      if (flutter_mods.length) {
+        _flutter_found = true;
+        LOG('DIAG: FLUTTER LIBS FOUND: ' +
+            flutter_mods.map((m) => m.name + '@' + m.base + ' size=' +
+                (m.size || 0) + ' path=' + (m.path || '?')).join(' || '));
+        // Scan each for BoringSSL SSL_write. AArch64 BoringSSL SSL_write
+        // prologue is non-trivial to signature-match generically; for now
+        // report exports (likely empty = stripped → pattern-scan needed).
+        flutter_mods.forEach((m) => {
+          try {
+            const exps = m.enumerateExports();
+            const sslw = exps.filter((e) => /SSL_write|SSL_read/i.test(e.name));
+            LOG('DIAG: ' + m.name + ' exports=' + exps.length +
+                ' SSL_write-export=[' + sslw.map((e) => e.name).join(',') + ']');
+          } catch (e) { LOG('DIAG: ' + m.name + ' enumExports failed: ' + e); }
+        });
+      } else if (_diag_runs <= 3 || _diag_runs % 10 === 0) {
+        LOG('DIAG[' + _diag_runs + ']: flutter/app native libs not loaded yet');
+      }
+      // For each ssl-ish module, count SSL_* exports (so we know whether
+      // BoringSSL symbols survived stripping).
+      ssl_mods.forEach((m) => {
+        try {
+          const exps = m.enumerateExports();
+          const sslw = exps.filter((e) => /SSL_write|SSL_read|ssl_write/i.test(e.name));
+          LOG(`DIAG: ${m.name} exports=${exps.length} ` +
+              `ssl_write-ish=[${sslw.map((e) => e.name).join(',')}]`);
+        } catch (e) { LOG(`DIAG: ${m.name} enumerateExports failed: ${e}`); }
+      });
+    } catch (e) { LOG(`DIAG failed: ${e}`); }
+  }
+
   const candidates = [
     'libssl.so',
     'libssl.so.1.1',
@@ -199,17 +317,17 @@ function hook_ssl_write_everywhere() {
 
 // dlopen watch installs synchronously at top-level (works at spawn —
 // libdl is always present). It re-scans SSL_write each time an ssl/
-// flutter lib loads, which is the robust catch-all.
+// flutter lib loads.
 install_dlopen_watch();
 
-// Belt-and-suspenders: also poll a handful of times in case the SSL lib
-// was already mapped before our dlopen hook (late-attach mode), or the
-// dlopen path didn't match our substrings.
-let _poll = 0;
-const _pollTimer = setInterval(() => {
-  _poll++;
-  hook_ssl_write_everywhere();
-  if (_poll >= 10) { clearInterval(_pollTimer); LOG('SSL_write poll done'); }
-}, 1000);
+// IMPORTANT: Frida's JS timers (setTimeout/setInterval) do NOT fire once
+// the stalker syscall-guard is following threads — the Stalker
+// instrumentation starves the agent's timer loop. So we expose rescan
+// via rpc and let the PYTHON side poll it (Python isn't stalkered). The
+// rescan re-runs the SSL_write module hunt; the first call also emits the
+// one-time DIAG of which SSL surfaces are reachable.
+rpc.exports = {
+  rescan: function () { try { hook_ssl_write_everywhere(); } catch (e) { LOG('rescan err: ' + e); } return true; },
+};
 
-LOG('capture_f3mf_token.js init complete — waiting for SSL_write on /f3mf');
+LOG('capture_f3mf_token.js init complete — rpc.rescan exposed; python will poll');
