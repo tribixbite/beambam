@@ -199,3 +199,103 @@ c. **By disabling the unpacker entirely** — patch `assets/l6a18f19c_a64.so`'s
 The dumps themselves remain valuable for offline analysis of the shield's
 syscall set and for any future signature-based detection of the shield
 across other Bambu app versions.
+
+## Path #5 — frida-stealth defeats SHIELD's 0xdead kill (2026-06-03) ✅
+
+Breakthrough: a **surgically string-patched frida-server** lets Bambu Handy
+boot to its UI **under live Frida instrumentation** — no more 0xdead crash.
+
+### What the SHIELD watchdog actually keys on
+
+Empirically established by spawning a benign app under an unpatched
+frida-server and reading the target's own `/proc/<pid>/{maps,task/*/comm}`:
+
+| Surface | Token the watchdog greps |
+|---|---|
+| `/proc/<pid>/maps` | `/memfd:frida-agent-64.so` (the injected agent) |
+| `/proc/<pid>/task/*/comm` | `gum-js-loop`, `pool-frida` (frida thread names) |
+
+A controlled test proved the **kill trigger is the `gum-js-loop` comm thread
+name**, NOT the maps memfd: after patching only `gum-js-loop`→`qnx-js-loop`
+the app survived even though `/memfd:frida-agent-64.so` was STILL in maps.
+
+### The stealth server (`patch_frida_stealth.py`)
+
+Same-length, offset-preserving byte patches to a copy of frida-server 17.9.3
+(kept at 17.9.3 to match the host's frida-python). **Surgical, not blanket** —
+a blanket `frida`→`monco` replace corrupts GResource lookups: the gresource
+hash table stores BUILD-TIME djb2 hashes of the original path strings, so
+renaming the path bytes (not the hashes) makes `g_resources_lookup` miss →
+`monco_android_helper_service_do_start: assertion failed (backend_class != null)`
+at startup. So we touch ONLY target-observable, non-gresource literals:
+
+- `frida-agent-64.so`/`-32.so` → `monco-agent-…` (memfd display name; the
+  embedded blob is keyed by the SEPARATE string `frida-agent-arm64.so`, left
+  intact, so the agent still loads)
+- `gum-js-loop` → `qnx-js-loop` (the JS-loop thread name)
+
+Plus run the binary RENAMED (`msrv`) on a NON-default port so `ps`/port
+probes see nothing. `pool-frida` derives from the helper's prgname and is
+runtime-constructed (not a static literal we can patch) — it remains, but it
+is not the kill trigger.
+
+```bash
+# regenerate the stealth server
+python3 patch_frida_stealth.py frida-server.orig frida-server.stealth
+adb push frida-server.stealth /data/local/tmp/msrv
+adb shell su -c 'chmod 755 /data/local/tmp/msrv; nohup /data/local/tmp/msrv -l 127.0.0.1:47999 >/dev/null 2>&1 &'
+adb forward tcp:47999 tcp:47999
+# capture_f3mf_token.py honours F3MF_FRIDA_HOST=127.0.0.1:47999
+```
+
+`scan_anon_ssl.js` gained `STEALTH_MODE=true` (disables the old libc
+fork-block — stealth wants the watchdog to RUN and find nothing) and
+`tryHookNamedLibssl()` (hooks Conscrypt `libssl.so` SSL_write by export, no
+anon signature scan; `ENABLE_ANON_SCAN=false` since the per-second
+`Memory.scan` starved Flutter's engine init and stuck the app on its splash).
+
+### SHIELD's deeper defence: fork+exec escape
+
+With 0xdead defeated, SHIELD's fallback is to **fork()+exec()** the app into a
+fresh process to shed the agent. The Frida-spawned (instrumented) process
+forks; the child inherits the agent's MAPPINGS but not its live threads, and a
+mutex held by a vanished agent thread is inherited locked → the child
+**deadlocks in `futex_wait` on the splash** (single-threaded husk, `ppid=1`).
+
+Counter: `capture_f3mf_token.py` now enables Frida **child-gating**
+(`F3MF_CHILD_GATING=1`, default on) and re-instruments each forked/exec'd
+child. This DOES follow the escape (logs `child-added … origin=fork` then
+`origin=exec`), but the specific instrumented children still get killed while
+an UNINSTRUMENTED fork survives (its agent-attach times out — SHIELD re-arms
+in the surviving process and rejects late-attached agents). **This is the
+current frontier.**
+
+### Why the token isn't in RAM (memscan dead-end) — `extract_token_memscan.py`
+
+A root `/proc/<pid>/mem` scan (no Frida → no tamper trip) of the
+normally-running app — fast path via `dd iflag=skip_bytes,count_bytes`
+bs=1 MiB, on-device grep so only matches cross adb — finds:
+
+- 3 **Firebase** ES256 JWTs (`appId/exp/fid/projectNumber`), via Conscrypt,
+- `bambulab.com` ×332 / `api.bambu` ×12 ASCII strings (so memory IS readable
+  and Dart strings are 1-byte ASCII, not UTF-16),
+- but **NO** `Authorization: Bearer`, no `accessToken`, no Bambu JWT, no
+  `Cookie`.
+
+Conclusion: Bambu's cloud/MakerWorld API auth is **per-request SIGNED
+headers** (`x-bbl-*`/`x-jiange-*`/`x-csrf-*`), computed transiently and freed
+— there is no stable token to lift from memory. That is precisely why the
+design has always been **live SSL_write capture**. Firebase (Java/OkHttp →
+Conscrypt) plaintext is catchable; the Bambu calls likely flow over Flutter's
+dart:io BoringSSL (stripped, anon) — so a surviving-instrumented capture must
+hook Conscrypt (confirmed working) AND, if Bambu uses dart:io, the Flutter
+BoringSSL SSL_write.
+
+### Net state
+
+- ✅ SHIELD's immediate 0xdead tamper-kill is DEFEATED (stealth server) — the
+  app reaches its UI under instrumentation. The "hard wall" is broken.
+- ⏳ Capturing a live /f3mf request still needs the instrumented process to
+  survive SHIELD's fork+exec re-spawn (child-gating refinement) — next step.
+- ✓ Normal printing is unaffected: `cloud-task-export` + `--from-3mf` already
+  cover it; the token is only needed to bypass the MakerWorld /f3mf captcha.

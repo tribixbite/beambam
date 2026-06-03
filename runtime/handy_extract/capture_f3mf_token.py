@@ -137,12 +137,25 @@ def main() -> int:
     except ImportError:
         sys.exit("frida not installed. `pip install frida` (matching "
                  "your frida-server version).")
-    # Prefer USB; fall back to TCP socket (WiFi-adb / `adb forward`).
+    # Device resolution. With a STEALTH frida-server on a non-default port
+    # (e.g. msrv -l 127.0.0.1:47999, to dodge SHIELD's default-port probe),
+    # set F3MF_FRIDA_HOST=127.0.0.1:47999 and we connect via add_remote_device
+    # — this also disambiguates when multiple adb devices are attached (USB
+    # auto-resolve is ambiguous then).
     dev = None
-    try:
-        dev = frida.get_usb_device(timeout=3)
-    except Exception:                                       # noqa: BLE001
-        pass
+    host = os.environ.get("F3MF_FRIDA_HOST")
+    if host:
+        try:
+            dev = frida.get_device_manager().add_remote_device(host)
+            print(f"[runner] using stealth remote device {host}")
+        except Exception as e:                              # noqa: BLE001
+            sys.exit(f"could not add remote frida device {host}: {e}")
+    if dev is None:
+        # Prefer USB; fall back to TCP socket (WiFi-adb / `adb forward`).
+        try:
+            dev = frida.get_usb_device(timeout=3)
+        except Exception:                                   # noqa: BLE001
+            pass
     if dev is None:
         try:
             # frida.get_remote_device() = first 'socket' (assumes
@@ -197,16 +210,11 @@ def main() -> int:
         session = dev.attach(pid)
         print(f"[runner] spawned + attached pid {pid}")
 
-    # Concatenate stalker_syscalls.js (same guard dump_keys.py uses): it
-    # rewrites every basic block to neutralise the SHIELD packer's raw
-    # `svc 0` tamper-response syscalls (exit_group/kill/tgkill/ptrace/
-    # seccomp) that otherwise kill the Frida agent mid-sync ("unexpectedly
-    # timed out trying to sync up with agent"). Self-disables after 8 s.
-    # F3MF_NO_STALKER=1 skips the heavy Stalker guard — used by the
-    # libc-fork-block approach (scan_anon_ssl.js arms an Interceptor
-    # fork-block at spawn-gate, before .ss/ loads, so the raw-svc Stalker
-    # guard isn't needed and its main-thread following — which killed
-    # earlier runs — is avoided).
+    # Build the agent source ONCE; it's shared by the main session and every
+    # gated child. Optionally concatenate stalker_syscalls.js (the raw-`svc`
+    # guard); F3MF_NO_STALKER=1 skips it (stealth mode relies on the patched
+    # frida-server, not the Stalker guard, so we keep it off to avoid the
+    # main-thread-following stall).
     script_src = HOOK_JS.read_text()
     if os.environ.get("F3MF_NO_STALKER") != "1":
         stalker_js = HOOK_JS.parent / "stalker_syscalls.js"
@@ -214,44 +222,92 @@ def main() -> int:
             script_src += "\n\n// === stalker_syscalls.js (concatenated) ===\n"
             script_src += stalker_js.read_text()
     else:
-        print("[runner] F3MF_NO_STALKER=1 — Stalker guard skipped "
-              "(libc fork-block only)", file=sys.stderr)
-    # V8 runtime — matches dump_keys.py; needed for the Java bridge if the
-    # stalker guard touches Conscrypt, and is the known-working config.
-    script = session.create_script(script_src, runtime="v8")
-    script.on("message", on_message)
-    script.load()
-    # In spawn mode the process is suspended at entry — resume it now
-    # that the Stalker guard + SSL hook are installed. (Late-attach mode
-    # via FRIDA_ATTACH=1 leaves pid None-ish; only resume on spawn.)
+        print("[runner] F3MF_NO_STALKER=1 — Stalker guard skipped",
+              file=sys.stderr)
+
+    import threading as _threading
+
+    # CHILD-GATING (F3MF_CHILD_GATING=1, default ON for the stealth path):
+    # Promon SHIELD fork()s the app to ESCAPE instrumentation — the child
+    # inherits Frida's agent MAPPINGS but not its live threads, and a mutex
+    # held by a vanished agent/ART thread is inherited locked → the child
+    # deadlocks in futex_wait on the splash. Frida child-gating intercepts the
+    # fork, quiesces its runtime so the child doesn't inherit locked frida
+    # mutexes, holds the child suspended, and emits 'child-added'. We then
+    # attach a CLEAN agent to the child (the real app process) and resume it.
+    # Recursive: each child also enables gating in case SHIELD forks again.
+    child_gating = (os.environ.get("F3MF_CHILD_GATING", "1") == "1"
+                    and not force_attach)
+
+    # Strong refs so sessions/scripts aren't garbage-collected mid-run.
+    _live: dict[str, list] = {"sessions": [], "scripts": []}
+
+    def _start_poll(scr) -> None:
+        """Drive the script's idempotent hook-retry from the host (the in-app
+        agent's JS timer loop can be starved)."""
+        def _loop() -> None:
+            ex = scr.exports_sync
+            fn = getattr(ex, "rescan", None) or getattr(ex, "scan", None)
+            if fn is None:
+                return
+            while True:
+                try:
+                    fn()
+                except Exception:                          # noqa: BLE001
+                    return
+                time.sleep(1.0)
+        _threading.Thread(target=_loop, daemon=True).start()
+
+    def instrument(sess, label: str):
+        """Load the agent into a session, enable child-gating, start polling."""
+        scr = sess.create_script(script_src, runtime="v8")
+        scr.on("message", on_message)
+        scr.load()
+        if child_gating:
+            try:
+                sess.enable_child_gating()
+            except Exception as e:                          # noqa: BLE001
+                print(f"[runner] enable_child_gating({label}) failed: {e}",
+                      file=sys.stderr)
+        _live["sessions"].append(sess)
+        _live["scripts"].append(scr)
+        _start_poll(scr)
+        print(f"[runner] instrumented {label}", file=sys.stderr)
+        return scr
+
+    def on_child(child) -> None:
+        cpid = child.pid
+        origin = getattr(child, "origin", "?")
+        print(f"[runner] child-added pid={cpid} origin={origin} "
+              f"— attaching clean agent", file=sys.stderr)
+        try:
+            csess = dev.attach(cpid)
+            instrument(csess, f"child:{cpid}")
+        except Exception as e:                              # noqa: BLE001
+            print(f"[runner] on_child({cpid}) instrument failed: {e}",
+                  file=sys.stderr)
+        finally:
+            # ALWAYS resume the gated child, else it stays suspended forever.
+            try:
+                dev.resume(cpid)
+            except Exception as e:                          # noqa: BLE001
+                print(f"[runner] resume child {cpid} failed: {e}",
+                      file=sys.stderr)
+
+    if child_gating:
+        dev.on("child-added", on_child)
+        print("[runner] child-gating ENABLED (following SHIELD fork-escape)",
+              file=sys.stderr)
+
+    # Instrument the main (spawned) session, THEN resume — child gating must
+    # be armed on the parent before it forks so the fork is caught.
+    script = instrument(session, f"main:{pid}")
     if not force_attach and pid is not None:
         try:
             dev.resume(pid)
         except Exception as e:                              # noqa: BLE001
             print(f"[runner] resume failed: {e}", file=sys.stderr)
 
-    # The in-app Stalker guard starves Frida's JS timer loop, so we drive
-    # the SSL_write rescan from here (Python is not instrumented). Poll
-    # every second — each call re-hunts SSL_write across freshly-loaded
-    # modules and emits the one-time DIAG.
-    import threading as _threading
-
-    def _poll_rescan() -> None:
-        # The hook script exposes either rescan() (capture) or scan()
-        # (anon-memory scanner). Call whichever is present.
-        ex = script.exports_sync
-        fn = getattr(ex, "rescan", None) or getattr(ex, "scan", None)
-        if fn is None:
-            return
-        while True:
-            try:
-                fn()
-            except Exception:                              # noqa: BLE001
-                return  # script unloaded / process gone
-            time.sleep(1.0)
-
-    _t = _threading.Thread(target=_poll_rescan, daemon=True)
-    _t.start()
     print(f"[runner] hook loaded; PID={pid}; "
           f"open ANY MakerWorld design → Download to trigger capture")
     print(f"[runner] captures dir: {CAPTURES_DIR}")
@@ -263,10 +319,11 @@ def main() -> int:
             time.sleep(1)
     except KeyboardInterrupt:
         print("\n[runner] detaching")
-        try:
-            session.detach()
-        except Exception:
-            pass
+        for s in _live["sessions"]:
+            try:
+                s.detach()
+            except Exception:
+                pass
     return 0
 
 

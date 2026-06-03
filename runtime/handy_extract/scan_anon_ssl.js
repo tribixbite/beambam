@@ -84,6 +84,27 @@ LOG('scan_anon_ssl.js top-level reached');
   } catch (e) { LOG('fdsan disable failed: ' + e); }
 })();
 
+// --- STEALTH MODE switch ---------------------------------------------------
+// Two mutually-exclusive strategies against SHIELD's watchdog:
+//   * STEALTH (true)  — let the watchdog FORK + run normally, but make Frida
+//     invisible to its /proc/<pid>/maps + task/*/comm scan (patched stealth
+//     frida-server: no "frida"/"gum" tokens). The watchdog finds nothing,
+//     completes its handshake, and the app boots to Flutter UI WITH our hook.
+//     This is the winning path — the fork-block made SHIELD fail-CLOSED
+//     (Flutter never loaded, killed after ~30 s).
+//   * FORK-BLOCK (false) — block the watchdog fork entirely (legacy; defeats
+//     the immediate 0xdead kill but SHIELD then stalls/fail-closes).
+// Toggle without a host round-trip: set this const.
+var STEALTH_MODE = true;
+
+// The heavy anonymous-BoringSSL signature scan (Memory.scanSync over every
+// non-system r-x range, every poll) adds enough overhead to STARVE Flutter's
+// engine init under stealth — the app sits on its splash and never makes a
+// network call. Bambu Handy's /f3mf goes over Conscrypt's NAMED libssl.so
+// (hooked by export — see tryHookNamedLibssl), so the anon scan is redundant.
+// Leave it OFF; flip on only to chase the Flutter dart:io BoringSSL path.
+var ENABLE_ANON_SCAN = false;
+
 // --- libc fork-block (armed at spawn-gate, before .ss/ loads) --------------
 // SHIELD's .ss/l6a18f19c.so constructor forks an anti-debug WATCHDOG process
 // (a clone WITHOUT CLONE_THREAD) that ptraces the app + maps-scans for gum,
@@ -97,6 +118,7 @@ LOG('scan_anon_ssl.js top-level reached');
 var CLONE_THREAD = 0x00010000;
 var blocked_forks = 0;
 (function hookLibcForkBlock() {
+  if (STEALTH_MODE) { LOG('STEALTH_MODE — fork-block DISABLED (watchdog allowed to run vs invisible frida)'); return; }
   ['fork', 'vfork', '__bionic_clone', 'clone'].forEach(function (name) {
     let a = null;
     try { a = Module.getGlobalExportByName(name); } catch (_) { a = null; }
@@ -451,6 +473,31 @@ function hook_ssl_write_at(addr, how) {
 
 let _http_logged = 0;
 
+// --- Direct hook on system/Conscrypt libssl.so SSL_write -------------------
+// Bambu Handy's /f3mf download travels over Android Conscrypt (the Java/OkHttp
+// HTTP stack), whose libssl.so is a NAMED module exporting SSL_write — no
+// anon-memory signature scan needed (the Flutter dart:io BoringSSL is stripped
+// and its prologue doesn't match the system-libssl template, so that path
+// stays a fallback). Idempotent: safe to re-run on every dlopen as conscrypt
+// loads lazily when the network stack first initialises.
+const _libsslHooked = new Set();
+function tryHookNamedLibssl() {
+  try {
+    for (const m of Process.enumerateModules()) {
+      const nm = m.name || '', pth = m.path || '';
+      if (!/libssl\.so$/.test(nm) && !/libssl\.so$/.test(pth)) continue;
+      let a = null;
+      try { a = m.findExportByName('SSL_write'); } catch (_) { }
+      if (!a) { try { a = Module.findExportByName(nm, 'SSL_write'); } catch (_) { } }
+      if (a && !_libsslHooked.has('' + a)) {
+        _libsslHooked.add('' + a);
+        hook_ssl_write_at(a, 'conscrypt:' + (pth || nm));
+        LOG('hooked NAMED libssl SSL_write @ ' + a + ' (' + (pth || nm) + ')');
+      }
+    }
+  } catch (e) { LOG('tryHookNamedLibssl err: ' + e); }
+}
+
 // IMPORTANT: the in-app Stalker guard starves Frida's JS event loop, so
 // rpc/timers never fire. We MUST drive do_scan() from app-thread
 // Interceptor callbacks. Two triggers:
@@ -461,6 +508,10 @@ let _http_logged = 0;
 // single mprotect.
 let _last_scan_ms = 0;
 function maybe_scan(reason) {
+  // Conscrypt libssl loads lazily; re-try the named-module hook on every
+  // trigger (idempotent, cheap). Independent of the anon-scan _resolved flag.
+  tryHookNamedLibssl();
+  if (!ENABLE_ANON_SCAN) return;   // skip the Flutter-starving heavy scan
   if (_resolved) return;
   // Throttle string-probe-heavy early runs; cheap ELF scan can run more.
   const now = (Date.now ? safeNow() : 0);
@@ -495,8 +546,11 @@ hookExec('android_dlopen_ext', { onLeave() { maybe_scan('dlopen'); } });
 hookExec('dlopen', { onLeave() { maybe_scan('dlopen'); } });
 
 // Also expose via rpc in case a future frida/agent combo isn't starved.
+// Route the host poll through maybe_scan so it drives the cheap idempotent
+// Conscrypt-libssl hook retry (and the heavy anon scan only if enabled),
+// instead of forcing do_scan() every second.
 rpc.exports = {
-  scan: function () { try { return do_scan(); } catch (e) { LOG('scan err: ' + e); return false; } },
+  scan: function () { try { maybe_scan('rpc-poll'); return _resolved; } catch (e) { LOG('scan err: ' + e); return false; } },
 };
 
 // Kick one scan synchronously at load (finds anything already mapped).
