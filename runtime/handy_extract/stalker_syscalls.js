@@ -41,8 +41,17 @@ const SUPPRESSED_NR = new Set([
 const NR_NAME = {
    56:'openat', 62:'lseek', 63:'read', 93:'exit', 94:'exit_group',
   117:'ptrace', 129:'kill', 131:'tgkill', 167:'prctl', 203:'connect',
-  206:'sendto', 277:'seccomp',
+  206:'sendto', 220:'clone', 277:'seccomp', 435:'clone3',
 };
+
+// clone(2) flags. SHIELD forks an anti-debug WATCHDOG process that
+// ptrace-attaches to the app and forces it to jump to 0xdead50xx when it
+// detects Frida. That watchdog is created by a process fork — a `clone`
+// WITHOUT CLONE_THREAD. Legit thread creation (pthread_create, Dart
+// isolates) always sets CLONE_THREAD. So we block the watchdog by failing
+// any clone that lacks CLONE_THREAD, while letting thread clones through.
+const CLONE_THREAD = 0x00010000;
+let blocked_forks = 0;
 
 function findSym(name) {
   for (const m of Process.enumerateModules()) {
@@ -91,6 +100,36 @@ function handleSvc(context) {
   const nr = context.x8.toInt32();
   stats.total_svc++;
   stats.by_nr[nr] = (stats.by_nr[nr] || 0) + 1;
+
+  // Block SHIELD's watchdog fork: clone/clone3 WITHOUT CLONE_THREAD is a
+  // process fork (not a thread). Fail it with -EAGAIN so the parent thinks
+  // fork failed gracefully — the watchdog is never created and can't
+  // ptrace-detect Frida. clone(2): x0=flags. clone3(2): x0=&clone_args,
+  // flags at offset 0 (u64) — read it.
+  if (nr === 220) {
+    if ((context.x0.toInt32() & CLONE_THREAD) === 0) {
+      blocked_forks++;
+      if (blocked_forks <= 20) A(`!! blocked fork (clone, flags=${context.x0}) pc=${context.pc}`);
+      context.x0 = ptr(-11);            // -EAGAIN
+      context.pc = context.pc.add(4);
+      return;
+    }
+    return;   // thread clone — allow
+  }
+  if (nr === 435) {                     // clone3
+    try {
+      const flags = context.x0.readU64();
+      if ((flags.and(CLONE_THREAD)).valueOf() === 0) {
+        blocked_forks++;
+        if (blocked_forks <= 20) A(`!! blocked fork (clone3, flags=${flags}) pc=${context.pc}`);
+        context.x0 = ptr(-11);          // -EAGAIN
+        context.pc = context.pc.add(4);
+        return;
+      }
+    } catch (e) { /* can't read args — let it run */ }
+    return;
+  }
+
   if (!SUPPRESSED_NR.has(nr)) return;
   stats.suppressed++;
   if (logged_suppressed < LOG_LIMIT) {

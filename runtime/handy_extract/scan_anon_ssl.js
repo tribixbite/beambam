@@ -21,10 +21,68 @@
 // Diagnostic-first: it REPORTS what it finds. Once we know the structure,
 // the resolver path (ELF dynsym vs signature scan) is wired to actually
 // Interceptor.attach SSL_write and forward plaintext /f3mf headers.
+//
+// ============================================================
+// 2026-06-03 BLOCKER — SHIELD's pre-init ptrace watchdog
+// ============================================================
+// After the app's files/.ss/ guard state was cleared (to fix a separate
+// crash), SHIELD RE-PROVISIONED A STRICTER GUARD that forks an anti-debug
+// WATCHDOG process during early library init (DT_INIT_ARRAY constructors
+// in .ss/l6a18f19c.so). The watchdog ptrace-attaches to the app, detects
+// Frida's gum agent in /proc/<pid>/maps, and forces the app's PC to jump
+// to 0xdead50xx (SIGSEGV/SIGBUS) within ~1 s of spawn.
+//
+// Why our defenses don't reach it:
+//   * The Stalker syscall guard suppresses exit/kill/ptrace/tgkill FROM
+//     the instrumented threads, and now also blocks the watchdog's process
+//     fork (clone without CLONE_THREAD → -EAGAIN). BUT the watchdog fork
+//     fires during DT_INIT_ARRAY, which runs BEFORE Frida's spawn-gating
+//     entry point — so the stalker isn't installed yet (blocked_forks=0,
+//     and the app dies during script.load()).
+//   * fdsan is disabled successfully (android_fdsan_set_error_level(0)),
+//     so the fdsan abort path is gone — but the 0xdead PC-poison is a
+//     separate, earlier kill.
+//
+// To beat this, instrumentation must be active BEFORE .ss/ constructors
+// run: i.e. linker-level pre-init interception (hook the dynamic linker's
+// call_constructors / __dl__ZL10call_arrayIPFviPPcES1_E before DT_INIT_ARRAY,
+// or a Zygisk module that installs the guard at zygote-fork and neutralises
+// the watchdog fork in the same breath). That is a substantial RE effort.
+//
+// Everything DOWNSTREAM of a surviving SSL_write hook is done + verified
+// in earlier runs (signature scan found SSL_write+SSL_read prologues;
+// /f3mf header capture → ~/.x2d/handy_token.json → cloud_client replay).
+// The only missing piece is keeping the app alive under instrumentation.
+// ============================================================
 
 const LOG = (m) => { try { send({ type: 'log', msg: '[scan] ' + m }); } catch (_) { } };
 const EMIT = (kind, body) => { try { send({ type: kind, body: body }); } catch (_) { } };
 LOG('scan_anon_ssl.js top-level reached');
+
+// --- fdsan disable (MUST run before SHIELD's loader unpacks) -------------
+// The SHIELD loader (.ss/l6a18f19c.so) — and the Frida helper it races with
+// — call raw close() on file descriptors that bionic's fdsan has tagged as
+// owned by a FILE* stream. fdsan then SIGABRTs:
+//   "fdsan: attempted to close fd N, expected to be unowned, actually owned
+//    by FILE* 0x..."
+// Disabling fdsan globally makes every fd effectively UNOWNED from fdsan's
+// view, so the cross-owner close is tolerated and the app survives under
+// instrumentation. android_fdsan_set_error_level(ANDROID_FDSAN_ERROR_LEVEL_DISABLED=0).
+(function disableFdsan() {
+  try {
+    let fn = null;
+    try { fn = Module.getGlobalExportByName('android_fdsan_set_error_level'); } catch (_) { }
+    if (!fn) {
+      for (const m of Process.enumerateModules()) {
+        try { const s = m.findExportByName('android_fdsan_set_error_level'); if (s) { fn = s; break; } } catch (_) { }
+      }
+    }
+    if (!fn) { LOG('fdsan: android_fdsan_set_error_level not found'); return; }
+    const set = new NativeFunction(fn, 'uint32', ['uint32']);
+    const prev = set(0);   // 0 = ANDROID_FDSAN_ERROR_LEVEL_DISABLED
+    LOG('fdsan disabled (was level ' + prev + ') — cross-owner close tolerated');
+  } catch (e) { LOG('fdsan disable failed: ' + e); }
+})();
 
 // ---- helpers --------------------------------------------------------------
 
