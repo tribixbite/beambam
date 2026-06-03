@@ -202,11 +202,20 @@ def main() -> int:
     # `svc 0` tamper-response syscalls (exit_group/kill/tgkill/ptrace/
     # seccomp) that otherwise kill the Frida agent mid-sync ("unexpectedly
     # timed out trying to sync up with agent"). Self-disables after 8 s.
+    # F3MF_NO_STALKER=1 skips the heavy Stalker guard — used by the
+    # libc-fork-block approach (scan_anon_ssl.js arms an Interceptor
+    # fork-block at spawn-gate, before .ss/ loads, so the raw-svc Stalker
+    # guard isn't needed and its main-thread following — which killed
+    # earlier runs — is avoided).
     script_src = HOOK_JS.read_text()
-    stalker_js = HOOK_JS.parent / "stalker_syscalls.js"
-    if stalker_js.exists():
-        script_src += "\n\n// === stalker_syscalls.js (concatenated) ===\n"
-        script_src += stalker_js.read_text()
+    if os.environ.get("F3MF_NO_STALKER") != "1":
+        stalker_js = HOOK_JS.parent / "stalker_syscalls.js"
+        if stalker_js.exists():
+            script_src += "\n\n// === stalker_syscalls.js (concatenated) ===\n"
+            script_src += stalker_js.read_text()
+    else:
+        print("[runner] F3MF_NO_STALKER=1 — Stalker guard skipped "
+              "(libc fork-block only)", file=sys.stderr)
     # V8 runtime — matches dump_keys.py; needed for the Java bridge if the
     # stalker guard touches Conscrypt, and is the known-working config.
     script = session.create_script(script_src, runtime="v8")

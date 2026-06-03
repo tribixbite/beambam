@@ -84,6 +84,44 @@ LOG('scan_anon_ssl.js top-level reached');
   } catch (e) { LOG('fdsan disable failed: ' + e); }
 })();
 
+// --- libc fork-block (armed at spawn-gate, before .ss/ loads) --------------
+// SHIELD's .ss/l6a18f19c.so constructor forks an anti-debug WATCHDOG process
+// (a clone WITHOUT CLONE_THREAD) that ptraces the app + maps-scans for gum,
+// then forces a 0xdead crash. The frida SPAWN-gate suspends at app_process's
+// entry point — BEFORE the app loads .ss/ via System.loadLibrary — so hooking
+// the libc fork/clone wrappers HERE (at script.load, while suspended) arms the
+// block before SHIELD's constructor runs. Lightweight Interceptor only (no
+// Stalker — the Stalker following the main thread was what killed earlier
+// runs). If SHIELD forks via a raw `svc` clone (bypassing libc), this misses
+// it and we fall back to the Stalker guard (set F3MF_NO_STALKER=0).
+var CLONE_THREAD = 0x00010000;
+var blocked_forks = 0;
+(function hookLibcForkBlock() {
+  ['fork', 'vfork', '__bionic_clone', 'clone'].forEach(function (name) {
+    let a = null;
+    try { a = Module.getGlobalExportByName(name); } catch (_) { a = null; }
+    if (!a) return;
+    try {
+      Interceptor.attach(a, {
+        onEnter(args) {
+          this.block = false;
+          if (name === 'clone' || name === '__bionic_clone') {
+            if ((args[0].toInt32() & CLONE_THREAD) === 0) this.block = true;
+          } else { this.block = true; }
+        },
+        onLeave(retval) {
+          if (this.block) {
+            blocked_forks++;
+            if (blocked_forks <= 30) LOG('blocked libc ' + name + ' (#' + blocked_forks + ')');
+            retval.replace(ptr(-1));
+          }
+        }
+      });
+      LOG('hooked libc ' + name + ' for fork-block');
+    } catch (e) { LOG('hook ' + name + ' failed: ' + e); }
+  });
+})();
+
 // ---- helpers --------------------------------------------------------------
 
 function knownModuleRanges() {
@@ -313,44 +351,58 @@ function do_scan() {
   // read; no relative branches). Template derived from the system
   // libssl.so SSL_write. We scan the anon executable ranges (the unpacked
   // Flutter BoringSSL lives there).
-  if (!symHit && _scan_runs <= 6) {
-    // Exact 24-byte prologue, then progressively looser anchors. Each
-    // entry: [label, hex-pattern]. '??' wildcards tolerate version drift
-    // in the frame size + which registers are saved.
+  if (!symHit && _scan_runs <= 10) {
+    // Scan target = ALL executable ranges EXCEPT system libs (/system,
+    // /apex, /vendor, /product). The Flutter BoringSSL .text is sometimes
+    // anon, sometimes inside a named non-system mapping (base.apk / the
+    // unpacked region) — the anon-only filter missed it, so we widen to
+    // every non-system r-x range. exact24 is specific enough that this
+    // still yields a small candidate set across app/flutter code.
+    function isSystemAddr(addr) {
+      for (const m of Process.enumerateModules()) {
+        const p = m.path || '';
+        if (addr.compare(m.base) >= 0 && addr.compare(m.base.add(m.size)) < 0) {
+          return (p.indexOf('/system/') === 0 || p.indexOf('/apex/') === 0 ||
+                  p.indexOf('/vendor/') === 0 || p.indexOf('/product/') === 0 ||
+                  p.indexOf('/system_ext/') === 0);
+        }
+      }
+      return false; // anon → not system → scan it
+    }
+    const scanX = xRanges.filter((r) => !isSystemAddr(r.base));
+
+    // Exact 24-byte prologue, then looser anchors with wildcarded frame
+    // size + register-save offsets to tolerate version drift.
     const sigs = [
       ['exact24', 'ff 43 01 d1 fd 7b 01 a9 fd 43 00 91 f7 13 00 f9 f6 57 03 a9 f4 4f 04 a9'],
-      // wildcard frame-size (instr0) + the two stp offsets; keep the
-      // distinctive canary-read mrs x22,tpidr_el0 (56 d0 3b d5) as anchor.
       ['canary', '?? ?? ?? d1 fd 7b ?? a9 fd ?? ?? 91 ?? ?? ?? f9 ?? ?? ?? a9 ?? ?? ?? a9 56 d0 3b d5'],
-      // minimal: just the stack-canary read instruction sequence
       ['mrs', '56 d0 3b d5'],
     ];
     for (const [label, pat] of sigs) {
       const hits = [];
-      for (const r of anonX) {
+      for (const r of scanX) {
         if (r.size > 96 * 1024 * 1024) continue;
         try {
           const found = Memory.scanSync(r.base, r.size, pat);
           for (const f of found) hits.push(f.address);
         } catch (_) { }
-        if (hits.length > 40) break;
+        if (hits.length > 120) break;
       }
-      LOG('sig[' + label + ']: ' + hits.length + ' match(es)' +
-          (hits.length && hits.length <= 6
+      LOG('sig[' + label + ']: ' + hits.length + ' match(es) in ' +
+          scanX.length + ' non-sys x-ranges' +
+          (hits.length && hits.length <= 8
             ? ' @ ' + hits.map((h) => '' + h).join(',') : ''));
-      // The exact / canary signatures should yield very few hits — the
-      // real SSL_write. (mrs alone hits every canary-using function, so
-      // it's only a sanity probe, never auto-hooked.)
+      // exact24/canary: hook every candidate (≤24). SSL_read shares the
+      // prologue but its onEnter buffer never holds an HTTP request line,
+      // so only the real SSL_write fires the /f3mf capture. The HTTP[]
+      // log shows which addresses actually carry traffic.
       if ((label === 'exact24' || label === 'canary') &&
-          hits.length >= 1 && hits.length <= 4) {
+          hits.length >= 1 && hits.length <= 24) {
         _resolved = true;
         LOG('RESOLVED via sig[' + label + ']: ' + hits.length +
             ' candidate(s) — hooking ALL (HTTP filter selects SSL_write)');
         EMIT('ssl_write_addr', { via: label,
                                  candidates: hits.map((h) => '' + h) });
-        // Hook every candidate. SSL_read shares the prologue but its
-        // onEnter buffer never contains an HTTP request line, so only the
-        // real SSL_write fires the /f3mf capture.
         hits.forEach((h, i) => hook_ssl_write_at(h, 'sig:' + label + '#' + i));
         return true;
       }
