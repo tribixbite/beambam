@@ -32,7 +32,9 @@ import time
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-HOOK_JS = HERE / "capture_f3mf_token.js"
+# Hook script is overridable for iterating on alternate hooks (e.g. the
+# anon-memory SSL_write scanner) without touching the capture logic.
+HOOK_JS = Path(os.environ.get("F3MF_HOOK_JS") or (HERE / "capture_f3mf_token.js"))
 CAPTURES_DIR = HERE / "captured_tokens"
 HOME_TOKEN = Path.home() / ".x2d" / "handy_token.json"
 
@@ -226,9 +228,15 @@ def main() -> int:
     import threading as _threading
 
     def _poll_rescan() -> None:
+        # The hook script exposes either rescan() (capture) or scan()
+        # (anon-memory scanner). Call whichever is present.
+        ex = script.exports_sync
+        fn = getattr(ex, "rescan", None) or getattr(ex, "scan", None)
+        if fn is None:
+            return
         while True:
             try:
-                script.exports_sync.rescan()
+                fn()
             except Exception:                              # noqa: BLE001
                 return  # script unloaded / process gone
             time.sleep(1.0)
