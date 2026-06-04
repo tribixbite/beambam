@@ -275,9 +275,27 @@ def main() -> int:
         print(f"[runner] instrumented {label}", file=sys.stderr)
         return scr
 
+    # RESUME-ONLY mode (F3MF_CHILD_RESUME_ONLY=1): for the fork-surviving
+    # CModule hook. Child-gating is still enabled so Frida's atfork handlers
+    # fire and the fork child doesn't inherit a locked Frida mutex (no
+    # futex_wait deadlock) — but we DON'T re-attach (which late-times-out and
+    # re-trips SHIELD); the child inherits the parent's native CModule hook,
+    # which keeps capturing with no live agent. We just release the gate.
+    resume_only = os.environ.get("F3MF_CHILD_RESUME_ONLY") == "1"
+
     def on_child(child) -> None:
         cpid = child.pid
         origin = getattr(child, "origin", "?")
+        if resume_only:
+            print(f"[runner] child-added pid={cpid} origin={origin} "
+                  f"— resume-only (inherits native CModule hook)",
+                  file=sys.stderr)
+            try:
+                dev.resume(cpid)
+            except Exception as e:                          # noqa: BLE001
+                print(f"[runner] resume child {cpid} failed: {e}",
+                      file=sys.stderr)
+            return
         print(f"[runner] child-added pid={cpid} origin={origin} "
               f"— attaching clean agent", file=sys.stderr)
         try:
