@@ -270,31 +270,35 @@ static bool hook_anon_boringssl() {
   static Range ranges[1024];
   int nr = enum_ranges(ranges, 1024);
   for (int i = 0; i < nr; i++) {
-    if (!ranges[i].anon || !ranges[i].exec || !ranges[i].read) continue;
+    // The BoringSSL version string lives in the image's .rodata/.data — anon
+    // r-- or rw, NOT r-x. Scan readable anon ranges; skip the huge Dart heaps.
+    if (!ranges[i].anon || !ranges[i].read) continue;
     size_t len = ranges[i].hi - ranges[i].lo;
-    if (len > 96u * 1024 * 1024) continue;
+    if (len > 16u * 1024 * 1024) continue;
     const char *needle = "BoringSSL";
     void *at = memmem((void *) ranges[i].lo, len, needle, strlen(needle));
     if (!at) { needle = "OpenSSL"; at = memmem((void *) ranges[i].lo, len, needle, strlen(needle)); }
     if (!at) continue;
-    LOGI("found '%s' @ %p in anon r-x [%p,%p) — backtracking for ELF base",
-         needle, at, (void *) ranges[i].lo, (void *) ranges[i].hi);
-    // backtrack page-by-page for ELF magic (up to 64 MB), only reading pages
-    // that are inside a mapped readable range (else SIGSEGV).
+    LOGI("found '%s' @ %p in anon %c%c [%p,%p) — backtracking for ELF base",
+         needle, at, ranges[i].read ? 'r' : '-', ranges[i].exec ? 'x' : '-',
+         (void *) ranges[i].lo, (void *) ranges[i].hi);
+    // Backtrack page-by-page for ELF magic (the image base is below the
+    // string). Only deref readable pages; SKIP (don't stop on) unmapped gaps
+    // between the image's segments. Cap at 64 MB below the string.
     uintptr_t p = (uintptr_t) at & ~0xfffULL;
     for (int back = 0; back < 16384; back++, p -= 0x1000) {
-      if (!is_readable(ranges, nr, p, 4)) break;   // hit an unmapped gap
-      if (*(uint32_t *) p == 0x464c457fu) {         // "\x7fELF"
-        void *sw = resolve_sym(p, "SSL_write");
-        if (sw && is_readable(ranges, nr, (uintptr_t) sw, 4)) {
-          A64HookFunction(sw, (void *) my_ssl_write_anon, (void **) &g_orig_anon);
-          LOGI("hooked ANON BoringSSL SSL_write @ %p (ELF base %p)", sw, (void *) p);
-          marker("x2d-zygisk ANON_SSL_HOOK_INSTALLED");
-          return true;
-        }
-        log_ssl_exports(p);   // stripped — show what IS exported, for diagnosis
-        break;                // found the ELF base; stop backtracking this string
+      if (!is_readable(ranges, nr, p, 4)) continue;   // skip gap, keep going
+      if (*(uint32_t *) p != 0x464c457fu) continue;   // not "\x7fELF"
+      void *sw = resolve_sym(p, "SSL_write");
+      if (sw && is_readable(ranges, nr, (uintptr_t) sw, 4)) {
+        A64HookFunction(sw, (void *) my_ssl_write_anon, (void **) &g_orig_anon);
+        LOGI("hooked ANON BoringSSL SSL_write @ %p (ELF base %p)", sw, (void *) p);
+        marker("x2d-zygisk ANON_SSL_HOOK_INSTALLED");
+        return true;
       }
+      // ELF here had no resolvable SSL_write — log its SSL_* exports (if any)
+      // for diagnosis, then keep backtracking in case it's a closer image.
+      log_ssl_exports(p);
     }
   }
   return false;
@@ -320,7 +324,7 @@ static void *hook_waiter(void *) {
         conscrypt_done = (sw != nullptr);
       }
     }
-    if (!anon_done) {
+    if (!anon_done && (tries % 10) == 0) {   // throttle the range scan to ~1 s
       anon_done = hook_anon_boringssl();
     }
     if (anon_done) return nullptr;   // anon is the /f3mf path — done once hooked
