@@ -350,3 +350,56 @@ request would require ONE of these MAJOR efforts:
 
 Neither is a quick patch. The pragmatic status: the 0xdead wall is broken and
 documented; normal printing works without any of this.
+
+## Path #7 — Zygisk module, in-app SSL_write hook (2026-06-07) ✅ live
+
+`zygisk/x2dcap/` — a Zygisk module (ReZygisk, API v4) mapped at zygote
+specialization, ZERO frida footprint. With NoHello hiding root/module traces
+(Enforce-DenyList OFF + Handy on the denylist), SHIELD sees a normal process,
+never fork-escapes, and Handy stays **fully functional** (96–111 threads, login
++ print flow all work) with our inline hook live. This defeats the Path #6
+fork-escape wall completely.
+
+The module hooks SSL_write via And64InlineHook in two places:
+
+- **Conscrypt** `libssl.so!SSL_write` — named export, resolved from
+  `/proc/self/maps` + a safe_read-guarded dynsym walk. Carries Firebase only,
+  confirmed live (`SSL_HOOK_INSTALLED`).
+- **Flutter dart:io BoringSSL** `SSL_write` — the /f3mf path.
+
+### Key correction: Flutter BoringSSL is APK-backed, NOT anonymous
+
+Paths #4–#6 assumed SHIELD unpacks libflutter.so into anonymous executable
+memory. **Wrong on this build.** A `/proc/<pid>/maps` audit of functional Handy
+shows **zero** anonymous executable ranges. The app ships `extractNativeLibs=
+false`, so the linker mmaps every `.so` **straight out of the split APK**
+(`split_config.arm64_v8a.apk`, 35 exec mappings) — maps show the APK path, never
+`libflutter.so`. So the anon-string-hunt + ELF-backtrack of earlier builds could
+never resolve it (there is no anon ELF to backtrack to).
+
+### How SSL_write is located now
+
+1. `libflutter.so` exports only 50 symbols (Flutter GPU + JNI_OnLoad); SSL_write
+   is stripped from `.dynsym` and there is no `.symtab`.
+2. The binary embeds the engine commit (`587c18f873b8…`) and BoringSSL source
+   paths. Flutter publishes the matching **unstripped** engine
+   `symbols.zip`; its `libflutter.so` has the SAME Build ID
+   (`0a7fde9baaf490ad50a8480ebc422ea4ee862a2e`) as the device binary, so its
+   symbols are exact. `nm` → `SSL_write` at vaddr **`0x717ef0`**.
+3. At runtime the module calls `dl_iterate_phdr` — the linker still tracks the
+   APK-mapped object as `…/split_config.arm64_v8a.apk!/lib/arm64-v8a/
+   libflutter.so`, so we match on substring `libflutter.so` and read its load
+   bias. `SSL_write = bias + 0x717ef0`, sanity-checked against the prologue bytes
+   `ff 03 01 d1 fe 5f 01 a9` (`sub sp,#0x40 ; stp x30,x23,[sp,#0x10]`) so an
+   engine bump can never make us hook a wrong address.
+
+The capture filters request header blocks carrying `x-bbl` / `/f3mf` /
+`design-service` into `<data_dir>/cache/x2d_f3mf.txt` (read back as root), and
+logs the request-line of every HTTP write to logcat (`REQ [flutter] …`) for
+diagnosis. A module `.so` change needs a FULL REBOOT — zygiskd64 caches the
+module at boot, and killing it breaks 64-bit zygisk irrecoverably.
+
+**Status:** module + Flutter hook deployed via the offline-resolved offset;
+pending a reboot + a live /f3mf download to confirm the dart:io path is what
+the hook sees (the alternative, if it is not, is `libgojni.so`'s Go crypto/tls
+— a separate, non-BoringSSL stack).

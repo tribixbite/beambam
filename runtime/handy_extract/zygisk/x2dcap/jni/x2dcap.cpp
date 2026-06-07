@@ -11,9 +11,15 @@
 //
 // Flow: postAppSpecialize (target == Handy) → spawn a waiter thread that
 //   (a) hooks Conscrypt libssl.so SSL_write (named export — carries Firebase),
-//   (b) hunts Flutter's dart:io BoringSSL (which SHIELD unpacks into ANONYMOUS
-//       memory, SSL_write stripped) by its version string and hooks it — that's
-//       the /f3mf path.
+//   (b) hooks Flutter's dart:io BoringSSL SSL_write — the /f3mf path. Handy's
+//       native code (libflutter.so) is mmap'd straight out of the split APK
+//       (extractNativeLibs=false), so /proc/maps shows the APK path, never
+//       "libflutter.so", and SSL_write is stripped from .dynsym. We locate it
+//       by load bias (dl_iterate_phdr — the linker still knows it as
+//       "libflutter.so") + a fixed vaddr resolved offline from the matching
+//       unstripped engine symbols (build-id 0a7fde9b…, engine 587c18f8…),
+//       guarded by a prologue-byte sanity check so an engine bump can't make us
+//       hook the wrong address.
 // The hook captures any request whose header block carries "x-bbl" / "/f3mf" /
 // "design-service" into the app's own cache file, read back as root.
 //
@@ -51,19 +57,22 @@ static const char *TARGET_PROC = "bbl.intl.bambulab.com";
 static char g_data_dir[256] = {0};
 
 typedef int (*ssl_write_t)(void *ssl, const void *buf, int num);
-// Separate trampolines: conscrypt's and the anon BoringSSL's SSL_write are
+// Separate trampolines: conscrypt's and Flutter's BoringSSL SSL_write are
 // different functions, so each replacement must call its OWN original.
 static ssl_write_t g_orig_conscrypt = nullptr;
-static ssl_write_t g_orig_anon = nullptr;
+static ssl_write_t g_orig_flutter = nullptr;
 static int g_captured = 0;
+static int g_seen = 0;   // diagnostic: count of HTTP request-lines logged
 
-// Conscrypt SSL_write's original prologue, captured BEFORE we hook it, used as
-// a signature to find Flutter's statically-linked (no clean ELF header) anon
-// BoringSSL SSL_write when the ELF-backtrack approach can't resolve it. Both
-// are BoringSSL, so the prologue often matches across the two builds.
-static unsigned char g_sig[20];
-static int g_siglen = 0;
-static uintptr_t g_conscrypt_sw = 0;
+// SSL_write's vaddr inside libflutter.so, resolved offline from the matching
+// unstripped engine symbols (engine 587c18f873…, build-id 0a7fde9baaf4…). The
+// device binary is byte-identical (same build-id), so this offset is exact.
+static const uintptr_t FLUTTER_SSL_WRITE_VADDR = 0x717ef0;
+// First 8 bytes of SSL_write's prologue: sub sp,#0x40 ; stp x30,x23,[sp,#0x10].
+// A sanity check that bias+vaddr still lands on the right function; if Handy
+// ships a new Flutter engine the bytes won't match and we refuse to hook.
+static const unsigned char FLUTTER_SSL_WRITE_SIG[8] = {
+    0xff, 0x03, 0x01, 0xd1, 0xfe, 0x5f, 0x01, 0xa9};
 
 // ---------------------------------------------------------------------------
 // safe_read: probe-read [src, src+len) into dst WITHOUT faulting. Writing the
@@ -115,38 +124,6 @@ static bool mem_contains(const char *hay, int haylen, const char *needle) {
   return memmem(hay, (size_t) haylen, needle, strlen(needle)) != nullptr;
 }
 
-// Find `needle` in [lo,hi) page-by-page, probing each page with safe_read so an
-// unmapped guard page INSIDE a maps-readable range can't fault memmem (a r--/rw-
-// range in /proc/maps may still contain holes). Misses a needle straddling a
-// page boundary — fine, the BoringSSL version string recurs within its image.
-static uintptr_t safe_find(uintptr_t lo, uintptr_t hi, const char *needle) {
-  static char buf[4096];
-  size_t nlen = strlen(needle);
-  for (uintptr_t p = lo; p < hi; p += 4096) {
-    if (!safe_read(buf, (void *) p, 4096)) continue;   // unmapped page — skip
-    void *m = memmem(buf, 4096, needle, nlen);
-    if (m) return p + ((char *) m - buf);
-  }
-  return 0;
-}
-
-// Page-safe search for a raw byte pattern (may contain NULs). `start` lets the
-// caller resume after a previous hit. Returns 0 when none remain.
-static uintptr_t safe_find_bytes(uintptr_t lo, uintptr_t hi, const void *pat,
-                                 size_t patlen, uintptr_t start) {
-  static char buf[4096];
-  if (start > lo) lo = start;
-  for (uintptr_t p = lo; p < hi; p += 4096) {
-    if (!safe_read(buf, (void *) p, 4096)) continue;
-    void *m = memmem(buf, 4096, pat, patlen);
-    if (m) {
-      uintptr_t at = p + ((char *) m - buf);
-      if (at > start) return at;
-    }
-  }
-  return 0;
-}
-
 // ---------------------------------------------------------------------------
 // Shared capture: SSL_write(ssl, buf, num) plaintext. Capture matching request
 // header blocks to the app cache. Two thin replacement functions below each
@@ -158,6 +135,16 @@ static void capture_request(const void *buf, int num, const char *via) {
   char c0 = p[0];
   if (c0 != 'G' && c0 != 'P' && c0 != 'D' && c0 != 'H') return;   // GET/POST/PUT/DELETE/HEAD
   int lim = num < 16384 ? num : 16384;
+  // Diagnostic: log the request-line of EVERY HTTP write (regardless of filter)
+  // so we can confirm the hook fires and see which host/path /f3mf rides on.
+  if (g_seen < 80) {
+    g_seen++;
+    char line[200];
+    int n = 0;
+    for (; n < lim && n < 150 && p[n] != '\r' && p[n] != '\n'; n++) line[n] = p[n];
+    line[n] = '\0';
+    LOGI("REQ [%s] %s", via, line);
+  }
   if (!mem_contains(p, lim, "x-bbl") && !mem_contains(p, lim, "/f3mf") &&
       !mem_contains(p, lim, "design-service"))
     return;
@@ -183,9 +170,9 @@ static int my_ssl_write_conscrypt(void *ssl, const void *buf, int num) {
   capture_request(buf, num, "conscrypt");
   return g_orig_conscrypt(ssl, buf, num);
 }
-static int my_ssl_write_anon(void *ssl, const void *buf, int num) {
-  capture_request(buf, num, "anon");
-  return g_orig_anon(ssl, buf, num);
+static int my_ssl_write_flutter(void *ssl, const void *buf, int num) {
+  capture_request(buf, num, "flutter");
+  return g_orig_flutter(ssl, buf, num);
 }
 
 // ---------------------------------------------------------------------------
@@ -242,49 +229,6 @@ static void *resolve_sym(uintptr_t base, const char *want) {
   return nullptr;
 }
 
-// Log up to 12 SSL_* exports of an in-memory ELF (diagnosis when SSL_write is
-// stripped). Fully safe_read-guarded.
-static void log_ssl_exports(uintptr_t base) {
-  Elf64_Ehdr eh;
-  if (!safe_read(&eh, (void *) base, sizeof eh)) return;
-  if (memcmp(eh.e_ident, ELFMAG, SELFMAG) != 0) return;
-  if (eh.e_phnum == 0 || eh.e_phnum > 128) return;
-  if (eh.e_phentsize < sizeof(Elf64_Phdr)) return;
-  uintptr_t dyn_vaddr = 0, min_vaddr = (uintptr_t) -1;
-  for (int i = 0; i < eh.e_phnum; i++) {
-    Elf64_Phdr ph;
-    if (!safe_read(&ph, (void *) (base + eh.e_phoff + (uintptr_t) i * eh.e_phentsize), sizeof ph)) return;
-    if (ph.p_type == PT_LOAD && ph.p_vaddr < min_vaddr) min_vaddr = ph.p_vaddr;
-    if (ph.p_type == PT_DYNAMIC) dyn_vaddr = ph.p_vaddr;
-  }
-  if (!dyn_vaddr) return;
-  if (min_vaddr == (uintptr_t) -1) min_vaddr = 0;
-  uintptr_t bias = base - min_vaddr;
-  uintptr_t strtab = 0, symtab = 0; size_t syment = sizeof(Elf64_Sym);
-  for (int i = 0; i < 8192; i++) {
-    Elf64_Dyn d;
-    if (!safe_read(&d, (void *) (dyn_vaddr + bias + (uintptr_t) i * sizeof d), sizeof d)) return;
-    if (d.d_tag == DT_NULL) break;
-    if (d.d_tag == DT_STRTAB) strtab = d.d_un.d_ptr + bias;
-    else if (d.d_tag == DT_SYMTAB) symtab = d.d_un.d_ptr + bias;
-    else if (d.d_tag == DT_SYMENT) syment = d.d_un.d_val;
-  }
-  if (!strtab || !symtab || strtab <= symtab || syment == 0) return;
-  size_t nsyms = (strtab - symtab) / syment;
-  if (nsyms == 0 || nsyms > 200000) return;
-  int logged = 0;
-  for (size_t i = 0; i < nsyms && logged < 12; i++) {
-    Elf64_Sym s;
-    if (!safe_read(&s, (void *) (symtab + i * syment), sizeof s)) return;
-    if (s.st_name == 0) continue;
-    char nm[48];
-    if (!safe_read(nm, (void *) (strtab + s.st_name), sizeof nm)) continue;
-    nm[sizeof nm - 1] = '\0';
-    if (strncmp(nm, "SSL_", 4) == 0) { LOGI("  anon-elf export: %s", nm); logged++; }
-  }
-  LOGI("  (anon ELF @ %p: %zu dynsyms, %d SSL_* shown)", (void *) base, nsyms, logged);
-}
-
 // ---------------------------------------------------------------------------
 // Find a loaded lib by path-substring via /proc/self/maps (namespace-proof —
 // dlsym across Conscrypt's dedicated linker namespace is unreliable).
@@ -307,122 +251,69 @@ static uintptr_t find_lib_base(const char *substr) {
   return base;
 }
 
-// Readable anon ranges, for scanning + bounding the BoringSSL string search.
-struct Range { uintptr_t lo, hi; bool read, exec, anon; };
-static int enum_ranges(Range *out, int max) {
-  FILE *f = fopen("/proc/self/maps", "r");
-  if (!f) return 0;
-  char line[512];
-  int n = 0;
-  while (n < max && fgets(line, sizeof(line), f)) {
-    unsigned long lo = 0, hi = 0;
-    char perms[8] = {0};
-    char path[256] = {0};
-    int m = sscanf(line, "%lx-%lx %7s %*x %*x:%*x %*d %255[^\n]", &lo, &hi, perms, path);
-    if (m < 3) continue;
-    out[n].lo = lo; out[n].hi = hi;
-    out[n].read = perms[0] == 'r';
-    out[n].exec = perms[2] == 'x';
-    out[n].anon = (m < 4) || path[0] == '\0' || path[0] == '[';
-    n++;
+// ---------------------------------------------------------------------------
+// Hook Flutter's dart:io BoringSSL SSL_write. libflutter.so is mapped straight
+// out of the split APK, so it never appears as "libflutter.so" in /proc/maps —
+// but the dynamic linker still tracks it by that name, so dl_iterate_phdr hands
+// us its load bias. SSL_write is stripped from .dynsym; we add the offline-
+// resolved vaddr to the bias and sanity-check the prologue bytes before hooking.
+// ---------------------------------------------------------------------------
+struct flutter_find { uintptr_t bias; };
+static int flutter_phdr_cb(struct dl_phdr_info *info, size_t, void *data) {
+  const char *nm = info->dlpi_name;
+  if (nm != nullptr && strstr(nm, "libflutter.so") != nullptr) {
+    ((flutter_find *) data)->bias = (uintptr_t) info->dlpi_addr;
+    return 1;                                  // stop iteration
   }
-  fclose(f);
-  return n;
+  return 0;
+}
+
+static bool hook_flutter_boringssl() {
+  flutter_find ff = {0};
+  dl_iterate_phdr(flutter_phdr_cb, &ff);
+  if (ff.bias == 0) return false;              // libflutter.so not loaded yet
+  uintptr_t sw = ff.bias + FLUTTER_SSL_WRITE_VADDR;
+  unsigned char got[8];
+  if (!safe_read(got, (void *) sw, sizeof got)) return false;   // not mapped yet
+  if (memcmp(got, FLUTTER_SSL_WRITE_SIG, sizeof got) != 0) {
+    LOGI("flutter SSL_write @ %p prologue mismatch %02x%02x%02x%02x — engine bump?",
+         (void *) sw, got[0], got[1], got[2], got[3]);
+    return false;                              // wrong offset — refuse to hook
+  }
+  A64HookFunction((void *) sw, (void *) my_ssl_write_flutter, (void **) &g_orig_flutter);
+  LOGI("hooked FLUTTER BoringSSL SSL_write @ %p (bias %p)", (void *) sw, (void *) ff.bias);
+  marker("x2d-zygisk FLUTTER_SSL_HOOK_INSTALLED");
+  return true;
 }
 
 // ---------------------------------------------------------------------------
-// Hunt the anon Flutter BoringSSL SSL_write: find the image by its version
-// string in a readable anon range, backtrack (probe-read each page) to the ELF
-// base, resolve SSL_write. Returns true once hooked.
-// ---------------------------------------------------------------------------
-static bool hook_anon_boringssl() {
-  static Range ranges[1024];
-  int nr = enum_ranges(ranges, 1024);
-  for (int i = 0; i < nr; i++) {
-    if (!ranges[i].anon || !ranges[i].read) continue;
-    size_t len = ranges[i].hi - ranges[i].lo;
-    if (len > 16u * 1024 * 1024) continue;           // skip the huge Dart heaps
-    const char *needle = "BoringSSL";
-    uintptr_t at = safe_find(ranges[i].lo, ranges[i].hi, needle);
-    if (!at) { needle = "OpenSSL"; at = safe_find(ranges[i].lo, ranges[i].hi, needle); }
-    if (!at) continue;
-    LOGI("found '%s' @ %p in anon [%p,%p) — backtracking for ELF base",
-         needle, (void *) at, (void *) ranges[i].lo, (void *) ranges[i].hi);
-    uintptr_t p = at & ~0xfffULL;
-    for (int back = 0; back < 16384; back++, p -= 0x1000) {   // up to 64 MB below
-      uint32_t magic;
-      if (!safe_read(&magic, (void *) p, 4)) continue;        // unmapped gap — skip
-      if (magic != 0x464c457fu) continue;                     // not "\x7fELF"
-      void *sw = resolve_sym(p, "SSL_write");
-      if (sw) {
-        A64HookFunction(sw, (void *) my_ssl_write_anon, (void **) &g_orig_anon);
-        LOGI("hooked ANON BoringSSL SSL_write @ %p (ELF base %p)", sw, (void *) p);
-        marker("x2d-zygisk ANON_SSL_HOOK_INSTALLED");
-        return true;
-      }
-      log_ssl_exports(p);   // stripped — show what IS exported, keep backtracking
-    }
-  }
-  return false;
-}
-
-// Fallback: find the anon BoringSSL SSL_write by Conscrypt's SSL_write prologue
-// signature (both are BoringSSL). Scans anon EXECUTABLE ranges; hooks the first
-// match that isn't conscrypt's own SSL_write.
-static bool hook_anon_by_signature() {
-  if (g_siglen == 0) return false;
-  static Range ranges[1024];
-  int nr = enum_ranges(ranges, 1024);
-  for (int i = 0; i < nr; i++) {
-    if (!ranges[i].anon || !ranges[i].read || !ranges[i].exec) continue;
-    size_t len = ranges[i].hi - ranges[i].lo;
-    if (len > 64u * 1024 * 1024) continue;
-    uintptr_t start = ranges[i].lo;
-    for (int k = 0; k < 64; k++) {   // a few matches per range
-      uintptr_t at = safe_find_bytes(ranges[i].lo, ranges[i].hi, g_sig, g_siglen, start);
-      if (!at) break;
-      start = at + 4;
-      if (at == g_conscrypt_sw) continue;            // conscrypt's own
-      A64HookFunction((void *) at, (void *) my_ssl_write_anon, (void **) &g_orig_anon);
-      LOGI("hooked ANON SSL_write @ %p via conscrypt-prologue signature", (void *) at);
-      marker("x2d-zygisk ANON_SIG_HOOK_INSTALLED");
-      return true;
-    }
-  }
-  return false;
-}
-
-// ---------------------------------------------------------------------------
-// Waiter thread: hook Conscrypt libssl.so SSL_write AND hunt the anon Flutter
-// BoringSSL SSL_write (the /f3mf path).
+// Waiter thread: hook Conscrypt libssl.so SSL_write AND Flutter's dart:io
+// BoringSSL SSL_write (the /f3mf path). libflutter.so loads lazily when the
+// Flutter engine spins up, so we keep polling until both are hooked.
 // ---------------------------------------------------------------------------
 static void *hook_waiter(void *) {
-  bool conscrypt_done = false, anon_done = false;
+  bool conscrypt_done = false, flutter_done = false;
   for (int tries = 0; tries < 1200; tries++) {   // up to ~120s
     if (!conscrypt_done) {
       uintptr_t base = find_lib_base("/libssl.so");
       if (base != 0) {
         void *sw = resolve_sym(base, "SSL_write");
         if (sw != nullptr && g_orig_conscrypt == nullptr) {
-          // capture the ORIGINAL prologue (before A64HookFunction rewrites it)
-          // as the anon BoringSSL signature
-          g_conscrypt_sw = (uintptr_t) sw;
-          if (safe_read(g_sig, sw, sizeof g_sig)) g_siglen = (int) sizeof g_sig;
           A64HookFunction(sw, (void *) my_ssl_write_conscrypt, (void **) &g_orig_conscrypt);
-          LOGI("hooked CONSCRYPT SSL_write @ %p (base %p) siglen=%d", sw, (void *) base, g_siglen);
+          LOGI("hooked CONSCRYPT SSL_write @ %p (base %p)", sw, (void *) base);
           marker("x2d-zygisk SSL_HOOK_INSTALLED");
         }
         conscrypt_done = (sw != nullptr);
       }
     }
-    if (!anon_done && (tries % 10) == 0) {   // throttle the range scan to ~1 s
-      anon_done = hook_anon_boringssl();
-      if (!anon_done) anon_done = hook_anon_by_signature();
+    if (!flutter_done) flutter_done = hook_flutter_boringssl();
+    if (conscrypt_done && flutter_done) {
+      LOGI("both SSL_write hooks installed");
+      return nullptr;
     }
-    if (anon_done) return nullptr;           // anon is the /f3mf path — done
     usleep(100 * 1000);                      // 100 ms
   }
-  LOGI("waiter done (conscrypt=%d anon=%d)", conscrypt_done, anon_done);
+  LOGI("waiter done (conscrypt=%d flutter=%d)", conscrypt_done, flutter_done);
   return nullptr;
 }
 
