@@ -57,6 +57,14 @@ static ssl_write_t g_orig_conscrypt = nullptr;
 static ssl_write_t g_orig_anon = nullptr;
 static int g_captured = 0;
 
+// Conscrypt SSL_write's original prologue, captured BEFORE we hook it, used as
+// a signature to find Flutter's statically-linked (no clean ELF header) anon
+// BoringSSL SSL_write when the ELF-backtrack approach can't resolve it. Both
+// are BoringSSL, so the prologue often matches across the two builds.
+static unsigned char g_sig[20];
+static int g_siglen = 0;
+static uintptr_t g_conscrypt_sw = 0;
+
 // ---------------------------------------------------------------------------
 // safe_read: probe-read [src, src+len) into dst WITHOUT faulting. Writing the
 // source bytes to a pipe makes the kernel return EFAULT for unmapped memory
@@ -118,6 +126,23 @@ static uintptr_t safe_find(uintptr_t lo, uintptr_t hi, const char *needle) {
     if (!safe_read(buf, (void *) p, 4096)) continue;   // unmapped page — skip
     void *m = memmem(buf, 4096, needle, nlen);
     if (m) return p + ((char *) m - buf);
+  }
+  return 0;
+}
+
+// Page-safe search for a raw byte pattern (may contain NULs). `start` lets the
+// caller resume after a previous hit. Returns 0 when none remain.
+static uintptr_t safe_find_bytes(uintptr_t lo, uintptr_t hi, const void *pat,
+                                 size_t patlen, uintptr_t start) {
+  static char buf[4096];
+  if (start > lo) lo = start;
+  for (uintptr_t p = lo; p < hi; p += 4096) {
+    if (!safe_read(buf, (void *) p, 4096)) continue;
+    void *m = memmem(buf, 4096, pat, patlen);
+    if (m) {
+      uintptr_t at = p + ((char *) m - buf);
+      if (at > start) return at;
+    }
   }
   return 0;
 }
@@ -341,6 +366,32 @@ static bool hook_anon_boringssl() {
   return false;
 }
 
+// Fallback: find the anon BoringSSL SSL_write by Conscrypt's SSL_write prologue
+// signature (both are BoringSSL). Scans anon EXECUTABLE ranges; hooks the first
+// match that isn't conscrypt's own SSL_write.
+static bool hook_anon_by_signature() {
+  if (g_siglen == 0) return false;
+  static Range ranges[1024];
+  int nr = enum_ranges(ranges, 1024);
+  for (int i = 0; i < nr; i++) {
+    if (!ranges[i].anon || !ranges[i].read || !ranges[i].exec) continue;
+    size_t len = ranges[i].hi - ranges[i].lo;
+    if (len > 64u * 1024 * 1024) continue;
+    uintptr_t start = ranges[i].lo;
+    for (int k = 0; k < 64; k++) {   // a few matches per range
+      uintptr_t at = safe_find_bytes(ranges[i].lo, ranges[i].hi, g_sig, g_siglen, start);
+      if (!at) break;
+      start = at + 4;
+      if (at == g_conscrypt_sw) continue;            // conscrypt's own
+      A64HookFunction((void *) at, (void *) my_ssl_write_anon, (void **) &g_orig_anon);
+      LOGI("hooked ANON SSL_write @ %p via conscrypt-prologue signature", (void *) at);
+      marker("x2d-zygisk ANON_SIG_HOOK_INSTALLED");
+      return true;
+    }
+  }
+  return false;
+}
+
 // ---------------------------------------------------------------------------
 // Waiter thread: hook Conscrypt libssl.so SSL_write AND hunt the anon Flutter
 // BoringSSL SSL_write (the /f3mf path).
@@ -353,8 +404,12 @@ static void *hook_waiter(void *) {
       if (base != 0) {
         void *sw = resolve_sym(base, "SSL_write");
         if (sw != nullptr && g_orig_conscrypt == nullptr) {
+          // capture the ORIGINAL prologue (before A64HookFunction rewrites it)
+          // as the anon BoringSSL signature
+          g_conscrypt_sw = (uintptr_t) sw;
+          if (safe_read(g_sig, sw, sizeof g_sig)) g_siglen = (int) sizeof g_sig;
           A64HookFunction(sw, (void *) my_ssl_write_conscrypt, (void **) &g_orig_conscrypt);
-          LOGI("hooked CONSCRYPT SSL_write @ %p (base %p)", sw, (void *) base);
+          LOGI("hooked CONSCRYPT SSL_write @ %p (base %p) siglen=%d", sw, (void *) base, g_siglen);
           marker("x2d-zygisk SSL_HOOK_INSTALLED");
         }
         conscrypt_done = (sw != nullptr);
@@ -362,6 +417,7 @@ static void *hook_waiter(void *) {
     }
     if (!anon_done && (tries % 10) == 0) {   // throttle the range scan to ~1 s
       anon_done = hook_anon_boringssl();
+      if (!anon_done) anon_done = hook_anon_by_signature();
     }
     if (anon_done) return nullptr;           // anon is the /f3mf path — done
     usleep(100 * 1000);                      // 100 ms
