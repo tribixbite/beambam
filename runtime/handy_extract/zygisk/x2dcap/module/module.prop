@@ -1,0 +1,6 @@
+id=x2dcap
+name=X2D Capture
+version=v1
+versionCode=1
+author=x2d
+description=Captures Bambu Handy /f3mf request headers in-process (Zygisk, zero-frida-footprint) to bypass the MakerWorld download captcha.
