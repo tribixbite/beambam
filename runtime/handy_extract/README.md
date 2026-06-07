@@ -299,3 +299,54 @@ BoringSSL SSL_write.
   survive SHIELD's fork+exec re-spawn (child-gating refinement) — next step.
 - ✓ Normal printing is unaffected: `cloud-task-export` + `--from-3mf` already
   cover it; the token is only needed to bypass the MakerWorld /f3mf captcha.
+
+## Path #6 — fork-surviving CModule hook: tested, CONCLUSIVE (2026-06-07)
+
+`capture_f3mf_cmodule.js` — a pure-native frida **CModule** SSL_write hook
+(no JS round-trip per call, so it survives `fork()` into the child). It
+**compiles + attaches cleanly** (the libc `open`/`write`/`close` it uses must
+be supplied via the CModule symbols dict — TinyCC does NOT auto-link the
+process libc; the resolved pointers stay valid across fork). Run with
+`F3MF_CHILD_GATING=1 F3MF_CHILD_RESUME_ONLY=1` (gating's atfork prevents the
+fork child's inherited-locked-mutex deadlock; resume-only avoids re-attaching,
+which re-trips SHIELD).
+
+**Result — the hook works but cannot capture, for two independent reasons:**
+
+1. **SHIELD's fork-escape produces a non-functional half-app.** Child-gating
+   raises the surviving fork child from 1 thread (deadlocked husk) to 5
+   threads, but a `fork()`-without-`exec` child loses every Flutter / Dart VM /
+   ART thread (only the forking thread survives a fork) — so it sits frozen on
+   the splash and makes **zero network calls**. The inherited CModule hook is
+   valid (conscrypt mapped at the same address) but has nothing to capture.
+   SHIELD's REAL functional app is the fork+**exec** child — and `exec` wipes
+   the CModule, so a fork-surviving hook can't reach it; re-instrumenting the
+   exec child re-trips SHIELD and it dies.
+
+2. **The conscrypt hook is the wrong TLS stack for Bambu anyway.** A root
+   `/proc/mem` scan of the NORMAL (un-instrumented, functional) app — even
+   while actively scrolling the feed to force fresh requests — catches ONLY
+   Firebase/Google traffic (`POST /v1/firelog/legacy/batchlog`, via Conscrypt
+   `libssl.so`). Bambu's own API (design-service, user, and the /f3mf
+   download) flows through **Flutter's dart:io BoringSSL** (the stripped, anon
+   one), whose plaintext request buffers are freed too fast to catch via
+   memscan and which the Conscrypt export hook never sees.
+
+### Bottom line
+
+In-app instrumentation of Bambu Handy is **fundamentally blocked** on this
+build: SHIELD either 0xdead-kills (defeated by the stealth server) or, failing
+that, fork-escapes the app into a non-functional husk. And the only catchable
+TLS stack (Conscrypt) doesn't carry Bambu traffic. Capturing a live /f3mf
+request would require ONE of these MAJOR efforts:
+
+- a **Zygisk module** doing inline SSL_write hooking with an in-tree hook lib
+  (Dobby/ShadowHook) — ZERO frida footprint, present from zygote-fork, so
+  SHIELD sees a normal process and never fork-escapes; OR
+- **rebuild frida from source** with a renamed agent memfd (+ whatever else
+  SHIELD's residual scan keys on) for FULL stealth so the fork-escape never
+  fires, then hook the Flutter dart:io BoringSSL SSL_write (still needs a
+  working signature/resolver for the stripped BoringSSL).
+
+Neither is a quick patch. The pragmatic status: the 0xdead wall is broken and
+documented; normal printing works without any of this.

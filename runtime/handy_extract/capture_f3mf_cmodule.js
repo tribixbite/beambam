@@ -105,25 +105,59 @@ onEnter (GumInvocationContext * ic)
 }
 `;
 
+// Resolve a libc export to a NativePointer (frida 17 prefers
+// getGlobalExportByName; fall back to a module scan).
+function resolveSym(name) {
+  try { if (Module.getGlobalExportByName) return Module.getGlobalExportByName(name); } catch (_) { }
+  try { return Module.getExportByName(null, name); } catch (_) { }
+  for (const m of Process.enumerateModules()) {
+    try { const a = m.findExportByName(name); if (a) return a; } catch (_) { }
+  }
+  return null;
+}
+
+// Build the CModule once. TinyCC does NOT auto-link the process's libc, so
+// the open/write/close used by onEnter MUST be supplied as a symbols dict;
+// the resolved pointers stay valid across fork (libc maps at the same address
+// in the child), so the native hook keeps writing in the SHIELD-escaped child.
+function buildCModule() {
+  if (_cm !== null) return _cm;
+  const syms = {};
+  for (const n of ['open', 'write', 'close']) {
+    const p = resolveSym(n);
+    if (!p) { LOG('could not resolve libc ' + n + ' — cannot build CModule'); return null; }
+    syms[n] = p;
+  }
+  try {
+    _cm = new CModule(CMODULE_SRC, syms);
+    LOG('CModule compiled (open/write/close linked)');
+  } catch (e) { LOG('CModule compile failed: ' + e); _cm = null; }
+  return _cm;
+}
+
 let _cm = null;
 const _attached = new Set();
 
 function installCModuleHook(addr, label) {
   if (_attached.has('' + addr)) return;
+  const cm = buildCModule();
+  if (cm === null) return;
   try {
-    if (_cm === null) _cm = new CModule(CMODULE_SRC);
-    // Pure-native attach: frida wires the CModule's onEnter export directly,
-    // so no JS callback is invoked per-write → survives fork into the child.
-    Interceptor.attach(addr, _cm);
+    // Pure-native attach: pass the CModule's onEnter NativePointer as the
+    // listener (frida docs: "onEnter ... may be NativePointer values pointing
+    // at native C functions compiled using CModule"). No JS callback is
+    // invoked per-write → the inline trampoline + native onEnter survive the
+    // fork into the SHIELD-escaped child.
+    Interceptor.attach(addr, { onEnter: cm.onEnter });
     _attached.add('' + addr);
     LOG('CModule SSL_write hook attached @ ' + addr + ' (' + label + ') — fork-surviving; writes ' + CAP_PATH);
   } catch (e) {
-    LOG('CModule attach @ ' + addr + ' failed: ' + e + ' — retrying with onEnter ptr');
+    LOG('CModule {onEnter} attach @ ' + addr + ' failed: ' + e + ' — retrying bare ptr');
     try {
-      Interceptor.attach(addr, { onEnter: _cm.onEnter });
+      Interceptor.attach(addr, cm.onEnter);
       _attached.add('' + addr);
-      LOG('CModule (onEnter ptr) attached @ ' + addr + ' (' + label + ')');
-    } catch (e2) { LOG('CModule onEnter-ptr attach also failed: ' + e2); }
+      LOG('CModule (bare onEnter ptr) attached @ ' + addr + ' (' + label + ')');
+    } catch (e2) { LOG('CModule bare-ptr attach also failed: ' + e2); }
   }
 }
 
