@@ -107,6 +107,21 @@ static bool mem_contains(const char *hay, int haylen, const char *needle) {
   return memmem(hay, (size_t) haylen, needle, strlen(needle)) != nullptr;
 }
 
+// Find `needle` in [lo,hi) page-by-page, probing each page with safe_read so an
+// unmapped guard page INSIDE a maps-readable range can't fault memmem (a r--/rw-
+// range in /proc/maps may still contain holes). Misses a needle straddling a
+// page boundary — fine, the BoringSSL version string recurs within its image.
+static uintptr_t safe_find(uintptr_t lo, uintptr_t hi, const char *needle) {
+  static char buf[4096];
+  size_t nlen = strlen(needle);
+  for (uintptr_t p = lo; p < hi; p += 4096) {
+    if (!safe_read(buf, (void *) p, 4096)) continue;   // unmapped page — skip
+    void *m = memmem(buf, 4096, needle, nlen);
+    if (m) return p + ((char *) m - buf);
+  }
+  return 0;
+}
+
 // ---------------------------------------------------------------------------
 // Shared capture: SSL_write(ssl, buf, num) plaintext. Capture matching request
 // header blocks to the app cache. Two thin replacement functions below each
@@ -303,12 +318,12 @@ static bool hook_anon_boringssl() {
     size_t len = ranges[i].hi - ranges[i].lo;
     if (len > 16u * 1024 * 1024) continue;           // skip the huge Dart heaps
     const char *needle = "BoringSSL";
-    void *at = memmem((void *) ranges[i].lo, len, needle, strlen(needle));
-    if (!at) { needle = "OpenSSL"; at = memmem((void *) ranges[i].lo, len, needle, strlen(needle)); }
+    uintptr_t at = safe_find(ranges[i].lo, ranges[i].hi, needle);
+    if (!at) { needle = "OpenSSL"; at = safe_find(ranges[i].lo, ranges[i].hi, needle); }
     if (!at) continue;
     LOGI("found '%s' @ %p in anon [%p,%p) — backtracking for ELF base",
-         needle, at, (void *) ranges[i].lo, (void *) ranges[i].hi);
-    uintptr_t p = (uintptr_t) at & ~0xfffULL;
+         needle, (void *) at, (void *) ranges[i].lo, (void *) ranges[i].hi);
+    uintptr_t p = at & ~0xfffULL;
     for (int back = 0; back < 16384; back++, p -= 0x1000) {   // up to 64 MB below
       uint32_t magic;
       if (!safe_read(&magic, (void *) p, 4)) continue;        // unmapped gap — skip
