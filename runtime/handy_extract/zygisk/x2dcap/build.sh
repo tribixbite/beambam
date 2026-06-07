@@ -27,11 +27,21 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
+# The module uses __android_log_print (logcat diagnostics). Termux has no
+# linkable liblog stub (ndk-multilib-native-stubs mismatches clang 21), so
+# generate a minimal stub whose SONAME is liblog.so — the .so gets
+# DT_NEEDED=liblog.so and the REAL liblog.so resolves the symbol at runtime in
+# the app process. No device binary committed to the repo.
+printf 'int __android_log_print(int p,const char*t,const char*f,...){return 0;}\n' \
+  | clang --target=aarch64-linux-android24 -shared -fPIC -x c - \
+    -nostdlib -Wl,-soname,liblog.so -o liblog.so
+
 clang++ --target=aarch64-linux-android24 -std=c++17 -O2 -fPIC -shared \
   -fvisibility=hidden -ffunction-sections -fdata-sections -Wl,--gc-sections \
   -fno-exceptions -fno-rtti -nostdlib++ -fno-threadsafe-statics \
   -Wl,--no-undefined \
-  -I jni jni/x2dcap.cpp -o libx2dcap.so
+  -I jni jni/x2dcap.cpp ./liblog.so -o libx2dcap.so
+rm -f liblog.so
 
 patchelf --remove-rpath libx2dcap.so
 llvm-strip --strip-all libx2dcap.so
