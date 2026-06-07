@@ -40,7 +40,7 @@ clang++ --target=aarch64-linux-android24 -std=c++17 -O2 -fPIC -shared \
   -fvisibility=hidden -ffunction-sections -fdata-sections -Wl,--gc-sections \
   -fno-exceptions -fno-rtti -nostdlib++ -fno-threadsafe-statics \
   -Wl,--no-undefined \
-  -I jni jni/x2dcap.cpp ./liblog.so -o libx2dcap.so
+  -I jni jni/x2dcap.cpp jni/And64InlineHook.cpp ./liblog.so -o libx2dcap.so
 rm -f liblog.so
 
 patchelf --remove-rpath libx2dcap.so
