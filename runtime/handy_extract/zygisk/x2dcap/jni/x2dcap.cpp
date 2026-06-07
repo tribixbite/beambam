@@ -49,7 +49,10 @@ static const char *TARGET_PROC = "bbl.intl.bambulab.com";
 static char g_data_dir[256] = {0};
 
 typedef int (*ssl_write_t)(void *ssl, const void *buf, int num);
-static ssl_write_t g_orig_ssl_write = nullptr;
+// Separate trampolines: conscrypt's and the anon BoringSSL's SSL_write are
+// different functions, so each replacement must call its OWN original.
+static ssl_write_t g_orig_conscrypt = nullptr;
+static ssl_write_t g_orig_anon = nullptr;
 static int g_captured = 0;
 
 // Append a line to <data_dir>/cache/<name> (app-writable under SELinux).
@@ -75,38 +78,44 @@ static bool mem_contains(const char *hay, int haylen, const char *needle) {
 }
 
 // ---------------------------------------------------------------------------
-// The SSL_write hook: SSL_write(ssl, buf, num). Capture matching plaintext
-// request header blocks, then forward to the original.
+// Shared capture: SSL_write(ssl, buf, num) plaintext. Capture matching request
+// header blocks to the app cache. Two thin replacement functions below each
+// forward to their own original trampoline.
 // ---------------------------------------------------------------------------
-static int my_ssl_write(void *ssl, const void *buf, int num) {
-  if (buf != nullptr && num >= 24 && num <= 262144) {
-    const char *p = (const char *) buf;
-    char c0 = p[0];
-    if (c0 == 'G' || c0 == 'P' || c0 == 'D' || c0 == 'H') {   // GET/POST/PUT/DELETE/HEAD
-      int lim = num < 16384 ? num : 16384;
-      if (mem_contains(p, lim, "x-bbl") || mem_contains(p, lim, "/f3mf") ||
-          mem_contains(p, lim, "design-service")) {
-        // header block up to CRLFCRLF, else lim
-        int hdrlen = lim;
-        for (int i = 0; i + 4 <= lim; i++)
-          if (p[i] == '\r' && p[i + 1] == '\n' && p[i + 2] == '\r' && p[i + 3] == '\n') {
-            hdrlen = i + 4;
-            break;
-          }
-        append_file("x2d_f3mf.txt", p, hdrlen);
-        append_file("x2d_f3mf.txt", "\n===X2DCAP===\n", 14);
-        if (g_captured < 50) {
-          g_captured++;
-          char line[160];
-          int n = 0;
-          for (; n < lim && n < 110 && p[n] != '\r' && p[n] != '\n'; n++) line[n] = p[n];
-          line[n] = '\0';
-          LOGI("CAPTURED SSL_write req: %s", line);
-        }
-      }
+static void capture_request(const void *buf, int num, const char *via) {
+  if (buf == nullptr || num < 24 || num > 262144) return;
+  const char *p = (const char *) buf;
+  char c0 = p[0];
+  if (c0 != 'G' && c0 != 'P' && c0 != 'D' && c0 != 'H') return;   // GET/POST/PUT/DELETE/HEAD
+  int lim = num < 16384 ? num : 16384;
+  if (!mem_contains(p, lim, "x-bbl") && !mem_contains(p, lim, "/f3mf") &&
+      !mem_contains(p, lim, "design-service"))
+    return;
+  int hdrlen = lim;   // header block up to CRLFCRLF
+  for (int i = 0; i + 4 <= lim; i++)
+    if (p[i] == '\r' && p[i + 1] == '\n' && p[i + 2] == '\r' && p[i + 3] == '\n') {
+      hdrlen = i + 4;
+      break;
     }
+  append_file("x2d_f3mf.txt", p, hdrlen);
+  append_file("x2d_f3mf.txt", "\n===X2DCAP===\n", 14);
+  if (g_captured < 50) {
+    g_captured++;
+    char line[160];
+    int n = 0;
+    for (; n < lim && n < 110 && p[n] != '\r' && p[n] != '\n'; n++) line[n] = p[n];
+    line[n] = '\0';
+    LOGI("CAPTURED [%s] %s", via, line);
   }
-  return g_orig_ssl_write(ssl, buf, num);
+}
+
+static int my_ssl_write_conscrypt(void *ssl, const void *buf, int num) {
+  capture_request(buf, num, "conscrypt");
+  return g_orig_conscrypt(ssl, buf, num);
+}
+static int my_ssl_write_anon(void *ssl, const void *buf, int num) {
+  capture_request(buf, num, "anon");
+  return g_orig_anon(ssl, buf, num);
 }
 
 // ---------------------------------------------------------------------------
@@ -170,8 +179,9 @@ static void *resolve_sym(uintptr_t base, const char *want) {
   // Trick: dynsym immediately precedes dynstr, so the symbol count is
   // (strtab - symtab) / syment (robust without DT_HASH / GNU_HASH walking).
   (void) strsz;
+  if ((uintptr_t) strtab <= (uintptr_t) symtab) return nullptr;
   size_t nsyms = ((uintptr_t) strtab - (uintptr_t) symtab) / syment;
-  if (nsyms == 0 || nsyms > 500000) nsyms = 200000;   // bounded fallback
+  if (nsyms == 0 || nsyms > 200000) return nullptr;   // implausible — skip (avoid OOB read)
   for (size_t i = 0; i < nsyms; i++) {
     auto *s = (Elf64_Sym *) ((uintptr_t) symtab + i * syment);
     if (s->st_name == 0 || s->st_value == 0) continue;
@@ -182,26 +192,141 @@ static void *resolve_sym(uintptr_t base, const char *want) {
 }
 
 // ---------------------------------------------------------------------------
-// Waiter thread: poll until Conscrypt libssl.so is mapped, resolve SSL_write,
-// inline-hook it.
+// Bambu's /f3mf (and all its API) flows through Flutter's dart:io BoringSSL,
+// which SHIELD unpacks into ANONYMOUS executable memory (no named libssl.so
+// mapping) with SSL_write stripped from the dynsym. We hunt it in-process:
+// for each anon r-x range, locate the BoringSSL image by its version string,
+// backtrack to the ELF base, and resolve SSL_write — logging all SSL_* exports
+// for diagnosis when the dynsym is stripped.
+// ---------------------------------------------------------------------------
+
+// All ranges with r/x/anon flags (so reads can be bounds-checked: dereferencing
+// an unmapped page would SIGSEGV and crash Handy).
+struct Range { uintptr_t lo, hi; bool read, exec, anon; };
+static int enum_ranges(Range *out, int max) {
+  FILE *f = fopen("/proc/self/maps", "r");
+  if (!f) return 0;
+  char line[512];
+  int n = 0;
+  while (n < max && fgets(line, sizeof(line), f)) {
+    unsigned long lo = 0, hi = 0;
+    char perms[8] = {0};
+    char path[256] = {0};
+    int m = sscanf(line, "%lx-%lx %7s %*x %*x:%*x %*d %255[^\n]", &lo, &hi, perms, path);
+    if (m < 3) continue;
+    out[n].lo = lo; out[n].hi = hi;
+    out[n].read = perms[0] == 'r';
+    out[n].exec = perms[2] == 'x';
+    out[n].anon = (m < 4) || path[0] == '\0' || path[0] == '[';
+    n++;
+  }
+  fclose(f);
+  return n;
+}
+
+// Is [p, p+len) fully inside a readable range? (bounds-check before deref)
+static bool is_readable(const Range *r, int nr, uintptr_t p, size_t len) {
+  for (int i = 0; i < nr; i++)
+    if (r[i].read && p >= r[i].lo && p + len <= r[i].hi) return true;
+  return false;
+}
+
+// Log the SSL_* exports of an in-memory ELF (diagnosis when stripped).
+static void log_ssl_exports(uintptr_t base) {
+  auto *ehdr = (Elf64_Ehdr *) base;
+  if (memcmp(ehdr->e_ident, ELFMAG, SELFMAG) != 0) return;
+  auto *phdr = (Elf64_Phdr *) (base + ehdr->e_phoff);
+  uintptr_t dyn_vaddr = 0, min_vaddr = (uintptr_t) -1;
+  for (int i = 0; i < ehdr->e_phnum; i++) {
+    if (phdr[i].p_type == PT_LOAD && phdr[i].p_vaddr < min_vaddr) min_vaddr = phdr[i].p_vaddr;
+    if (phdr[i].p_type == PT_DYNAMIC) dyn_vaddr = phdr[i].p_vaddr;
+  }
+  if (!dyn_vaddr) return;
+  if (min_vaddr == (uintptr_t) -1) min_vaddr = 0;
+  uintptr_t bias = base - min_vaddr;
+  auto *dyn = (Elf64_Dyn *) (dyn_vaddr + bias);
+  const char *strtab = nullptr; Elf64_Sym *symtab = nullptr; size_t syment = sizeof(Elf64_Sym);
+  for (Elf64_Dyn *d = dyn; d->d_tag != DT_NULL; d++) {
+    if (d->d_tag == DT_STRTAB) strtab = (const char *) (d->d_un.d_ptr + bias);
+    else if (d->d_tag == DT_SYMTAB) symtab = (Elf64_Sym *) (d->d_un.d_ptr + bias);
+    else if (d->d_tag == DT_SYMENT) syment = d->d_un.d_val;
+  }
+  if (!strtab || !symtab || (uintptr_t) strtab <= (uintptr_t) symtab) return;
+  size_t nsyms = ((uintptr_t) strtab - (uintptr_t) symtab) / syment;
+  if (nsyms == 0 || nsyms > 200000) return;
+  int logged = 0;
+  for (size_t i = 0; i < nsyms && logged < 12; i++) {
+    auto *s = (Elf64_Sym *) ((uintptr_t) symtab + i * syment);
+    if (s->st_name == 0) continue;
+    const char *nm = strtab + s->st_name;
+    if (strncmp(nm, "SSL_", 4) == 0) { LOGI("  anon-elf export: %s", nm); logged++; }
+  }
+  LOGI("  (anon ELF @ %p: %zu dynsyms, %d SSL_* shown)", (void *) base, nsyms, logged);
+}
+
+// Try to resolve+hook the anon Flutter BoringSSL SSL_write. Returns true once
+// hooked. All memory reads are bounds-checked against readable ranges.
+static bool hook_anon_boringssl() {
+  static Range ranges[1024];
+  int nr = enum_ranges(ranges, 1024);
+  for (int i = 0; i < nr; i++) {
+    if (!ranges[i].anon || !ranges[i].exec || !ranges[i].read) continue;
+    size_t len = ranges[i].hi - ranges[i].lo;
+    if (len > 96u * 1024 * 1024) continue;
+    const char *needle = "BoringSSL";
+    void *at = memmem((void *) ranges[i].lo, len, needle, strlen(needle));
+    if (!at) { needle = "OpenSSL"; at = memmem((void *) ranges[i].lo, len, needle, strlen(needle)); }
+    if (!at) continue;
+    LOGI("found '%s' @ %p in anon r-x [%p,%p) — backtracking for ELF base",
+         needle, at, (void *) ranges[i].lo, (void *) ranges[i].hi);
+    // backtrack page-by-page for ELF magic (up to 64 MB), only reading pages
+    // that are inside a mapped readable range (else SIGSEGV).
+    uintptr_t p = (uintptr_t) at & ~0xfffULL;
+    for (int back = 0; back < 16384; back++, p -= 0x1000) {
+      if (!is_readable(ranges, nr, p, 4)) break;   // hit an unmapped gap
+      if (*(uint32_t *) p == 0x464c457fu) {         // "\x7fELF"
+        void *sw = resolve_sym(p, "SSL_write");
+        if (sw && is_readable(ranges, nr, (uintptr_t) sw, 4)) {
+          A64HookFunction(sw, (void *) my_ssl_write_anon, (void **) &g_orig_anon);
+          LOGI("hooked ANON BoringSSL SSL_write @ %p (ELF base %p)", sw, (void *) p);
+          marker("x2d-zygisk ANON_SSL_HOOK_INSTALLED");
+          return true;
+        }
+        log_ssl_exports(p);   // stripped — show what IS exported, for diagnosis
+        break;                // found the ELF base; stop backtracking this string
+      }
+    }
+  }
+  return false;
+}
+
+// ---------------------------------------------------------------------------
+// Waiter thread: hook Conscrypt libssl.so SSL_write (named export) AND hunt
+// the anon Flutter BoringSSL SSL_write. Conscrypt carries Firebase; Bambu's
+// /f3mf goes over the anon BoringSSL — we want both.
 // ---------------------------------------------------------------------------
 static void *hook_waiter(void *) {
-  for (int tries = 0; tries < 600; tries++) {   // up to ~60s
-    uintptr_t base = find_lib_base("/libssl.so");
-    if (base != 0) {
-      void *sw = resolve_sym(base, "SSL_write");
-      if (sw != nullptr) {
-        A64HookFunction(sw, (void *) my_ssl_write, (void **) &g_orig_ssl_write);
-        LOGI("hooked SSL_write @ %p (libssl base %p) — waiting for /f3mf",
-             sw, (void *) base);
-        marker("x2d-zygisk SSL_HOOK_INSTALLED");
-        return nullptr;
+  bool conscrypt_done = false, anon_done = false;
+  for (int tries = 0; tries < 900; tries++) {   // up to ~90s
+    if (!conscrypt_done) {
+      uintptr_t base = find_lib_base("/libssl.so");
+      if (base != 0) {
+        void *sw = resolve_sym(base, "SSL_write");
+        if (sw != nullptr && g_orig_conscrypt == nullptr) {
+          A64HookFunction(sw, (void *) my_ssl_write_conscrypt, (void **) &g_orig_conscrypt);
+          LOGI("hooked CONSCRYPT SSL_write @ %p (base %p)", sw, (void *) base);
+          marker("x2d-zygisk SSL_HOOK_INSTALLED");
+        }
+        conscrypt_done = (sw != nullptr);
       }
-      LOGI("libssl.so @ %p but SSL_write unresolved — retrying", (void *) base);
     }
-    usleep(100 * 1000);   // 100 ms
+    if (!anon_done) {
+      anon_done = hook_anon_boringssl();
+    }
+    if (anon_done) return nullptr;   // anon is the /f3mf path — done once hooked
+    usleep(100 * 1000);              // 100 ms
   }
-  LOGI("waiter gave up — libssl.so/SSL_write not found");
+  LOGI("waiter done (conscrypt=%d anon=%d)", conscrypt_done, anon_done);
   return nullptr;
 }
 
