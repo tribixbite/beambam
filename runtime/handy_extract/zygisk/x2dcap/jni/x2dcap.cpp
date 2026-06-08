@@ -33,6 +33,7 @@
 #include <cerrno>
 #include <unistd.h>
 #include <fcntl.h>
+#include <sys/uio.h>
 #include <pthread.h>
 #include <elf.h>
 #include <link.h>
@@ -63,6 +64,14 @@ static ssl_write_t g_orig_conscrypt = nullptr;
 static ssl_write_t g_orig_flutter = nullptr;
 static int g_captured = 0;
 static int g_seen = 0;   // diagnostic: count of HTTP request-lines logged
+// Raw outbound-stream capture budget. Bambu's API is HTTP/2, so request headers
+// reach SSL_write already HPACK-compressed — unreadable as text. We instead log
+// the raw SSL_write bytes per TLS connection (keyed by the SSL* pointer) so the
+// full client→server h2 byte stream can be reassembled and HPACK-decoded
+// offline. Bounded so a chatty connection (MQTT keep-alives etc.) can't fill the
+// disk; reset the file before triggering the action you want to capture.
+static long g_raw_bytes = 0;
+static const long RAW_CAP = 12L * 1024 * 1024;   // ~12 MB ceiling
 
 // SSL_write's vaddr inside libflutter.so, resolved offline from the matching
 // unstripped engine symbols (engine 587c18f873…, build-id 0a7fde9baaf4…). The
@@ -166,12 +175,42 @@ static void capture_request(const void *buf, int num, const char *via) {
   }
 }
 
+// Append one length-framed record of this SSL_write's plaintext to x2d_raw.bin:
+//   magic 'X2RW' (4) | ssl ptr (8, LE) | via tag (1) | len (4, LE) | bytes…
+// Offline: group records by ssl ptr (one TLS connection), concatenate `bytes`
+// in file order to recover the outbound h2 stream, then HPACK-decode its HEADERS
+// frames. Per-write capture is capped so a single huge write can't dominate.
+static void capture_raw(void *ssl, const void *buf, int num, char via) {
+  if (buf == nullptr || num <= 0) return;
+  if (g_raw_bytes >= RAW_CAP) return;
+  int n = num > 16384 ? 16384 : num;            // cap per-write
+  char hdr[17];
+  memcpy(hdr, "X2RW", 4);
+  uint64_t sp = (uint64_t) ssl;
+  memcpy(hdr + 4, &sp, 8);
+  hdr[12] = via;
+  uint32_t ln = (uint32_t) n;
+  memcpy(hdr + 13, &ln, 4);
+  // One iovec write so the record is atomic under O_APPEND across threads.
+  char path[512];
+  snprintf(path, sizeof(path), "%s/cache/x2d_raw.bin",
+           g_data_dir[0] ? g_data_dir : "/data/data/bbl.intl.bambulab.com");
+  int fd = open(path, O_WRONLY | O_CREAT | O_APPEND, 0600);
+  if (fd < 0) return;
+  struct iovec iov[2] = {{hdr, sizeof hdr}, {(void *) buf, (size_t) n}};
+  ssize_t w = writev(fd, iov, 2);
+  close(fd);
+  if (w > 0) g_raw_bytes += w;
+}
+
 static int my_ssl_write_conscrypt(void *ssl, const void *buf, int num) {
   capture_request(buf, num, "conscrypt");
+  capture_raw(ssl, buf, num, 'C');
   return g_orig_conscrypt(ssl, buf, num);
 }
 static int my_ssl_write_flutter(void *ssl, const void *buf, int num) {
   capture_request(buf, num, "flutter");
+  capture_raw(ssl, buf, num, 'F');
   return g_orig_flutter(ssl, buf, num);
 }
 
