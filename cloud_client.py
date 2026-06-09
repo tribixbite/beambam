@@ -778,6 +778,71 @@ class CloudClient:
         """Remixes (derivative works) of a design. `{total, hits}` shape."""
         return self._authed_get(f"/v1/design-service/design/{design_id}/remixed")
 
+    def get_design_instances(self, design_id: int | str) -> list[dict]:
+        """The printable PROFILES of a MakerWorld design. Each instance is a
+        sliced configuration the user picks in Handy's Prepare-to-Print profile
+        list; `instance['id']` feeds get_instance_download_url() for the .3mf.
+        Returns the `instances` array; `defaultInstanceId` on the parent design
+        marks the pre-selected one."""
+        d = self.get_design(design_id)
+        return d.get("instances") or []
+
+    def get_user_preference(self) -> dict:
+        """MakerWorld profile + privacy/feature toggles for the logged-in user
+        (handle, bio, deviceNames, deviceLiveView, isModelSave, isNSFWShown,
+        notification opt-ins …). Distinct from get_my_profile (which is the
+        public-facing card)."""
+        return self._authed_get("/v1/design-user-service/my/preference")
+
+    def get_design_favorited(self, design_id: int | str) -> list[int]:
+        """Which of the user's favorites lists already contain `design_id`.
+        Returns the list of favoritesIds (empty = not favorited)."""
+        r = self._authed_get(
+            f"/v1/design-service/my/design/favoriteslist?designId={design_id}")
+        return r.get("favoritesIds") or []
+
+    def get_search_config(self) -> dict:
+        """MakerWorld search/client config. Most useful field for printing is
+        the canonical lists the Handy UI offers: `filaments` (PLA, PETG, ABS,
+        TPU, …) and `colors` (24-swatch hex palette) — use these to validate /
+        populate AMS filament-type + color choices. Also carries sort/filter
+        option sets and trending hot-words."""
+        return self._authed_get("/v1/search-service/cfg2?ref_=def")
+
+    def get_search_lists(self) -> dict:
+        """Trending + curated search word lists (`hotList`, `customList`) shown
+        on the empty search screen."""
+        return self._authed_get("/v1/search-service/searchlist")
+
+    def search_suggest(self, keyword: str) -> dict:
+        """Typeahead suggestions for a partial query. Returns buckets:
+        popular / user / design / communityTag / communityPopular."""
+        return self._authed_get(
+            f"/v1/search-service/suggest2?keyword={urllib.parse.quote(keyword)}&include=")
+
+    def search_all(self, keyword: str, limit: int = 20, offset: int = 0) -> dict:
+        """Faceted cross-search: returns per-facet totals + hits across design /
+        user / favorites / communityPost for one keyword."""
+        return self._authed_get(
+            f"/v1/search-service/select/all?keyword={urllib.parse.quote(keyword)}"
+            f"&limit={int(limit)}&offset={int(offset)}")
+
+    def get_related_designs(self, design_id: int | str, limit: int = 20,
+                            offset: int = 0, scene: int = 0) -> dict:
+        """Designs related to `design_id` (the 'you might also like' rail on a
+        model page). `{total, hits}` shape."""
+        return self._authed_get(
+            f"/v1/search-service/design/{design_id}/relate?scene={int(scene)}"
+            f"&limit={int(limit)}&offset={int(offset)}")
+
+    def get_printer_model_order(self, rule_id: str = "handy_printer_ranking") -> list[dict]:
+        """Server-driven printer-model display ordering / internal-name map,
+        e.g. `[{devModelName:'N6', devProductName:'X2D'}, …]` — handy for
+        mapping a bound device's internal model code to its product name."""
+        r = self._authed_get(
+            f"/v1/operation-service/printer-model/sort-rule?ruleId={urllib.parse.quote(rule_id)}")
+        return r.get("modelOrder") or []
+
     def get_favorites(self) -> dict:
         """User's MakerWorld favorites lists. Each list has id, title,
         cover, count of designs in it. Use the list id with a follow-up

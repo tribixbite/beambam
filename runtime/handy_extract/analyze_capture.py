@@ -41,7 +41,9 @@ SECRET_HEADERS = {"authorization", "x-bbl-captcha-result", "cookie",
                   "set-cookie", "x-auth-token", "x-bbl-trace-id"}
 # Body keys (case-insensitive substring) whose values are secrets.
 SECRET_BODY_KEYS = ("password", "token", "secret", "captcha", "pass_token",
-                    "captcha_output", "authorization", "credential")
+                    "captcha_output", "authorization", "credential",
+                    "app_cert", "sign_string", "access_code", "accesscode",
+                    "crl")
 
 
 def redact(value: str, keep: int = 0) -> str:
@@ -392,6 +394,82 @@ def main():
         js = json.dumps(s, ensure_ascii=False, indent=1)
         w(js[:1200] + ("\n…(truncated)" if len(js) > 1200 else ""))
         w("```")
+
+    # ---- MQTT printer-control (non-h2 connections beginning with CONNECT)
+    def _mqtt_packets(st: bytes):
+        i = 0
+        out = []
+        while i < len(st):
+            b0 = st[i]; typ = b0 >> 4; flags = b0 & 0xf; i += 1
+            mult = 1; rl = 0
+            while i < len(st):
+                c = st[i]; i += 1; rl += (c & 0x7f) * mult; mult *= 128
+                if not c & 0x80:
+                    break
+            body = st[i:i + rl]; i += rl
+            out.append((typ, flags, body))
+        return out
+
+    def _mstr(b, j):
+        n = (b[j] << 8) | b[j + 1]; return b[j + 2:j + 2 + n].decode("utf-8", "replace"), j + 2 + n
+
+    mqtt_lines = []
+    for (ssl, via, g), stream in conns.items():
+        st = bytes(stream)
+        if not st.startswith(b"\x10"):
+            continue
+        mqtt_lines.append(f"\n**connection** `0x{ssl:x}/{via}` ({len(st)} bytes outbound)\n")
+        for typ, flags, body in _mqtt_packets(st):
+            if typ == 1 and len(body) > 6:        # CONNECT
+                try:
+                    proto, j = _mstr(body, 0); ver = body[j]; j += 1; cf = body[j]; j += 1
+                    j += 2; cid, j = _mstr(body, j); user = ""
+                    if cf & 0x80:
+                        user, j = _mstr(body, j)
+                    mqtt_lines.append(f"- CONNECT proto={proto} v{ver} clientid=`{cid}` "
+                                      f"user=`{user}` pass=_(redacted)_")
+                except Exception:
+                    mqtt_lines.append("- CONNECT (parse error)")
+            elif typ == 8:                        # SUBSCRIBE
+                try:
+                    j = 2; tps = []
+                    while j < len(body):
+                        t, j = _mstr(body, j); q = body[j]; j += 1; tps.append(f"`{t}` q{q}")
+                    mqtt_lines.append(f"- SUBSCRIBE → {', '.join(tps)}")
+                except Exception:
+                    mqtt_lines.append("- SUBSCRIBE (parse error)")
+            elif typ == 3:                        # PUBLISH
+                try:
+                    topic, j = _mstr(body, 0)
+                    if flags & 0x06:
+                        j += 2
+                    payload = body[j:]
+                    try:
+                        obj = json.loads(payload)
+                        fam = next((k for k in obj if k not in ("user_id", "header")), "?")
+                        sub = obj.get(fam, {}) if isinstance(obj.get(fam), dict) else {}
+                        cmd = sub.get("command", "")
+                        signed = " [RSA-signed]" if isinstance(obj.get("header"), dict) and obj["header"].get("sign_string") else ""
+                        js = json.dumps(redact_obj(obj))
+                        mqtt_lines.append(f"- PUBLISH `{topic}` **{fam}.{cmd}**{signed}\n"
+                                          f"    `{js[:300]}`")
+                    except Exception:
+                        mqtt_lines.append(f"- PUBLISH `{topic}` raw[{len(payload)}]")
+                except Exception:
+                    mqtt_lines.append("- PUBLISH (parse error)")
+            elif typ == 12:
+                mqtt_lines.append("- PINGREQ")
+            elif typ == 10:
+                mqtt_lines.append("- UNSUBSCRIBE")
+    w("\n## MQTT printer-control (outbound)\n")
+    if mqtt_lines:
+        w("Commands Handy published to `device/<serial>/request` (cert/sign-string "
+          "values redacted). `print.*` publishes only appear if a print was "
+          "started/modified during capture.\n")
+        for ln in mqtt_lines:
+            w(ln)
+    else:
+        w("_No MQTT connection in this capture._")
 
     # ---- security-signed requests (SHIELD)
     SIGN_HEADERS = {"x-bbl-device-security-sign", "x-bbl-app-certification-id",

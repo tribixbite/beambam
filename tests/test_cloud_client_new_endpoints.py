@@ -393,3 +393,64 @@ def test_pull_design_3mf_threads_captcha_result(cli, monkeypatch, tmp_path):
     out = cli.pull_design_3mf(1, tmp_path, captcha_result="CR")
     assert seen == {"inst": 555, "cr": "CR"}
     assert out.read_bytes().startswith(b"PK\x03\x04")
+
+
+# ----- newly-enumerated Handy endpoints -----------------------------------
+
+
+def test_get_design_instances_returns_profiles(cli, monkeypatch):
+    _patch_request(monkeypatch, {"id": 1, "defaultInstanceId": 9,
+                                 "instances": [{"id": 9, "title": "default"},
+                                               {"id": 10, "title": "scaled"}]})
+    out = cli.get_design_instances(1)
+    assert [i["id"] for i in out] == [9, 10]
+
+
+def test_get_user_preference(cli, monkeypatch):
+    cap = _patch_request(monkeypatch, {"handle": "x", "deviceLiveView": 1})
+    cli.get_user_preference()
+    assert cap.calls[0]["url"].endswith("/v1/design-user-service/my/preference")
+
+
+def test_get_search_config_exposes_filaments_colors(cli, monkeypatch):
+    cap = _patch_request(monkeypatch, {"filaments": ["PLA", "PETG"],
+                                       "colors": ["#FFFFFF"]})
+    out = cli.get_search_config()
+    assert cap.calls[0]["url"].endswith("/v1/search-service/cfg2?ref_=def")
+    assert "PLA" in out["filaments"]
+
+
+def test_get_design_favorited_unwraps_ids(cli, monkeypatch):
+    cap = _patch_request(monkeypatch, {"favoritesIds": [10445304]})
+    out = cli.get_design_favorited(2829060)
+    assert "designId=2829060" in cap.calls[0]["url"]
+    assert out == [10445304]
+
+
+def test_search_all_includes_keyword_paging(cli, monkeypatch):
+    cap = _patch_request(monkeypatch, {"design": {}, "user": {"total": 1}})
+    cli.search_all("cube", limit=3, offset=6)
+    url = cap.calls[0]["url"]
+    assert "/v1/search-service/select/all" in url
+    assert "keyword=cube" in url and "limit=3" in url and "offset=6" in url
+
+
+def test_search_suggest(cli, monkeypatch):
+    cap = _patch_request(monkeypatch, {"design": []})
+    cli.search_suggest("dragon")
+    assert "/v1/search-service/suggest2?keyword=dragon" in cap.calls[0]["url"]
+
+
+def test_get_related_designs(cli, monkeypatch):
+    cap = _patch_request(monkeypatch, {"total": 0, "hits": []})
+    cli.get_related_designs(2829060, limit=5, offset=0, scene=1)
+    url = cap.calls[0]["url"]
+    assert "/v1/search-service/design/2829060/relate" in url
+    assert "scene=1" in url
+
+
+def test_get_printer_model_order_unwraps(cli, monkeypatch):
+    _patch_request(monkeypatch, {"modelOrder": [{"devModelName": "N6",
+                                                 "devProductName": "X2D"}]})
+    out = cli.get_printer_model_order()
+    assert out[0]["devProductName"] == "X2D"
