@@ -184,31 +184,35 @@ Signature envelope (the `header` sibling of the command):
   commands. This is the same per-installation cert/signature wall that blocks
   beambam's LAN-direct `print.*` (#65/#66/#68).
 
-### …but the printer does NOT enforce the signature (verified)
+### Enforcement is PER-COMMAND — print.* IS verified (tested both ways)
 
-The signing looked like the blocker — until tested. Connected to the cloud broker
-with beambam's own token (paho, distinct client_id) and published an **unsigned**
-`get_access_code` — no `header`, no `sign_string`:
-```
-publish device/<serial>/request:
-  {"user_id":"<uid>","system":{"sequence_id":"9002","command":"get_access_code"}}
-report device/<serial>/report:
-  {"system":{"access_code":"00000000","command":"get_access_code","result":"success",
-             "sequence_id":"9002"}}
-```
-The printer **executed an unsigned command that Handy always signs.** So the
-RSA-SHA256 envelope is **cosmetic** — the firmware does not verify it. (The signing
-key being Android-Keystore-wrapped is therefore moot.)
+Tested against the cloud broker with beambam's token (paho, distinct client_id):
 
-**Implication for beambam:** it can command the printer **unsigned** over the cloud
-broker (`u_<uid>` / cloud access_token → `device/<serial>/request`) — no signing
-key, no signer hook needed. beambam's existing `beambam/printer.py` /
-`print_job.py` payload builders publish as-is; just route them at the cloud broker
-instead of the LAN access-code path that the cert handshake blocks (#65/#66/#68).
-**Caveat:** only `system.get_access_code` was tested unsigned (it's read-only and
-won't disrupt a running print). Confirm `print.*` (start/stop/skip/filament) is
-also unsigned-accepted with one `print.pause`→`resume` or on the next real print
-before relying on it.
+```
+UNSIGNED system.get_access_code →
+  {"system":{"access_code":"00000000","command":"get_access_code","result":"success"}}   ← ACCEPTED
+UNSIGNED print.pause →
+  {"print":{"command":"pause","err_code":84033543,"reason":"mqtt message verify failed",
+            "result":"failed"}}   ← REJECTED (print kept RUNNING)
+```
+
+So the firmware verifies the signature for **print control** (and presumably the
+other signed families) but **exempts** `system.get_access_code` — almost certainly
+because the access code must be obtainable before any app cert is installed
+(bootstrap). The RSA envelope is therefore **real and enforced for the commands
+that matter**.
+
+**Implication for beambam:** it CAN read (cloud status via pushall/subscribe,
+model downloads via /f3mf) with the token alone, but to **command** the printer
+(start/stop/pause/skip/filament) it must produce a valid RSA-SHA256 signature with
+the app's key — an unsigned cloud publish is rejected with `mqtt message verify
+failed`. The tractable path, since we already run a Zygisk module inside the app:
+**hook libflutter.so's BoringSSL signer** (`EVP_DigestSign*`/`RSA_sign`, called
+right before each MQTT publish) to either (a) dump the RSA private key from the
+`EVP_PKEY` (if it's a software key → beambam signs offline until the cert rotates),
+or (b) expose a signing oracle (if Keystore-backed → ask the running app to sign).
+Also pin the exact signed bytes — `payload_len` = serialized-command length + a
+constant **33 bytes**, so the signed blob has a fixed addition to reverse.
 
 ## The Handy print features (protocol map)
 
