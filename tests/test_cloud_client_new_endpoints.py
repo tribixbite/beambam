@@ -63,9 +63,10 @@ class _Capturer:
         self.response = response or {}
 
     def __call__(self, method, url, *, body=None, headers=None,
-                 timeout=None, return_cookies=False):
+                 base_headers=None, timeout=None, return_cookies=False):
         self.calls.append({"method": method, "url": url,
-                           "body": body, "headers": headers})
+                           "body": body, "headers": headers,
+                           "base_headers": base_headers})
         if callable(self.response):
             return self.response(method, url, body)
         return self.response
@@ -336,3 +337,58 @@ def test_login_code_only_without_resolver_raises(cli):
     """Missing resolver should fail-fast, not silently no-op."""
     with pytest.raises(cloud_client.CloudError, match="code_resolver"):
         cli.login_code_only("user@example.com", region="us", code_resolver=None)
+
+
+# ----- /f3mf model-file download (MakerWorld captcha bypass) ---------------
+
+
+def test_get_instance_f3mf_endpoint_and_app_identity(cli, monkeypatch):
+    """/f3mf must hit the instance endpoint AND present the Handy *app*
+    identity (HANDY_HEADERS) — the OrcaSlicer base would re-trip the 418."""
+    cap = _patch_request(monkeypatch,
+                         {"name": "m.3mf", "url": "https://x/m.3mf?at=1"})
+    out = cli.get_instance_f3mf(1116947)
+    call = cap.calls[0]
+    assert call["url"].endswith(
+        "/v1/design-service/instance/1116947/f3mf?type=preview")
+    # the captcha bypass hinges on these — assert they're the base headers
+    assert call["base_headers"] is cloud_client.HANDY_HEADERS
+    assert call["base_headers"]["X-BBL-Client-Type"] == "app"
+    assert call["base_headers"]["X-BBL-Client-Name"] == "BambuHandy"
+    assert "Bearer " in call["headers"]["Authorization"]
+    assert out["url"].startswith("https://")
+
+
+def test_get_instance_f3mf_variant_omitted(cli, monkeypatch):
+    cap = _patch_request(monkeypatch, {"name": "m.3mf", "url": "https://x"})
+    cli.get_instance_f3mf(42, variant="")
+    assert cap.calls[0]["url"].endswith("/v1/design-service/instance/42/f3mf")
+
+
+def test_download_instance_3mf_follows_presigned_url(cli, monkeypatch, tmp_path):
+    _patch_request(monkeypatch,
+                   {"name": "cube.3mf", "url": "https://oss/cube.3mf?at=1&exp=2"})
+    fetched = {}
+
+    class _Resp:
+        status = 200
+        def read(self): return b"PK\x03\x04stub3mf"
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+
+    def _fake_urlopen(req, timeout=None, context=None):
+        fetched["url"] = req.full_url
+        return _Resp()
+
+    monkeypatch.setattr(cloud_client.urllib.request, "urlopen", _fake_urlopen)
+    name, data = cli.download_instance_3mf(99, dest=tmp_path)
+    assert fetched["url"] == "https://oss/cube.3mf?at=1&exp=2"
+    assert name == "cube.3mf"
+    assert data.startswith(b"PK\x03\x04")
+    assert (tmp_path / "cube.3mf").read_bytes() == data
+
+
+def test_download_instance_3mf_no_url_raises(cli, monkeypatch):
+    _patch_request(monkeypatch, {"name": "x.3mf"})  # no url key
+    with pytest.raises(cloud_client.CloudError, match="no download url"):
+        cli.download_instance_3mf(1)

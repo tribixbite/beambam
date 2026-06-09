@@ -399,7 +399,38 @@ logs the request-line of every HTTP write to logcat (`REQ [flutter] …`) for
 diagnosis. A module `.so` change needs a FULL REBOOT — zygiskd64 caches the
 module at boot, and killing it breaks 64-bit zygisk irrecoverably.
 
-**Status:** module + Flutter hook deployed via the offline-resolved offset;
-pending a reboot + a live /f3mf download to confirm the dart:io path is what
-the hook sees (the alternative, if it is not, is `libgojni.so`'s Go crypto/tls
-— a separate, non-BoringSSL stack).
+### Captured — and the actual captcha mechanism (2026-06-09) ✅ DONE
+
+The Flutter hook captured Bambu's API traffic — but it's **HTTP/2**, so request
+headers reach SSL_write already HPACK-compressed (the text filter only ever saw
+the `PRI * HTTP/2.0` preface). Final design: `capture_raw()` logs each
+SSL_write's plaintext as a length-framed record (`magic|ssl ptr|via|len|bytes`)
+keyed by the SSL* pointer; `decode_raw_h2.py` groups records per TLS connection,
+strips the preface, parses the frame stream and stateful-HPACK-decodes the
+HEADERS. It cleanly decoded the live `POST /v1/user-service/user/login`, the
+For-You feed, and — on Prepare-to-Print → 3D-preview — the target:
+
+    GET https://api.bambulab.com/v1/design-service/instance/<id>/f3mf?type=preview
+      x-bbl-client-type: app
+      x-bbl-client-name: BambuHandy
+      x-bbl-client-version: 3.21.0
+      …x-bbl-device-id / os / brand / model …
+      authorization: Bearer AQA2hODl…   ← the cloud access token
+
+Replayed from the workstation → **200**, returning
+`{"name":"…3mf","url":"<presigned makerworld.bblmw.com link>"}`; following the
+url downloaded the real **2.84 MB .3mf** (`PK\x03\x04`). Captcha bypassed.
+
+**The crux: the HTTP 418 robot wall is keyed on the client-identity headers, NOT
+the token.** The *same* valid Bearer token:
+- with `x-bbl-client-type: app` / `x-bbl-client-name: BambuHandy` → **200**;
+- with OrcaSlicer's `x-bbl-client-type: slicer` → **418** "confirm you are not a
+  robot".
+
+So beambam's own refreshable cloud token already works for /f3mf — it just has
+to present the **Handy app identity**. Wired into `cloud_client.py` as
+`HANDY_HEADERS` + `get_instance_f3mf()` / `download_instance_3mf()`. Caveat: the
+wall is also per-egress-IP and probabilistic — one `slicer`-typed hit or a burst
+trips a flag that 418s even app requests until it decays, so call it sparingly,
+never poll. The Zygisk capture rig was the means; the durable result is the
+header recipe.
