@@ -83,6 +83,21 @@ static const uintptr_t FLUTTER_SSL_WRITE_VADDR = 0x717ef0;
 static const unsigned char FLUTTER_SSL_WRITE_SIG[8] = {
     0xff, 0x03, 0x01, 0xd1, 0xfe, 0x5f, 0x01, 0xa9};
 
+// BoringSSL signing primitives inside libflutter.so (offline-resolved vaddrs;
+// build-id 0a7fde9b…). Printer-control MQTT commands are RSA-SHA256 signed with
+// a SHIELD-held key that never hits disk — so we lift it at the moment Handy
+// signs, by hooking the signer and walking EVP_PKEY → RSA → BIGNUMs. The key
+// (n/e/d/p/q) is written hex to x2d_rsa.txt for offline PKCS#8 reconstruction.
+static const uintptr_t FLUTTER_EVP_PKEY_SIGN_VADDR     = 0x6eabcc;
+static const uintptr_t FLUTTER_EVP_DIGESTSIGNFINAL_VADDR = 0x6d1b04;
+typedef int (*evp_pkey_sign_t)(void *ctx, unsigned char *sig, size_t *siglen,
+                               const unsigned char *tbs, size_t tbslen);
+typedef int (*evp_digestsignfinal_t)(void *ctx, unsigned char *sig, size_t *siglen);
+static evp_pkey_sign_t g_orig_evp_pkey_sign = nullptr;
+static evp_digestsignfinal_t g_orig_evp_digestsignfinal = nullptr;
+static int g_sign_calls = 0;     // diagnostic: how many times the signer fired
+static int g_key_dumped = 0;
+
 // ---------------------------------------------------------------------------
 // safe_read: probe-read [src, src+len) into dst WITHOUT faulting. Writing the
 // source bytes to a pipe makes the kernel return EFAULT for unmapped memory
@@ -326,12 +341,110 @@ static bool hook_flutter_boringssl() {
 }
 
 // ---------------------------------------------------------------------------
+// Printer-control signer extraction. When Handy RSA-signs an MQTT control
+// command it loads its (SHIELD-held, never-on-disk) RSA key into a BoringSSL
+// EVP_PKEY and calls EVP_PKEY_sign / EVP_DigestSignFinal. We hook those, walk
+// EVP_PKEY_CTX → EVP_PKEY → RSA → its BIGNUMs (ALL via safe_read — every deref
+// is fault-probed so a wrong offset guess can't crash Handy), and write the
+// key components hex to x2d_rsa.txt. Offline, dump_keys.py:reconstruct_pkcs8()
+// rebuilds the PEM. Struct offsets vary by build, so we PROBE candidate slots
+// and only commit when we find a full RSA private key (≥5 large BIGNUMs).
+// ---------------------------------------------------------------------------
+struct bn_st { uintptr_t d; int width; int dmax; int neg; int flags; };
+
+// Scan an RSA*'s first 24 pointer slots for BIGNUMs; emit RSA-2048-plausible
+// ones (e=1 limb, n/d=32 limbs, p/q/dmp1/dmq1/iqmp=16 limbs) big-endian-hex.
+// Returns the count of "large" components; commits to file only when ≥5.
+static int dump_rsa(void *rsa) {
+  if (g_key_dumped || rsa == nullptr) return 0;
+  static char out[8192];
+  int o = 0, big = 0;
+  for (int slot = 0; slot < 24; slot++) {
+    uintptr_t p;
+    if (!safe_read(&p, (char *) rsa + slot * 8, 8) || p < 0x1000) continue;
+    bn_st bn;
+    if (!safe_read(&bn, (void *) p, sizeof bn)) continue;
+    if (bn.width <= 0 || bn.width > 40 || bn.d < 0x1000) continue;
+    bool plausible = (bn.width == 1) || (bn.width >= 15 && bn.width <= 33);
+    if (!plausible) continue;
+    unsigned long long limbs[40];
+    if (!safe_read(limbs, (void *) bn.d, bn.width * 8)) continue;
+    if (bn.width > 1) big++;
+    o += snprintf(out + o, sizeof out - o, "slot%d w%d ", slot, bn.width);
+    for (int i = bn.width - 1; i >= 0 && o < (int) sizeof out - 24; i--)
+      o += snprintf(out + o, sizeof out - o, "%016llx", limbs[i]);
+    o += snprintf(out + o, sizeof out - o, "\n");
+    if (o > (int) sizeof out - 720) break;
+  }
+  if (big >= 5) {                       // full RSA private key (n,d,p,q,dmp1,…)
+    append_file("x2d_rsa.txt", out, o);
+    g_key_dumped = 1;
+    marker("x2d-zygisk RSA_KEY_DUMPED");
+  }
+  return big;
+}
+
+// Given a candidate EVP_PKEY_CTX*, probe its pkey field, then that EVP_PKEY's
+// rsa union ptr, then dump. All reads are safe_read-guarded.
+static void try_extract_from_pkey_ctx(uintptr_t pctx) {
+  if (g_key_dumped || pctx < 0x1000) return;
+  for (int po = 8; po <= 32 && !g_key_dumped; po += 8) {       // EVP_PKEY_CTX.pkey
+    uintptr_t pkey;
+    if (!safe_read(&pkey, (char *) pctx + po, 8) || pkey < 0x1000) continue;
+    for (int ro = 8; ro <= 40 && !g_key_dumped; ro += 8) {     // EVP_PKEY.pkey.rsa
+      uintptr_t rsa;
+      if (!safe_read(&rsa, (char *) pkey + ro, 8) || rsa < 0x1000) continue;
+      dump_rsa((void *) rsa);
+    }
+  }
+}
+
+static int my_evp_pkey_sign(void *ctx, unsigned char *sig, size_t *siglen,
+                            const unsigned char *tbs, size_t tbslen) {
+  g_sign_calls++;
+  try_extract_from_pkey_ctx((uintptr_t) ctx);
+  if (g_sign_calls <= 12) LOGI("EVP_PKEY_sign #%d tbslen=%zu dumped=%d",
+                               g_sign_calls, tbslen, g_key_dumped);
+  return g_orig_evp_pkey_sign(ctx, sig, siglen, tbs, tbslen);
+}
+
+static int my_evp_digestsignfinal(void *mdctx, unsigned char *sig, size_t *siglen) {
+  g_sign_calls++;
+  if (!g_key_dumped && mdctx != nullptr) {
+    // EVP_MD_CTX holds an EVP_PKEY_CTX* (pctx) in one of its first slots; probe.
+    for (int s = 0; s < 8 && !g_key_dumped; s++) {
+      uintptr_t cand;
+      if (!safe_read(&cand, (char *) mdctx + s * 8, 8) || cand < 0x1000) continue;
+      try_extract_from_pkey_ctx(cand);
+    }
+  }
+  if (g_sign_calls <= 12) LOGI("EVP_DigestSignFinal #%d dumped=%d",
+                               g_sign_calls, g_key_dumped);
+  return g_orig_evp_digestsignfinal(mdctx, sig, siglen);
+}
+
+static bool hook_flutter_signer() {
+  flutter_find ff = {0};
+  dl_iterate_phdr(flutter_phdr_cb, &ff);
+  if (ff.bias == 0) return false;
+  void *ps = (void *) (ff.bias + FLUTTER_EVP_PKEY_SIGN_VADDR);
+  void *ds = (void *) (ff.bias + FLUTTER_EVP_DIGESTSIGNFINAL_VADDR);
+  unsigned char probe[4];
+  if (!safe_read(probe, ps, 4) || !safe_read(probe, ds, 4)) return false;
+  A64HookFunction(ps, (void *) my_evp_pkey_sign, (void **) &g_orig_evp_pkey_sign);
+  A64HookFunction(ds, (void *) my_evp_digestsignfinal, (void **) &g_orig_evp_digestsignfinal);
+  LOGI("hooked FLUTTER signer EVP_PKEY_sign @ %p EVP_DigestSignFinal @ %p", ps, ds);
+  marker("x2d-zygisk SIGNER_HOOKS_INSTALLED");
+  return true;
+}
+
+// ---------------------------------------------------------------------------
 // Waiter thread: hook Conscrypt libssl.so SSL_write AND Flutter's dart:io
 // BoringSSL SSL_write (the /f3mf path). libflutter.so loads lazily when the
 // Flutter engine spins up, so we keep polling until both are hooked.
 // ---------------------------------------------------------------------------
 static void *hook_waiter(void *) {
-  bool conscrypt_done = false, flutter_done = false;
+  bool conscrypt_done = false, flutter_done = false, signer_done = false;
   for (int tries = 0; tries < 1200; tries++) {   // up to ~120s
     if (!conscrypt_done) {
       uintptr_t base = find_lib_base("/libssl.so");
@@ -346,13 +459,17 @@ static void *hook_waiter(void *) {
       }
     }
     if (!flutter_done) flutter_done = hook_flutter_boringssl();
-    if (conscrypt_done && flutter_done) {
-      LOGI("both SSL_write hooks installed");
+    // The signer lives in the same libflutter.so; hook it once SSL_write proved
+    // the bias is valid.
+    if (flutter_done && !signer_done) signer_done = hook_flutter_signer();
+    if (conscrypt_done && flutter_done && signer_done) {
+      LOGI("all hooks installed (ssl + signer)");
       return nullptr;
     }
     usleep(100 * 1000);                      // 100 ms
   }
-  LOGI("waiter done (conscrypt=%d flutter=%d)", conscrypt_done, flutter_done);
+  LOGI("waiter done (conscrypt=%d flutter=%d signer=%d)",
+       conscrypt_done, flutter_done, signer_done);
   return nullptr;
 }
 
