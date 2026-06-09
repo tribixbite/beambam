@@ -152,33 +152,71 @@ started during the session (see below).
 
 ---
 
-## Starting prints via beambam, and the Handy print features
+## Printer-control commands are RSA-signed (the real wall) — captured 2026-06-09
 
-**The path.** A MakerWorld print is `print.project_file` published to
-`device/<serial>/request` (the firmware fetches the presigned .3mf and prints).
-beambam already implements the LAN/local variants in `beambam/printer.py`
-(`start_print`, `pause/resume/stop`, `gcode`, `ams_load`, `set_tray_metadata`)
-and `beambam/print_job.py`; `cloud_client.py` notes the cloud broker accepts
-`print.project_file` with `print_type=cloud`. The cloud broker is authed by
-`u_<uid>`/token (no per-request cert in the captured non-security commands), so
-the cloud path is the most promising for beambam to start MakerWorld prints
-without the SHIELD-signed LAN handshake — **to be confirmed by capturing one
-real `print.project_file` and checking for a `header.sign_string`.**
+A live capture of a stop+restart confirmed that **every actionable command** the
+app sends to `device/<serial>/request` carries an RSA-SHA256 signature; only
+passive/read-only ones go unsigned:
 
-**Feature → mechanism map** (★ = needs a live capture of the exact payload):
+| command | signed? |
+|---|---|
+| `print.stop`, `print.clean_print_error` | **yes** |
+| `system.get_access_code`, `system.uiop` | **yes** |
+| `liveview.prepare` (live-view start) | **yes** |
+| `camera.ipcam_get_media_info` | no (read-only) |
+| `pushing.*`, `info.get_version`, `security.app_cert_*` | no (setup/passive) |
 
-| Handy feature | mechanism | beambam status |
+Signature envelope (the `header` sibling of the command):
+```json
+{"print": {"command": "stop", "sequence_id": "2009", "timestamp": 1780996597017},
+ "user_id": "<uid>",
+ "header": {"sign_ver": "v1.0", "sign_alg": "RSA_SHA256",
+            "sign_string": "<base64 256-byte RSA sig>",
+            "cert_id": "77bcfb…CN=GLOF1000000000.bambulab.com",
+            "payload_len": 98}}
+```
+- `sign_string` = RSA-SHA256 over the first `payload_len` bytes of the command
+  (the `print:{…}` object serialised), using the **app's private key**.
+- `cert_id` references the X.509 app cert the app installed into the printer via
+  `security.app_cert_install` (CN = `GLOF<printerSerial>.bambulab.com`).
+- This applies on the **cloud** broker too — a valid `u_<uid>`/token MQTT session
+  is necessary but **not sufficient**; the printer rejects unsigned control
+  commands. This is the same per-installation cert/signature wall that blocks
+  beambam's LAN-direct `print.*` (#65/#66/#68).
+
+**Implication for beambam:** knowing the protocol is not enough — to issue ANY
+control command (start, stop, skip, filament, live-view) beambam must produce a
+valid RSA-SHA256 signature with the app's private key. That key lives inside
+SHIELD. The tractable path, given we already run a Zygisk module inside the app:
+**hook the BoringSSL signer** (`EVP_DigestSign*` / `RSA_sign` in libflutter.so,
+invoked right before each MQTT publish) to either (a) dump the RSA private key
+from the `EVP_PKEY`, or (b) expose a local signing-oracle so beambam asks the
+running app to sign its payloads. Until then, beambam can read everything (status
+via cloud, model downloads via /f3mf) but cannot command the printer. This is the
+single blocker for all five requested print features.
+
+## The Handy print features (protocol map)
+
+All five features are MQTT commands to `device/<serial>/request`, and (per the
+section above) **all of them are RSA-signed** — so each is "doable" only once
+beambam can sign. The mechanism for each:
+
+| Handy feature | command / mechanism | needs signing? |
 |---|---|---|
-| **Select profile** | choose a design **instance** (`design.instances[].id`, default `defaultInstanceId`), then `get_instance_download_url(instance_id)` for its .3mf | ✅ doable now (REST) |
-| **Set quantity** | re-slice / plate repeat — likely a `project_file` param (or a slicer call); exact field ★ | needs capture |
-| **Skip parts** | `print.skip_objects` (object id list) on a running print | not implemented; protocol known (pybambu) — add to printer.py |
-| **Change filament color/type** | AMS: `print.ams_filament_setting` (color RRGGBBAA + `tray_info_idx` for type); for a print, the plate→AMS map is `project_file.ams_mapping`. Canonical type list + palette = `search-service/cfg2` (above) | partial: `set_tray_metadata` exists; `ams_mapping` ★ |
-| **Live-view changes** | camera tunnel via `iot-service/api/user/ttcode` → TUTK / agora SDK stream | not implemented; tunnel codes available |
+| **Select profile** | pick a design **instance** (`design.instances[].id`, default `defaultInstanceId`) → `get_instance_download_url(instance_id)` for its .3mf | no — pure REST, ✅ works today |
+| **Start print** | `print.project_file` (firmware fetches the presigned .3mf). beambam has the LAN builder in `beambam/print_job.py`; cloud uses `print_type=cloud` | **yes** (signed like stop/clean — confirmed by analogy; project_file not yet captured because the restart reused the existing subtask) |
+| **Set quantity** | a `project_file` param (plate repeat / `subtask` count) | yes (part of project_file) |
+| **Skip parts** | `print.skip_objects` (object-id list) on a running print | yes |
+| **Change filament color/type** | `print.ams_filament_setting` (color RRGGBBAA + `tray_info_idx` for type) and the plate→AMS map `project_file.ams_mapping`. Type list + palette = `search-service/cfg2` | yes (`set_tray_metadata` in beambam already builds the payload — still needs a signature on this firmware) |
+| **Live-view changes** | `liveview.prepare` (signed) + camera tunnel `iot-service/api/user/ttcode` → TUTK/agora; settings via `camera.ipcam_*` | mixed: `ipcam_get_media_info` read-only/unsigned, `liveview.prepare` signed |
 
-**Next step for the print features:** a focused live capture — start one real
-MakerWorld print in Handy (+ optionally set quantity, skip an object, remap a
-filament) while the Zygisk module records the MQTT. `decode_raw_h2.py`'s MQTT
-parser (in `analyze_capture` workflow) already extracts the `print.project_file`
-/ `print.skip_objects` / `print.ams_*` publishes verbatim — those become the
-exact payloads to implement in `beambam/print_job.py`. This needs a real print
-(consumes filament), so it's gated on the user running it.
+**Therefore the prerequisite for ALL of these is a signing capability.** The next
+capture target is not another print payload — it's the **signer**: extend the
+Zygisk module to hook libflutter.so's BoringSSL `EVP_DigestSign*` / `RSA_sign`,
+called right before each MQTT publish, and either dump the RSA private key from
+the `EVP_PKEY` or expose it as a local signing oracle. With that, beambam's
+existing `beambam/printer.py` / `print_job.py` payload builders just need an
+`header:{sign_alg, sign_string, cert_id}` wrapper to become live printer control.
+(The exact `project_file` body is still worth a one-off capture — start a NEW
+print, e.g. "Print again" on a completed job — to confirm quantity/ams_mapping
+fields; but it will be signed.)
