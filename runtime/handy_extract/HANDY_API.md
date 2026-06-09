@@ -184,16 +184,31 @@ Signature envelope (the `header` sibling of the command):
   commands. This is the same per-installation cert/signature wall that blocks
   beambam's LAN-direct `print.*` (#65/#66/#68).
 
-**Implication for beambam:** knowing the protocol is not enough — to issue ANY
-control command (start, stop, skip, filament, live-view) beambam must produce a
-valid RSA-SHA256 signature with the app's private key. That key lives inside
-SHIELD. The tractable path, given we already run a Zygisk module inside the app:
-**hook the BoringSSL signer** (`EVP_DigestSign*` / `RSA_sign` in libflutter.so,
-invoked right before each MQTT publish) to either (a) dump the RSA private key
-from the `EVP_PKEY`, or (b) expose a local signing-oracle so beambam asks the
-running app to sign its payloads. Until then, beambam can read everything (status
-via cloud, model downloads via /f3mf) but cannot command the printer. This is the
-single blocker for all five requested print features.
+### …but the printer does NOT enforce the signature (verified)
+
+The signing looked like the blocker — until tested. Connected to the cloud broker
+with beambam's own token (paho, distinct client_id) and published an **unsigned**
+`get_access_code` — no `header`, no `sign_string`:
+```
+publish device/<serial>/request:
+  {"user_id":"<uid>","system":{"sequence_id":"9002","command":"get_access_code"}}
+report device/<serial>/report:
+  {"system":{"access_code":"00000000","command":"get_access_code","result":"success",
+             "sequence_id":"9002"}}
+```
+The printer **executed an unsigned command that Handy always signs.** So the
+RSA-SHA256 envelope is **cosmetic** — the firmware does not verify it. (The signing
+key being Android-Keystore-wrapped is therefore moot.)
+
+**Implication for beambam:** it can command the printer **unsigned** over the cloud
+broker (`u_<uid>` / cloud access_token → `device/<serial>/request`) — no signing
+key, no signer hook needed. beambam's existing `beambam/printer.py` /
+`print_job.py` payload builders publish as-is; just route them at the cloud broker
+instead of the LAN access-code path that the cert handshake blocks (#65/#66/#68).
+**Caveat:** only `system.get_access_code` was tested unsigned (it's read-only and
+won't disrupt a running print). Confirm `print.*` (start/stop/skip/filament) is
+also unsigned-accepted with one `print.pause`→`resume` or on the next real print
+before relying on it.
 
 ## The Handy print features (protocol map)
 
