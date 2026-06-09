@@ -63,10 +63,9 @@ class _Capturer:
         self.response = response or {}
 
     def __call__(self, method, url, *, body=None, headers=None,
-                 base_headers=None, timeout=None, return_cookies=False):
+                 timeout=None, return_cookies=False):
         self.calls.append({"method": method, "url": url,
-                           "body": body, "headers": headers,
-                           "base_headers": base_headers})
+                           "body": body, "headers": headers})
         if callable(self.response):
             return self.response(method, url, body)
         return self.response
@@ -339,56 +338,58 @@ def test_login_code_only_without_resolver_raises(cli):
         cli.login_code_only("user@example.com", region="us", code_resolver=None)
 
 
-# ----- /f3mf model-file download (MakerWorld captcha bypass) ---------------
+# ----- /f3mf robot wall (GeeTest v4 captcha) ------------------------------
 
 
-def test_get_instance_f3mf_endpoint_and_app_identity(cli, monkeypatch):
-    """/f3mf must hit the instance endpoint AND present the Handy *app*
-    identity (HANDY_HEADERS) — the OrcaSlicer base would re-trip the 418."""
-    cap = _patch_request(monkeypatch,
-                         {"name": "m.3mf", "url": "https://x/m.3mf?at=1"})
-    out = cli.get_instance_f3mf(1116947)
+def test_get_instance_download_url_passes_captcha_result(cli, monkeypatch):
+    """A solved captcha is forwarded as the X-BBL-Captcha-Result header."""
+    cap = _patch_request(monkeypatch, {"name": "m.3mf", "url": "https://x"})
+    cli.get_instance_download_url(1116947, kind="preview",
+                                  captcha_result="BASE64RESULT")
     call = cap.calls[0]
     assert call["url"].endswith(
         "/v1/design-service/instance/1116947/f3mf?type=preview")
-    # the captcha bypass hinges on these — assert they're the base headers
-    assert call["base_headers"] is cloud_client.HANDY_HEADERS
-    assert call["base_headers"]["X-BBL-Client-Type"] == "app"
-    assert call["base_headers"]["X-BBL-Client-Name"] == "BambuHandy"
+    assert call["headers"]["X-BBL-Captcha-Result"] == "BASE64RESULT"
     assert "Bearer " in call["headers"]["Authorization"]
-    assert out["url"].startswith("https://")
 
 
-def test_get_instance_f3mf_variant_omitted(cli, monkeypatch):
+def test_get_instance_download_url_no_captcha_header_when_absent(cli, monkeypatch):
     cap = _patch_request(monkeypatch, {"name": "m.3mf", "url": "https://x"})
-    cli.get_instance_f3mf(42, variant="")
-    assert cap.calls[0]["url"].endswith("/v1/design-service/instance/42/f3mf")
+    cli.get_instance_download_url(42)
+    assert "X-BBL-Captcha-Result" not in cap.calls[0]["headers"]
 
 
-def test_download_instance_3mf_follows_presigned_url(cli, monkeypatch, tmp_path):
-    _patch_request(monkeypatch,
-                   {"name": "cube.3mf", "url": "https://oss/cube.3mf?at=1&exp=2"})
-    fetched = {}
+def test_get_instance_download_url_418_raises_captcha_required(cli, monkeypatch):
+    """A 418 robot wall surfaces as CaptchaRequired carrying the captchaId."""
+    def _raise_418(method, url, *, headers=None, body=None,
+                   timeout=None, return_cookies=False):
+        raise cloud_client.CloudError(
+            "HTTP 418", status=418,
+            body=json.dumps({"code": 1, "captchaId": "abc123",
+                             "error": "not a robot"}))
+    monkeypatch.setattr(cloud_client, "_request", _raise_418)
+    with pytest.raises(cloud_client.CaptchaRequired) as ei:
+        cli.get_instance_download_url(7)
+    assert ei.value.captcha_id == "abc123"
+    assert ei.value.status == 418
+
+
+def test_pull_design_3mf_threads_captcha_result(cli, monkeypatch, tmp_path):
+    """pull_design_3mf forwards captcha_result down to the instance call."""
+    monkeypatch.setattr(cli, "get_design",
+                        lambda d: {"instances": [{"id": 555, "isDefault": True}]})
+    seen = {}
+    monkeypatch.setattr(cli, "get_instance_download_url",
+                        lambda inst, captcha_result=None: seen.update(
+                            inst=inst, cr=captcha_result)
+                        or {"name": "m.3mf", "url": "https://oss/m.3mf"})
 
     class _Resp:
-        status = 200
-        def read(self): return b"PK\x03\x04stub3mf"
+        def read(self): return b"PK\x03\x04zip"
         def __enter__(self): return self
         def __exit__(self, *a): return False
-
-    def _fake_urlopen(req, timeout=None, context=None):
-        fetched["url"] = req.full_url
-        return _Resp()
-
-    monkeypatch.setattr(cloud_client.urllib.request, "urlopen", _fake_urlopen)
-    name, data = cli.download_instance_3mf(99, dest=tmp_path)
-    assert fetched["url"] == "https://oss/cube.3mf?at=1&exp=2"
-    assert name == "cube.3mf"
-    assert data.startswith(b"PK\x03\x04")
-    assert (tmp_path / "cube.3mf").read_bytes() == data
-
-
-def test_download_instance_3mf_no_url_raises(cli, monkeypatch):
-    _patch_request(monkeypatch, {"name": "x.3mf"})  # no url key
-    with pytest.raises(cloud_client.CloudError, match="no download url"):
-        cli.download_instance_3mf(1)
+    monkeypatch.setattr(cloud_client.urllib.request, "urlopen",
+                        lambda req, timeout=None: _Resp())
+    out = cli.pull_design_3mf(1, tmp_path, captcha_result="CR")
+    assert seen == {"inst": 555, "cr": "CR"}
+    assert out.read_bytes().startswith(b"PK\x03\x04")

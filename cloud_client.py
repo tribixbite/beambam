@@ -89,38 +89,22 @@ BBL_HEADERS = {
 }
 
 # MakerWorld's model-file endpoint /v1/design-service/instance/<id>/f3mf is
-# robot-walled (HTTP 418 "confirm you are not a robot") for the OrcaSlicer /
-# web client identity — a valid Bearer token alone does NOT clear it. The wall
-# is keyed on the X-BBL-Client-Type / X-BBL-Client-Name headers: the Bambu
-# Handy *app* identity is whitelisted, the `slicer` one is not. Captured by
-# hooking the live Handy app's BoringSSL SSL_write (see
-# runtime/handy_extract/ — Zygisk module + HPACK decoder); a request carrying
-# exactly these headers returns 200 with a presigned OSS download URL.
+# gated by a GeeTest v4 behavioural captcha keyed on a per-account+IP ROBOT
+# SCORE — NOT by any request header. Verified directly (2026-06-09): a
+# low-score caller gets 200 immediately regardless of client identity (the
+# OrcaSlicer `slicer` headers and the Bambu Handy `app` headers behave
+# identically); a high-score caller gets HTTP 418
+# `{"code":1,"captchaId":"<hex>","error":"…not a robot…"}` — and this hits the
+# genuine Handy app too (it pops a GeeTest challenge that the user solves).
 #
-# Caveats learned in capture: the wall is ALSO per-egress-IP and partly
-# probabilistic — a single `slicer`-typed /f3mf request, or hammering, trips a
-# robot flag that then 418s even app-typed requests until it decays. So route
-# ONLY /f3mf through these headers, don't poll it, and expect transient 418s.
-# X-BBL-Device-Id is a real registered Handy device UUID; trust scoring may
-# weigh it, so it's overridable via X2D_HANDY_DEVICE_ID.
-HANDY_DEVICE_ID = os.environ.get(
-    "X2D_HANDY_DEVICE_ID", "612dd480-636b-11f1-93ac-7923e731f964")
-HANDY_HEADERS = {
-    "User-Agent":                "Handy/3.21.0",
-    "X-BBL-Client-Type":         "app",
-    "X-BBL-Client-Name":         "BambuHandy",
-    "X-BBL-Client-Version":      "3.21.0",
-    "X-BBL-Client-Release-Code": "5260",
-    "X-BBL-OS-Type":             "android",
-    "X-BBL-OS-Version":          "13",
-    "X-BBL-Device-Id":           HANDY_DEVICE_ID,
-    "X-BBL-Device-Brand":        "OSOM",
-    "X-BBL-Device-Model":        "Saga",
-    "X-BBL-Language":            "en",
-    "X-BBL-Content-I18n":        "true",
-    "Accept":                    "application/json",
-    "Accept-Encoding":           "gzip, deflate",
-}
+# To clear a 418 the client solves GeeTest v4 for the returned captchaId, then
+# retries with header `X-BBL-Captcha-Result` = base64(JSON) of GeeTest's
+# validation object {captcha_id, lot_number, captcha_output, pass_token,
+# gen_time}. The captcha result is single-use. There is NO header trick that
+# avoids the wall — the only reliable mitigation is to keep the robot score low
+# (don't poll/hammer; one /f3mf per model the user actually downloads). Found by
+# hooking the live Handy app's Flutter BoringSSL SSL_write — see
+# runtime/handy_extract/ (Zygisk module + HPACK decoder, README Path #7).
 
 # TFA (TOTP) endpoint lives on bambulab.com (not api.bambulab.com) and
 # returns the token in a Set-Cookie header instead of JSON.
@@ -179,25 +163,29 @@ class CloudError(RuntimeError):
         self.body = body
 
 
+class CaptchaRequired(CloudError):
+    """/f3mf hit the GeeTest v4 robot wall (HTTP 418). The caller must solve
+    GeeTest v4 for `captcha_id` and retry with the result (see
+    get_instance_download_url's `captcha_result`). `captcha_id` is the GeeTest
+    challenge id from the 418 body."""
+
+    def __init__(self, msg: str, captcha_id: str = "", body: str = ""):
+        super().__init__(msg, status=418, body=body)
+        self.captcha_id = captcha_id
+
+
 def _request(method: str,
              url: str,
              *,
              body: dict | None = None,
              headers: dict | None = None,
-             base_headers: dict | None = None,
              timeout: float = DEFAULT_TIMEOUT,
              return_cookies: bool = False) -> dict:
     """One HTTP round-trip returning parsed JSON. Raises CloudError on
     non-2xx or unparseable response. With return_cookies=True, the
     parsed JSON is augmented with a synthetic '_cookies' dict (used by
-    the TFA endpoint, which delivers the token via Set-Cookie).
-
-    `base_headers` replaces the default OrcaSlicer BBL_HEADERS wholesale —
-    used by the /f3mf endpoint, which must present the Bambu Handy *app*
-    identity (HANDY_HEADERS) to clear MakerWorld's robot wall (see
-    HANDY_HEADERS). A leftover slicer header would re-trip the 418, so this
-    swaps the base set rather than merging onto it."""
-    h = dict(base_headers if base_headers is not None else BBL_HEADERS)
+    the TFA endpoint, which delivers the token via Set-Cookie)."""
+    h = dict(BBL_HEADERS)
     if body is not None:
         h["Content-Type"] = "application/json"
     if headers:
@@ -790,71 +778,6 @@ class CloudClient:
         """Remixes (derivative works) of a design. `{total, hits}` shape."""
         return self._authed_get(f"/v1/design-service/design/{design_id}/remixed")
 
-    def get_instance_f3mf(self, instance_id: int | str,
-                          variant: str = "preview") -> dict:
-        """Resolve a MakerWorld model *instance* to its downloadable .3mf.
-
-        `GET /v1/design-service/instance/<id>/f3mf` returns
-        `{"name": "<file>.3mf", "url": "<presigned makerworld.bblmw.com link>"}`.
-        This is the path Bambu Handy uses for Prepare-to-Print. Unlike the
-        public model-page download it is NOT served to the OrcaSlicer/web
-        client identity — that gets HTTP 418 (robot wall) even with a valid
-        token. We present the Handy *app* identity (HANDY_HEADERS), which the
-        wall whitelists, so a logged-in cloud Bearer token is enough.
-
-        The returned `url` is a short-lived (`at`/`exp` query params) presigned
-        OSS link that serves the .3mf with no further auth. `variant` maps to
-        `?type=` (preview/model/download/'' all currently return the same
-        instance file). Instance IDs come from get_design()'s `instances[*].id`.
-
-        NB: don't poll this — the robot wall is per-IP and probabilistic; a
-        burst (or any `slicer`-typed hit) can 418 even valid app requests for a
-        while. One call per model is the intended usage.
-        """
-        self._ensure_fresh()
-        q = f"?type={urllib.parse.quote(variant)}" if variant else ""
-        url = REGIONS[self.session.region]["iot"] + \
-            f"/v1/design-service/instance/{instance_id}/f3mf{q}"
-        return _request("GET", url, base_headers=HANDY_HEADERS, headers={
-            "Authorization": f"Bearer {self.session.access_token}",
-        })
-
-    def download_instance_3mf(self, instance_id: int | str,
-                              dest: "Path | str | None" = None,
-                              variant: str = "preview") -> tuple[str, bytes]:
-        """Download a MakerWorld model instance's .3mf bundle, captcha-free.
-
-        Resolves the presigned URL via get_instance_f3mf() then fetches the
-        bytes (the presigned link is self-authenticating — no headers needed).
-        Returns `(filename, data)`. If `dest` is given the bytes are written
-        there; a directory `dest` is joined with the server-provided filename.
-        """
-        meta = self.get_instance_f3mf(instance_id, variant)
-        url = meta.get("url")
-        name = meta.get("name") or f"instance_{instance_id}.3mf"
-        if not url:
-            raise CloudError(
-                f"no download url for instance {instance_id}: {meta}")
-        ctx = ssl.create_default_context()
-        try:
-            req = urllib.request.Request(
-                url, headers={"User-Agent": HANDY_HEADERS["User-Agent"]})
-            with urllib.request.urlopen(req, timeout=DEFAULT_TIMEOUT * 4,
-                                        context=ctx) as r:
-                data = r.read()
-        except urllib.error.HTTPError as e:
-            raise CloudError(
-                f"HTTP {e.code} fetching presigned .3mf for instance "
-                f"{instance_id}", status=e.code) from e
-        except urllib.error.URLError as e:
-            raise CloudError(f"network failure fetching .3mf: {e.reason}") from e
-        if dest is not None:
-            p = Path(dest)
-            if p.is_dir():
-                p = p / name
-            p.write_bytes(data)
-        return name, data
-
     def get_favorites(self) -> dict:
         """User's MakerWorld favorites lists. Each list has id, title,
         cover, count of designs in it. Use the list id with a follow-up
@@ -938,59 +861,70 @@ class CloudClient:
         })
 
     def get_instance_download_url(self, instance_id: int | str,
-                                   kind: str = "download") -> dict:
+                                   kind: str = "download",
+                                   captcha_result: str | None = None) -> dict:
         """Resolve the signed download URL for a MakerWorld design instance.
         `kind="download"` returns the full .3mf bundle; `kind="preview"`
-        returns a preview-only .3mf (no plate gcode). The signed URL is
-        valid for ~5 minutes (`exp` parameter in the URL).
+        returns a preview-only .3mf. The signed URL is valid for ~5 minutes
+        (`exp`/`at` parameters in the URL).
 
-        Response shape: `{"name": "<title>.3mf", "url": "https://makerworld.bblmw.com/...?exp=...&key=..."}`
+        Response shape: `{"name": "<title>.3mf", "url": "https://makerworld.bblmw.com/...?at=...&exp=..."}`
 
-        Captcha bypass: if `~/.x2d/handy_token.json` exists (captured via
-        runtime/handy_extract/capture_f3mf_token.py), its auth headers
-        are merged into the request. This bypasses Bambu's 418-captcha
-        rate-limit by replaying the SHIELD-baked token Handy uses.
+        Robot wall (verified 2026-06-09 by hooking the live Handy app's
+        BoringSSL SSL_write — see runtime/handy_extract/): this endpoint is
+        gated by a GeeTest v4 behavioural captcha keyed on a per-account+IP
+        ROBOT SCORE, NOT on any request header. A low-score caller gets 200
+        directly; identity headers are irrelevant (`slicer` and Handy `app`
+        behave identically). A high-score caller (after ~10 quick downloads, or
+        any bot-like burst) gets HTTP 418 `{code:1, captchaId, error}` — raised
+        here as `CaptchaRequired(.captcha_id)`. The genuine Handy app hits the
+        SAME wall and pops a GeeTest challenge for the user to solve. To clear
+        it non-interactively the caller must solve GeeTest v4 for that
+        captchaId and pass `captcha_result` = base64(JSON
+        {captcha_id, lot_number, captcha_output, pass_token, gen_time}) — sent
+        as the X-BBL-Captcha-Result header; it is single-use. No header trick
+        avoids the wall; the only free mitigation is to keep the score low
+        (cache locally, don't poll).
         """
-        from pathlib import Path as _P
-        token_file = _P.home() / ".x2d" / "handy_token.json"
-        extra_headers: dict[str, str] = {}
-        if token_file.is_file():
-            try:
-                td = json.loads(token_file.read_text())
-                # Skip if older than 30 min — Handy tokens rotate quickly.
-                age = time.time() - float(td.get("captured_at", 0))
-                if age < 1800:
-                    extra_headers.update(td.get("headers", {}))
-            except Exception:                                  # noqa: BLE001
-                pass
         path = f"/v1/design-service/instance/{instance_id}/f3mf?type={kind}"
-        if extra_headers:
-            # Bypass _authed_get to inject extra headers alongside our Bearer.
-            self._ensure_fresh()
-            url = REGIONS[self.session.region]["iot"] + path
-            hdrs = {"Authorization": f"Bearer {self.session.access_token}"}
-            hdrs.update(extra_headers)
+        self._ensure_fresh()
+        url = REGIONS[self.session.region]["iot"] + path
+        hdrs = {"Authorization": f"Bearer {self.session.access_token}"}
+        if captcha_result:
+            hdrs["X-BBL-Captcha-Result"] = captcha_result
+        try:
             return _request("GET", url, headers=hdrs)
-        return self._authed_get(path)
+        except CloudError as e:
+            if e.status == 418:
+                cid = ""
+                try:
+                    cid = json.loads(e.body).get("captchaId", "")
+                except Exception:                              # noqa: BLE001
+                    pass
+                raise CaptchaRequired(
+                    f"/f3mf GeeTest robot wall for instance {instance_id} "
+                    f"(captchaId={cid or '?'}); solve GeeTest v4 and retry via "
+                    f"captcha_result", captcha_id=cid, body=e.body) from e
+            raise
 
     def pull_design_3mf(self, design_id: int | str, dest_dir: Path | str,
-                        instance_index: int = 0) -> Path:
+                        instance_index: int = 0,
+                        captcha_result: str | None = None) -> Path:
         """Convenience: given a MakerWorld designId, locate its default
         instance (or instance #instance_index), resolve its signed
-        download URL, and `urlretrieve` the .3mf to `dest_dir/<title>.3mf`.
+        download URL, and download the .3mf to `dest_dir/<title>.3mf`.
 
-        Returns the Path of the downloaded file. Raises CloudError on
-        any HTTP failure.
+        Returns the Path of the downloaded file. Raises CloudError on any
+        HTTP failure, or `CaptchaRequired` if the robot wall is up.
 
-        Note on rate-limiting: Bambu's f3mf endpoint triggers an
-        anti-bot captcha challenge (HTTP 418 with `captchaId` in the
-        body) after roughly 10 programmatic downloads from the same
-        IP in a short window. Real BS Studio + Handy don't hit this
-        because they typically only download 1-2 bundles per session
-        and humans solve captchas in the GUI. For now there's no
-        non-interactive workaround — the caller should cache locally
-        and avoid repeated downloads. If you hit 418, wait ~hour or
-        log in via the Bambu Studio GUI which clears the flag."""
+        Rate-limiting / captcha: Bambu's /f3mf endpoint is gated by a GeeTest
+        v4 captcha keyed on a per-account+IP robot score — it 418s after
+        roughly 10 quick programmatic downloads from one IP (the genuine Handy
+        app hits the same wall and the user solves it in the GUI). There is no
+        header that avoids it (verified — see get_instance_download_url). The
+        free mitigation is to cache locally and not poll; otherwise solve
+        GeeTest v4 and pass `captcha_result` through. Verified end-to-end:
+        a low-score call returns a real multi-MB .3mf zip."""
         d = self.get_design(design_id)
         instances = d.get("instances") or []
         if not instances:
@@ -1005,7 +939,7 @@ class CloudClient:
         inst_id = chosen.get("id")
         if not inst_id:
             raise CloudError(f"instance for design {design_id} missing id field")
-        meta = self.get_instance_download_url(inst_id)
+        meta = self.get_instance_download_url(inst_id, captcha_result=captcha_result)
         url = meta.get("url")
         name = meta.get("name") or f"design_{design_id}.3mf"
         if not url:

@@ -419,18 +419,35 @@ For-You feed, and — on Prepare-to-Print → 3D-preview — the target:
 
 Replayed from the workstation → **200**, returning
 `{"name":"…3mf","url":"<presigned makerworld.bblmw.com link>"}`; following the
-url downloaded the real **2.84 MB .3mf** (`PK\x03\x04`). Captcha bypassed.
+url downloaded the real **.3mf** (`PK\x03\x04`).
 
-**The crux: the HTTP 418 robot wall is keyed on the client-identity headers, NOT
-the token.** The *same* valid Bearer token:
-- with `x-bbl-client-type: app` / `x-bbl-client-name: BambuHandy` → **200**;
-- with OrcaSlicer's `x-bbl-client-type: slicer` → **418** "confirm you are not a
-  robot".
+**The crux (verified, after a wrong first guess): the HTTP 418 is a GeeTest v4
+captcha keyed on a per-account+IP ROBOT SCORE — NOT on request headers.** A
+controlled 2×2 (token × headers, same instance, back-to-back, while the score
+was low) settled it:
 
-So beambam's own refreshable cloud token already works for /f3mf — it just has
-to present the **Handy app identity**. Wired into `cloud_client.py` as
-`HANDY_HEADERS` + `get_instance_f3mf()` / `download_instance_3mf()`. Caveat: the
-wall is also per-egress-IP and probabilistic — one `slicer`-typed hit or a burst
-trips a flag that 418s even app requests until it decays, so call it sparingly,
-never poll. The Zygisk capture rig was the means; the durable result is the
-header recipe.
+| token | headers | result |
+|-------|---------|--------|
+| cloud_session | OrcaSlicer (`slicer`) | **200** |
+| cloud_session | Handy (`app`)         | **200** |
+| Handy         | OrcaSlicer            | **200** |
+| cloud_session | auth only (no x-bbl)  | 403    |
+
+`slicer` vs `app` makes no difference — my earlier "client-type is the bypass"
+claim was a temporal confound (the 418s I'd compared against happened *after* my
+probing had already raised the score). The genuine Handy app hits the SAME wall:
+when walled it pops a GeeTest challenge, the user solves it, and the app retries
+/f3mf with header `x-bbl-captcha-result` = base64(JSON
+`{captcha_id, lot_number, captcha_output, pass_token, gen_time}`) — the exact
+GeeTest v4 validation object (captured live from the app's post-captcha retry).
+The result is single-use.
+
+So beambam's **existing** cloud token + standard headers already download /f3mf
+when the score is low — no header trick needed. Verified end-to-end through
+beambam's own `CloudClient.get_instance_download_url()` → a real **9.5 MB .3mf**
+(valid zip, 30 entries). The score rises after ~10 quick programmatic downloads
+from one IP; the only free mitigation is to cache locally and not poll. For the
+walled case, `get_instance_download_url(..., captcha_result=…)` forwards a solved
+GeeTest token, and a 418 is surfaced as `CaptchaRequired(.captcha_id)`. The
+Zygisk capture rig was the means; the durable result is *understanding* the wall
+(GeeTest score-gate), not a header.
