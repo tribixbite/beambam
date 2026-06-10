@@ -2,8 +2,22 @@
 
 **Objective:** let `beambam` issue printer-control commands (start/stop/skip/
 filament/live-view). Reading is solved (cloud status + `/f3mf` model downloads).
-Control is gated by an **RSA-SHA256 signature the printer verifies** and we can't
-yet produce. This is the whole problem.
+Control is gated by an **RSA-SHA256 signature the printer verifies**.
+
+**STATUS 2026-06-10: the signing SCHEME is fully reverse-engineered offline (no
+device needed) and verified — the ONLY missing input is the app's private key.**
+The signed pre-image is the message body **minus** the header:
+`{"<family>":<command>,"user_id":"<uid>"}` (compact JSON, family key first),
+SHA-256 → **RSA-PKCS#1-v1.5** (2048-bit). Proof: all 11 captured Handy signatures
+verify against the app cert's public key with exactly this pre-image (see
+`tests/test_mqtt_sign.py`, the real `print.stop` vector). `cert_id` =
+`<appCertSerialHex>CN=GLOF<printerSerial>.bambulab.com` (the hex blob is the X.509
+serial, NOT a digest). `payload_len` = `len(pre-image)`. The whole construction +
+verification is implemented in **`beambam/mqtt_sign.py`** (`signed_message()` /
+`verify_message()` / `key_signer()`), plug-and-play once you supply a `Signer` (a
+loaded RSA key, or an oracle proxying to a running Handy). **So the remaining
+problem is narrowly: obtain the private key OR a signing oracle. Everything else
+is done.**
 
 ## The wall (all verified live, 2026-06-09/10)
 
@@ -70,29 +84,32 @@ signer is one of:
 3. **SHIELD whitebox** (`/data/data/bbl.intl.bambulab.com/files/.ss/l6a18f19c.so`,
    Promon) — designed to resist key extraction.
 
-## Concrete next experiments (in rough priority)
+## What's left: ONLY the private key (or an oracle). Concrete next experiments
 
-1. **Distinguish Dart-vs-Go quickly.** Add a Zygisk hook on libgojni's
-   `crypto/rsa` sign (resolve via Go pclntab — Go keeps func names; find
-   `crypto/rsa.signPKCS1v15` / `(*PrivateKey).Sign` / the FIPS
-   `crypto/internal/fips140/rsa` path). Mind the **Go register ABI** (args in
-   x0.. for Go 1.17+; libgojni is recent Go — `crypto/internal/fips140` implies
-   Go ≥1.24). If it fires on a control-command sign → key is a Go big.Int slice,
-   walk it. If it never fires → it's pure-Dart (go to 3).
-2. **Catch the SHA-256 over the pre-image.** Whatever lib signs, it first hashes
-   `(command-json + 33 bytes)`. Hook `SHA256_Update`/`EVP_DigestUpdate` in
-   *every* mapped libcrypto (conscrypt/art/system are exported, hook by NAME; the
-   33-byte tail is the prize) to recover the exact signed pre-image even if you
-   never get the key — useful for an oracle and for verifying any forged sig.
-3. **Dart-heap / AOT attack (if pure-Dart).** No native call to intercept. Options:
-   scrape the Dart heap for the `RSAPrivateKey` (n,d,p,q as Dart BigInts —
-   understand the AOT object layout), or instrument the Dart VM. Very hard.
-4. **Signing oracle instead of key.** If you can hook *whatever* produces
-   `sign_string` (Go func, or a Dart FFI entry), expose it over a unix socket so
-   beambam asks the running Handy to sign its own payloads. Doesn't need the raw
-   key; needs Handy alive + the right hook point (same discovery problem).
-5. **Re-confirm hook installs (sanity).** SSL_write proves A64HookFunction +
-   offsets work in libflutter, so the "0 fires" is real, not a broken hook.
+The pre-image/hash/padding/cert_id/header are SOLVED (above) — `beambam/mqtt_sign.py`
+already builds wire-ready messages given a `Signer`. So the remaining work is just
+to produce the RSA signature:
+
+1. **Signing oracle (most promising — doesn't need the raw key).** Hook *whatever*
+   produces `sign_string` inside the running Handy and expose it over a unix
+   socket: beambam sends the pre-image bytes, the hook signs with the app's key,
+   returns the sig. We KNOW the pre-image now, so even hooking a high-level entry
+   (a Dart FFI trampoline, or the Go sign) as a black box suffices — no key
+   materialisation needed.
+2. **Distinguish Dart-vs-Go to find that hook point.** Add a Zygisk hook on
+   libgojni's `crypto/rsa` sign (resolve via Go pclntab — Go keeps func names;
+   `crypto/internal/fips140/rsa` is present → Go ≥1.24, register ABI). If it fires
+   on a control-command sign → it's Go: extract the Go `*rsa.PrivateKey` big.Ints
+   OR oracle it. If it never fires → pure-Dart (go to 3).
+3. **Dart-heap / AOT attack (if pure-Dart).** No native call to intercept. Either
+   scrape the Dart heap for the `RSAPrivateKey` (d,n,p,q as Dart BigInts — learn
+   the AOT object layout) or instrument the Dart VM. Hardest path.
+4. **Verify any candidate offline instantly.** You have the app cert pubkey;
+   `mqtt_sign.verify_message()` (or `pow(sig,e,n)`) checks a produced signature
+   without touching the printer. Use this to validate an oracle/key the moment you
+   have one.
+
+Note: the SHA-256-preimage hook idea is now MOOT — the pre-image is known exactly.
 
 ## Tooling already built (reuse, don't rebuild)
 
