@@ -4,8 +4,26 @@
 filament/live-view). Reading is solved (cloud status + `/f3mf` model downloads).
 Control is gated by an **RSA-SHA256 signature the printer verifies**.
 
-**STATUS 2026-06-10: the signing SCHEME is fully reverse-engineered offline (no
-device needed) and verified — the ONLY missing input is the app's private key.**
+**STATUS 2026-06-10: SOLVED — beambam can command the printer.** The signing
+scheme is reverse-engineered AND the private key is recovered AND the live printer
+accepts beambam's signatures (signed `print.pause` → `reason:"ERROR STATE"`, i.e.
+it passed verification, vs unsigned → `"mqtt message verify failed"`).
+
+How the key was recovered (no Frida, no hooking — `extract_signing_key.py`): the
+signing is **pure Dart** (not libflutter BoringSSL — hooks never fired; not
+libgojni — that's the OpenIM chat SDK), so the RSA key is a Dart object and its
+primes p,q sit in the Dart heap as little-endian Uint32List digit arrays. We KNOW
+the modulus n (from the app cert), so we dump Handy's anon-rw heap regions and scan
+4-byte-aligned 128-byte windows for one that DIVIDES n → that's a prime factor →
+full private key. Found it in the 140 MB Dart heap; the reconstructed key
+reproduces a real captured signature bit-for-bit. Key saved to
+`~/.x2d/printer_sign_key.pem`, cert_id to `~/.x2d/printer_cert_id.txt`. Use via
+`beambam.cloud_control.CloudPrinter.from_config(...)`.
+
+Historical record of how we got here follows.
+
+---
+**(superseded) earlier status: scheme reversed, key still missing —**
 The signed pre-image is the message body **minus** the header:
 `{"<family>":<command>,"user_id":"<uid>"}` (compact JSON, family key first),
 SHA-256 → **RSA-PKCS#1-v1.5** (2048-bit). Proof: all 11 captured Handy signatures
