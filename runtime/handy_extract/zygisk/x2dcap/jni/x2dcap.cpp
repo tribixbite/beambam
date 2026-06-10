@@ -90,11 +90,22 @@ static const unsigned char FLUTTER_SSL_WRITE_SIG[8] = {
 // (n/e/d/p/q) is written hex to x2d_rsa.txt for offline PKCS#8 reconstruction.
 static const uintptr_t FLUTTER_EVP_PKEY_SIGN_VADDR     = 0x6eabcc;
 static const uintptr_t FLUTTER_EVP_DIGESTSIGNFINAL_VADDR = 0x6d1b04;
+// Handy SHA-256s the payload itself and calls the raw RSA path (not the EVP
+// digest-sign API), so the always-hit target is the core private transform —
+// rsa_private_transform_no_self_test(RSA *rsa, …): RSA* is arg0 directly. And if
+// the key is loaded from DER, RSA_parse_private_key's CBS arg0 IS the key.
+static const uintptr_t FLUTTER_RSA_PRIV_TRANSFORM_VADDR = 0x6d9a68;
+static const uintptr_t FLUTTER_RSA_PARSE_PRIVKEY_VADDR  = 0x6f5fb8;
 typedef int (*evp_pkey_sign_t)(void *ctx, unsigned char *sig, size_t *siglen,
                                const unsigned char *tbs, size_t tbslen);
 typedef int (*evp_digestsignfinal_t)(void *ctx, unsigned char *sig, size_t *siglen);
+typedef int (*rsa_priv_transform_t)(void *rsa, unsigned char *out,
+                                    const unsigned char *in, size_t len);
+typedef void *(*rsa_parse_privkey_t)(void *cbs);
 static evp_pkey_sign_t g_orig_evp_pkey_sign = nullptr;
 static evp_digestsignfinal_t g_orig_evp_digestsignfinal = nullptr;
+static rsa_priv_transform_t g_orig_rsa_priv_transform = nullptr;
+static rsa_parse_privkey_t g_orig_rsa_parse_privkey = nullptr;
 static int g_sign_calls = 0;     // diagnostic: how many times the signer fired
 static int g_key_dumped = 0;
 
@@ -423,17 +434,50 @@ static int my_evp_digestsignfinal(void *mdctx, unsigned char *sig, size_t *sigle
   return g_orig_evp_digestsignfinal(mdctx, sig, siglen);
 }
 
+// The core RSA private-key op — arg0 IS the RSA*. Hit by every sign/decrypt, so
+// this catches the raw-RSA signing path the EVP entry points miss.
+static int my_rsa_priv_transform(void *rsa, unsigned char *out,
+                                 const unsigned char *in, size_t len) {
+  g_sign_calls++;
+  dump_rsa(rsa);
+  if (g_sign_calls <= 12) LOGI("rsa_private_transform #%d dumped=%d",
+                               g_sign_calls, g_key_dumped);
+  return g_orig_rsa_priv_transform(rsa, out, in, len);
+}
+
+// RSA_parse_private_key(CBS *cbs) — if the key is loaded from DER, cbs->data is
+// the full PKCS#1 RSA private key. CBS { const uint8_t *data; size_t len; }.
+static void *my_rsa_parse_privkey(void *cbs) {
+  if (!g_key_dumped && cbs != nullptr) {
+    uintptr_t data; size_t len;
+    if (safe_read(&data, cbs, 8) && safe_read(&len, (char *) cbs + 8, 8) &&
+        data > 0x1000 && len >= 64 && len <= 4096) {
+      static unsigned char der[4096];
+      if (safe_read(der, (void *) data, len)) {
+        append_file("x2d_rsa_der.bin", (const char *) der, (int) len);
+        g_key_dumped = 1;
+        marker("x2d-zygisk RSA_DER_CAPTURED");
+      }
+    }
+  }
+  return g_orig_rsa_parse_privkey(cbs);
+}
+
 static bool hook_flutter_signer() {
   flutter_find ff = {0};
   dl_iterate_phdr(flutter_phdr_cb, &ff);
   if (ff.bias == 0) return false;
   void *ps = (void *) (ff.bias + FLUTTER_EVP_PKEY_SIGN_VADDR);
   void *ds = (void *) (ff.bias + FLUTTER_EVP_DIGESTSIGNFINAL_VADDR);
+  void *pt = (void *) (ff.bias + FLUTTER_RSA_PRIV_TRANSFORM_VADDR);
+  void *pp = (void *) (ff.bias + FLUTTER_RSA_PARSE_PRIVKEY_VADDR);
   unsigned char probe[4];
-  if (!safe_read(probe, ps, 4) || !safe_read(probe, ds, 4)) return false;
+  if (!safe_read(probe, pt, 4)) return false;
   A64HookFunction(ps, (void *) my_evp_pkey_sign, (void **) &g_orig_evp_pkey_sign);
   A64HookFunction(ds, (void *) my_evp_digestsignfinal, (void **) &g_orig_evp_digestsignfinal);
-  LOGI("hooked FLUTTER signer EVP_PKEY_sign @ %p EVP_DigestSignFinal @ %p", ps, ds);
+  A64HookFunction(pt, (void *) my_rsa_priv_transform, (void **) &g_orig_rsa_priv_transform);
+  A64HookFunction(pp, (void *) my_rsa_parse_privkey, (void **) &g_orig_rsa_parse_privkey);
+  LOGI("hooked FLUTTER signer: rsa_private_transform @ %p RSA_parse_private_key @ %p", pt, pp);
   marker("x2d-zygisk SIGNER_HOOKS_INSTALLED");
   return true;
 }
