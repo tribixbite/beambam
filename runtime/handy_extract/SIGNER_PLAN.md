@@ -55,7 +55,42 @@ via And64InlineHook at `flutter_base + vaddr`):
    sign_string, cert_id}` to `beambam/printer.py` / `print_job.py` publishes over
    the cloud broker (`u_<uid>`/token → `device/<serial>/request`).
 
-## Build note (why this isn't done yet)
+## UPDATE 2026-06-10: the signer is NOT in libflutter BoringSSL — it's in Dart
+
+Built + deployed the libflutter signer hooks (EVP_PKEY_sign, EVP_DigestSignFinal,
+rsa_private_transform_no_self_test @ 0x6d9a68, RSA_parse_private_key @ 0x6f5fb8 —
+same dl_iterate_phdr+offset mechanism that makes the SSL_write hook work). Tested
+live: Handy sent **6 RSA-signed commands** (`get_access_code`, `liveview.prepare`)
+and **not one hook fired**. SSL_write in the same lib captures fine, so the hooks
+install correctly — the signing simply does not go through libflutter's BoringSSL.
+
+Where it is instead (narrowed, not yet pinned):
+- The signing strings (`sign_alg`/`sign_string`/`RSA_SHA256`/`app_cert_install`)
+  are absent as plain C strings from libgojni.so, libflutter.so, AND libapp.so —
+  but libapp.so is the **Dart AOT snapshot**, which stores strings in its own pool
+  invisible to `strings`. So the command construction + signing lives in **Dart
+  app code** (libapp.so).
+- Handy IS Flutter; its IoT SDK ships a 19.8 MB Go lib (libgojni.so, contains
+  `crypto/rsa`) and the SHIELD whitebox (`.ss/l6a18f19c.so`). The Dart signer is
+  therefore one of: (a) **pure-Dart RSA** (e.g. pointycastle — BigInt arithmetic,
+  NO native crypto call, key is a Dart object); (b) Dart→**Go FFI** into libgojni's
+  `crypto/rsa` (key is a Go `*rsa.PrivateKey`); (c) SHIELD whitebox.
+
+Implications:
+- (a) pure-Dart is effectively **unreachable by native (Zygisk) hooks** — there is
+  no EVP/RSA native call to intercept; extraction would need AOT-Dart
+  instrumentation or Dart-heap scraping of the `RSAPrivateKey` object (very hard).
+- (b) Go is hookable but a separate, deeper effort: find the `crypto/rsa` sign in
+  libgojni's pclntab, hook with the Go ABI, walk Go `big.Int`s. Uncertain it's even
+  the path.
+- (c) whitebox is designed to resist exactly this.
+
+Net: the native-BoringSSL signer-extraction approach is a **dead end**; further
+progress needs a Dart-layer or Go-layer attack, both substantially harder and of
+uncertain payoff. beambam remains fully **read-capable** (cloud status, /f3mf
+model downloads) but cannot command the printer without the Dart-held signing key.
+
+## Build note (historical)
 
 Deploying the new module `.so` needs a **full reboot** (zygiskd caches modules at
 boot), which on this device also corrupts Handy's launcher (needs the
