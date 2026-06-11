@@ -1188,6 +1188,125 @@ def build_cloud_project_file(
     }
 
 
+DEFAULT_TASK_PARAMS_PATH = "~/.x2d/printer_last_task.json"
+
+
+def normalize_task_params(task: dict, detail: dict | None = None) -> dict:
+    """Flatten a Bambu cloud task record (from `get_user_tasks`) plus optional
+    `get_task` detail into a stable print-params dict — the durable capture of
+    "what this print was". Cloud-slice jobs (MakerWorld) carry their sliced
+    artifacts under the detail's `context` (`prefix` / `configs` URLs /
+    `materials` / `plate`), which is what a reprint would re-reference; the raw
+    records are retained verbatim under `raw_*` so nothing is lost."""
+    ctx = (detail or {}).get("context", {}) if isinstance(detail, dict) else {}
+    content = {}
+    if isinstance(detail, dict):
+        raw_content = detail.get("content")
+        if isinstance(raw_content, str):
+            try:
+                content = json.loads(raw_content)
+            except Exception:                              # noqa: BLE001
+                content = {}
+        elif isinstance(raw_content, dict):
+            content = raw_content
+    return {
+        "task_id":           task.get("id") or (detail or {}).get("job_id"),
+        "title":             task.get("title") or task.get("designTitle"),
+        "design_id":         task.get("designId"),
+        "model_id":          task.get("modelId"),
+        "profile_id":        task.get("profileId"),
+        "instance_id":       task.get("instanceId"),
+        "device_id":         task.get("deviceId"),
+        "device_model":      task.get("deviceModel"),
+        "bed_type":          task.get("bedType"),
+        "plate_index":       task.get("plateIndex"),
+        "use_ams":           task.get("useAms"),
+        "ams_mapping":       task.get("amsMapping"),
+        "ams_mapping2":      task.get("amsMapping2"),
+        "ams_detail_mapping": task.get("amsDetailMapping"),
+        "skip_objects":      task.get("skipObjects"),
+        "job_type":          task.get("jobType"),
+        "mode":              task.get("mode"),
+        "weight":            task.get("weight"),
+        "cost_time":         task.get("costTime"),
+        "repetitions":       task.get("repetitions"),
+        "materials":         ctx.get("materials"),
+        "prefix":            ctx.get("prefix"),
+        "configs":           ctx.get("configs"),
+        "plate":             ctx.get("plate"),
+        "info":              content.get("info"),
+        "raw_task":          task,
+        "raw_detail_context": ctx or None,
+    }
+
+
+def cmd_capture_params(args: argparse.Namespace) -> int:
+    """Capture the current / most-recent print's parameters from the Bambu
+    cloud and save them to ~/.x2d/printer_last_task.json (override with
+    --out). With --task-id, capture that specific task; otherwise the latest.
+
+    This is the robust "capture print params" path — it reads the cloud task
+    record (no Handy MQTT capture, no captcha-gated download) so the full
+    print config (plate / bed / AMS mapping / materials / cloud-slice artifact
+    URLs) is recorded for audit and as a basis for re-printing."""
+    import os
+    import time
+    from pathlib import Path
+    import cloud_client
+
+    cli = cloud_client.CloudClient.load_or_anonymous()
+    if cli.session.empty:
+        print("not logged in — run `beambam cloud-login` first", file=sys.stderr)
+        return 1
+
+    task_id = getattr(args, "task_id", None)
+    try:
+        if task_id:
+            tasks = [t for t in cli.get_user_tasks(limit=50)
+                     if str(t.get("id")) == str(task_id)]
+            if not tasks:
+                tasks = [{"id": task_id}]      # fall back to detail-only record
+        else:
+            tasks = cli.get_user_tasks(limit=1)
+    except Exception as e:                                # noqa: BLE001
+        print(f"[capture-params] task list failed: {e}", file=sys.stderr)
+        return 1
+    if not tasks:
+        print("[capture-params] no tasks on this account yet", file=sys.stderr)
+        return 2
+    task = tasks[0]
+
+    detail = None
+    try:
+        detail = cli.get_task(task["id"])
+    except Exception as e:                                # noqa: BLE001
+        print(f"[capture-params] task detail unavailable ({e}); saving the "
+              f"list record only", file=sys.stderr)
+
+    params = normalize_task_params(task, detail)
+    params["captured_at"] = int(time.time())
+
+    out = Path(os.path.expanduser(
+        getattr(args, "out", None) or DEFAULT_TASK_PARAMS_PATH))
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps(params, indent=2))
+    try:
+        out.chmod(0o600)
+    except OSError:
+        pass
+    print(json.dumps({
+        "saved": str(out),
+        "task_id": params["task_id"],
+        "title": params["title"],
+        "device": params["device_id"],
+        "bed_type": params["bed_type"],
+        "plate_index": params["plate_index"],
+        "use_ams": params["use_ams"],
+        "mode": params["mode"],
+    }, indent=2))
+    return 0
+
+
 def cmd_cloud_print(args: argparse.Namespace) -> int:
     """Submit a complete cloud-mediated print job:
        1. Upload the .gcode.3mf to Bambu's OSS via the upload-token API.

@@ -189,6 +189,7 @@ from beambam.cli.cloud import (
     cmd_cloud_pull_design, cmd_cloud_print_design,
     cmd_cloud_start_print, cmd_cloud_task_export,
     cmd_printables_search, cmd_print_search,
+    cmd_capture_params,
 )
 from beambam.cli.info import (
     cmd_status, cmd_printers, cmd_health, cmd_watch, cmd_tail,
@@ -750,6 +751,17 @@ def main() -> int:
     cli_print.add_argument("--timeout", type=float, default=30.0,
                            help="Seconds to wait for broker ack (default 30).")
     cli_print.set_defaults(fn=cmd_cloud_print)
+
+    cli_cap = sub.add_parser(
+        "capture-params",
+        help="Capture the current / latest print's params from the Bambu "
+             "cloud (plate / bed / AMS / materials / artifact URLs) → "
+             "~/.x2d/printer_last_task.json.")
+    cli_cap.add_argument("--task-id",
+                         help="Capture this specific task id (default: latest)")
+    cli_cap.add_argument("--out",
+                         help="Output path (default ~/.x2d/printer_last_task.json)")
+    cli_cap.set_defaults(fn=cmd_capture_params)
 
     # Cloud convenience commands — same flag style as the LAN versions
     # (pause/resume/stop/gcode/chamber-light) but route through the

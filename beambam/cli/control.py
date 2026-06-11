@@ -493,10 +493,18 @@ def cmd_start(args: argparse.Namespace) -> int:
     from pathlib import Path
     pf = Path.home() / ".x2d" / "printer_project_file.json"
     if not pf.is_file():
-        print(f"[start] printer is {gs or 'idle'}: no paused job to resume, and "
-              f"print-again needs a captured project_file at {pf}.\n"
-              f"        Capture one: start a print in Handy while x2dcap is "
-              f"running, then decode the print.project_file MQTT publish.",
+        last = Path.home() / ".x2d" / "printer_last_task.json"
+        hint = (f"        Last print's params are recorded at {last} "
+                f"(run `beambam capture-params`).\n" if last.is_file()
+                else f"        Run `beambam capture-params` to record the last "
+                     f"print's params first.\n")
+        # TODO: reconstruct a cloud-slice reprint project_file from
+        # printer_last_task.json (context.prefix/configs URLs) — needs the
+        # reprint body verified against a real printer before enabling.
+        print(f"[start] printer is {gs or 'idle'}: no paused job to resume, no "
+              f"queued job, and print-again needs a captured project_file at "
+              f"{pf}.\n{hint}"
+              f"        (Or queue a .gcode.3mf: `beambam queue add FILE`.)",
               file=sys.stderr)
         return 2
     try:
