@@ -177,7 +177,7 @@ from beambam.cli.control import (
     cmd_home, cmd_level, cmd_set_temp, cmd_chamber_light,
     cmd_reboot, cmd_jog, cmd_record, cmd_timelapse, cmd_resolution,
     cmd_fod_check, cmd_ams_load, cmd_ams_unload,
-    cmd_start, cmd_key,
+    cmd_start, cmd_key, cmd_skip,
 )
 from beambam.cli.cloud import (
     cmd_cloud_login, cmd_cloud_status, cmd_cloud_printers,
@@ -319,6 +319,13 @@ def main() -> int:
     sp = sub.add_parser("stop", help="Abort current print (cloud-signed)")
     sp.add_argument("--lan", action="store_true", help="force the LAN publish path")
     sp.set_defaults(fn=cmd_stop)
+
+    sk = sub.add_parser("skip", help="Skip objects on the running print "
+                                     "(print.skip_objects; cloud-signed)")
+    sk.add_argument("obj_ids", nargs="+", type=int,
+                    help="per-plate object id(s) to skip")
+    sk.add_argument("--lan", action="store_true", help="force the LAN publish path")
+    sk.set_defaults(fn=cmd_skip)
 
     sa = sub.add_parser("start", help="Smart start: resume paused print, else print again (ranked)")
     sa.add_argument("--lan", action="store_true", help="force the LAN publish path")

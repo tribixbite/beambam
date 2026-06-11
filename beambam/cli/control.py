@@ -133,6 +133,15 @@ def cmd_stop(args: argparse.Namespace) -> int:
     return _publish(args, _print_cmd("stop", param=""))
 
 
+def cmd_skip(args: argparse.Namespace) -> int:
+    """Skip one or more objects on the RUNNING print (`print.skip_objects`).
+    OBJ_IDS are the per-plate object ids (from the sliced .gcode.3mf). Routes
+    cloud-signed on X-series firmware; `--lan` forces the LAN publish."""
+    from beambam.cli._helpers import _print_cmd
+    obj_list = [int(x) for x in args.obj_ids]
+    return _publish(args, _print_cmd("skip_objects", obj_list=obj_list))
+
+
 def cmd_gcode(args: argparse.Namespace) -> int:
     # MachineObject::publish_gcode — DeviceManager.cpp:3645
     from beambam.cli._helpers import _print_cmd

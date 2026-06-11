@@ -80,3 +80,33 @@ def test_cmd_pause_routes_to_cloud_signed(monkeypatch, tmp_path):
     rc = control.cmd_pause(argparse.Namespace())
     assert rc == 0
     assert captured["call"] == ("print", {"command": "pause", "param": ""})
+
+
+def test_cmd_skip_routes_to_cloud_signed(monkeypatch, tmp_path):
+    """`beambam skip 3 7` → signed print.skip_objects with obj_list=[3,7]."""
+    import types, argparse
+    from beambam.cli import control
+    keyp = tmp_path / "k.pem"
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    from cryptography.hazmat.primitives import serialization
+    keyp.write_bytes(key.private_bytes(serialization.Encoding.PEM,
+        serialization.PrivateFormat.PKCS8, serialization.NoEncryption()))
+    monkeypatch.delenv("X2D_FORCE_LAN", raising=False)
+    monkeypatch.setattr(control, "_signing_key_path", lambda: keyp)
+    sess = types.SimpleNamespace(empty=False, user_id="u")
+    fake_cc = types.SimpleNamespace(
+        CloudClient=types.SimpleNamespace(load_or_anonymous=lambda: types.SimpleNamespace(session=sess)))
+    monkeypatch.setitem(__import__("sys").modules, "cloud_client", fake_cc)
+    monkeypatch.setattr(control._config.Creds, "resolve",
+                        classmethod(lambda cls, a: types.SimpleNamespace(serial="S1", ip=None)))
+    captured = {}
+    class _CP:
+        @classmethod
+        def from_config(cls, *a, **k): return cls()
+        def command(self, fam, cmd, **k): captured["call"] = (fam, cmd); return {"result": "SUCCESS"}
+    import beambam.cloud_control as ccmod
+    monkeypatch.setattr(ccmod, "CloudPrinter", _CP)
+    rc = control.cmd_skip(argparse.Namespace(obj_ids=[3, 7]))
+    assert rc == 0
+    assert captured["call"] == ("print", {"command": "skip_objects",
+                                          "obj_list": [3, 7]})
