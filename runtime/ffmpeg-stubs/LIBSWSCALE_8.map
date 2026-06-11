@@ -1,0 +1,7 @@
+LIBSWSCALE_8 {
+  global:
+    sws_freeContext;
+    sws_getCachedContext;
+    sws_scale;
+  local: *;
+};

@@ -1,0 +1,14 @@
+LIBAVCODEC_61 {
+  global:
+    av_new_packet;
+    av_packet_alloc;
+    av_packet_free;
+    av_packet_unref;
+    avcodec_alloc_context3;
+    avcodec_find_decoder;
+    avcodec_free_context;
+    avcodec_open2;
+    avcodec_receive_frame;
+    avcodec_send_packet;
+  local: *;
+};

@@ -1,0 +1,6 @@
+LIBAVUTIL_59 {
+  global:
+    av_frame_alloc;
+    av_frame_free;
+  local: *;
+};
