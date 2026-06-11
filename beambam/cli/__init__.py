@@ -177,6 +177,7 @@ from beambam.cli.control import (
     cmd_home, cmd_level, cmd_set_temp, cmd_chamber_light,
     cmd_reboot, cmd_jog, cmd_record, cmd_timelapse, cmd_resolution,
     cmd_fod_check, cmd_ams_load, cmd_ams_unload,
+    cmd_start, cmd_key,
 )
 from beambam.cli.cloud import (
     cmd_cloud_login, cmd_cloud_status, cmd_cloud_printers,
@@ -305,14 +306,29 @@ def main() -> int:
     d.set_defaults(fn=cmd_daemon)
 
     # ----- print-control verbs -----------------------------------------
-    pa = sub.add_parser("pause", help="Signed MQTT publish: pause current print")
+    # These auto-route over the cloud broker with the recovered RSA signing key
+    # (X-series firmware rejects unsigned LAN print.*); pass --lan to force LAN.
+    pa = sub.add_parser("pause", help="Pause current print (cloud-signed; --lan to force LAN)")
+    pa.add_argument("--lan", action="store_true", help="force the LAN publish path")
     pa.set_defaults(fn=cmd_pause)
 
-    re_ = sub.add_parser("resume", help="Signed MQTT publish: resume current print")
+    re_ = sub.add_parser("resume", help="Resume current print (cloud-signed)")
+    re_.add_argument("--lan", action="store_true", help="force the LAN publish path")
     re_.set_defaults(fn=cmd_resume)
 
-    sp = sub.add_parser("stop", help="Signed MQTT publish: abort current print")
+    sp = sub.add_parser("stop", help="Abort current print (cloud-signed)")
+    sp.add_argument("--lan", action="store_true", help="force the LAN publish path")
     sp.set_defaults(fn=cmd_stop)
+
+    sa = sub.add_parser("start", help="Smart start: resume paused print, else print again (ranked)")
+    sa.add_argument("--lan", action="store_true", help="force the LAN publish path")
+    sa.set_defaults(fn=cmd_start)
+
+    ky = sub.add_parser("key", aliases=["token"],
+                        help="Recover the printer-control RSA signing key from a running Handy (Dart heap)")
+    ky.add_argument("--adb", help="phone adb serial ip:port (or env X2D_ADB)")
+    ky.add_argument("--cert", help="app cert PEM (default ~/.x2d/printer_app_cert.pem)")
+    ky.set_defaults(fn=cmd_key)
 
     rb = sub.add_parser(
         "reboot",

@@ -87,6 +87,7 @@ _ALIASES = {
     "upload":        "push",
     "download":      "pull",
     "camera":        "cam",   # historical, separate top-level for now
+    "token":         "key",
 }
 
 

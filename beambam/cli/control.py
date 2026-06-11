@@ -61,9 +61,57 @@ def _publish_one(args: argparse.Namespace, payload: dict) -> int:
     return 0
 
 
+def _signing_key_path():
+    """Path to the recovered printer-control RSA key (overridable for tests)."""
+    from pathlib import Path
+    return Path.home() / ".x2d" / "printer_sign_key.pem"
+
+
+def _try_cloud_signed(args: argparse.Namespace, payload: dict):
+    """If a recovered RSA signing key + a cloud session exist, publish `payload`
+    as a SIGNED command over the Bambu cloud broker — X-series firmware rejects
+    unsigned LAN `print.*` (`mqtt message verify failed`). Returns 0/1 when used,
+    or None to fall back to the LAN path. Forced off with X2D_FORCE_LAN=1 or
+    `--lan`, and skipped automatically when key/session/serial are absent."""
+    import os
+    if getattr(args, "lan", False) or os.environ.get("X2D_FORCE_LAN"):
+        return None
+    if not _signing_key_path().is_file():
+        return None
+    try:
+        import cloud_client
+        from beambam.cloud_control import CloudPrinter
+    except Exception:
+        return None
+    cli = cloud_client.CloudClient.load_or_anonymous()
+    if cli.session.empty:
+        return None
+    creds = _config.Creds.resolve(args)
+    serial = creds.serial or os.environ.get("X2D_SERIAL")
+    if not serial:
+        return None
+    family = next(iter(payload))
+    command = {k: v for k, v in payload[family].items()
+               if k not in ("sequence_id", "timestamp")}
+    try:
+        cp = CloudPrinter.from_config(cli, serial, key_path=_signing_key_path())
+        ack = cp.command(family, command)
+    except Exception as e:                                # noqa: BLE001
+        print(f"[cloud-signed] failed ({e}); falling back to LAN", file=sys.stderr)
+        return None
+    print(json.dumps({"transport": "cloud-signed",
+                      "command": f"{family}.{command.get('command')}",
+                      "ack": ack}, indent=2))
+    return 0
+
+
 def _publish(args: argparse.Namespace, payload: dict) -> int:
-    """Alias kept for the dozen handlers below that grew up calling
-    `_publish` instead of `_publish_one`."""
+    """Publish one control payload. Prefers the cloud-signed broker path when a
+    recovered RSA key + cloud session are present (LAN print.* is signature-
+    blocked on X-series firmware); otherwise the LAN `_publish_one` path."""
+    rc = _try_cloud_signed(args, payload)
+    if rc is not None:
+        return rc
     return _publish_one(args, payload)
 
 
@@ -300,3 +348,142 @@ def cmd_ams_load(args: argparse.Namespace) -> int:
         slot_id=slot_id,
     )
     return _publish(args, payload)
+
+
+# --- start (smart) + key (recover signer) --------------------------------
+
+def _cloud_printer_state(args: argparse.Namespace) -> dict:
+    """Best-effort current printer state via a cloud `pushall` (read-only,
+    unsigned). Returns {} if no cloud session / serial."""
+    import os
+    import ssl
+    import time
+    try:
+        import cloud_client
+        import paho.mqtt.client as mqtt
+    except Exception:
+        return {}
+    cli = cloud_client.CloudClient.load_or_anonymous()
+    if cli.session.empty:
+        return {}
+    cli._ensure_fresh()
+    serial = _config.Creds.resolve(args).serial or os.environ.get("X2D_SERIAL")
+    if not serial:
+        return {}
+    user, password = cli.mqtt_credentials()
+    uid = cli.session.user_id
+    got: dict = {}
+
+    def on_connect(c, d, f, rc, props=None):
+        c.subscribe(f"device/{serial}/report", qos=1)
+
+    def on_message(c, d, m):
+        try:
+            j = json.loads(m.payload).get("print", {})
+        except Exception:
+            return
+        for k in ("gcode_state", "subtask_id", "task_id", "subtask_name", "mc_percent"):
+            if isinstance(j, dict) and k in j:
+                got[k] = j[k]
+
+    c = mqtt.Client(client_id="bb-state", protocol=mqtt.MQTTv311)
+    c.username_pw_set(user, password)
+    c.tls_set_context(ssl.create_default_context())
+    c.on_connect = on_connect
+    c.on_message = on_message
+    c.connect(cli.mqtt_broker(), 8883, 30)
+    c.loop_start()
+    try:
+        time.sleep(1.5)
+        c.publish(f"device/{serial}/request",
+                  json.dumps({"user_id": uid,
+                              "pushing": {"sequence_id": "1", "command": "pushall",
+                                          "version": 1}}), qos=1)
+        deadline = time.time() + 5
+        while time.time() < deadline and "gcode_state" not in got:
+            time.sleep(0.1)
+    finally:
+        c.loop_stop()
+        c.disconnect()
+    return got
+
+
+def cmd_start(args: argparse.Namespace) -> int:
+    """Smart start, ranked: **resume** a paused print → **print again** (re-run
+    the last task). 'Print next in queue' is not yet wired (it needs a captured
+    `project_file` payload — run one print through Handy with the x2dcap capture
+    on, see runtime/handy_extract/SIGNER_HANDOFF.md). Use `--lan` to force LAN."""
+    from beambam.cli._helpers import _print_cmd
+    state = _cloud_printer_state(args)
+    gs = (state.get("gcode_state") or "").upper()
+    if gs in ("PAUSE", "PAUSED"):
+        print(f"[start] printer is {gs} → resume", file=sys.stderr)
+        return _publish(args, _print_cmd("resume", param=""))
+    if gs in ("RUNNING", "PREPARE", "SLICING"):
+        print(f"[start] printer already {gs}; nothing to start", file=sys.stderr)
+        return 0
+    # idle / finished / failed → print again (re-run the last task)
+    from pathlib import Path
+    pf = Path.home() / ".x2d" / "printer_project_file.json"
+    if not pf.is_file():
+        print(f"[start] printer is {gs or 'idle'}: no paused job to resume, and "
+              f"print-again needs a captured project_file at {pf}.\n"
+              f"        Capture one: start a print in Handy while x2dcap is "
+              f"running, then decode the print.project_file MQTT publish.",
+              file=sys.stderr)
+        return 2
+    try:
+        body = json.loads(pf.read_text())
+    except Exception as e:                                # noqa: BLE001
+        print(f"[start] bad {pf}: {e}", file=sys.stderr)
+        return 1
+    print("[start] printer idle → print again (re-run last task)", file=sys.stderr)
+    return _publish(args, {"print": body})
+
+
+def cmd_key(args: argparse.Namespace) -> int:
+    """Recover the printer-control RSA signing key from the RUNNING Handy app's
+    Dart heap (no Frida / no hooking) and save it to ~/.x2d/ for signed cloud
+    control. Needs: adb access to the phone (`--adb ip:port`), Handy running with
+    the Devices tab opened once (so the key is loaded), and the app cert
+    (`--cert`, default ~/.x2d/printer_app_cert.pem) for the modulus. Also writes
+    cert_id. This is the optional setup step that unlocks `pause/resume/stop/…`."""
+    import os
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "runtime" / "handy_extract"))
+    try:
+        import extract_signing_key as esk
+    except Exception as e:                                # noqa: BLE001
+        print(f"[key] cannot load extractor: {e}", file=sys.stderr)
+        return 1
+    adb = getattr(args, "adb", None) or os.environ.get("X2D_ADB")
+    if not adb:
+        print("[key] --adb <ip:port> (or X2D_ADB) required: the phone's adb "
+              "serial", file=sys.stderr)
+        return 1
+    cert = getattr(args, "cert", None) or str(Path.home() / ".x2d" / "printer_app_cert.pem")
+    if not Path(cert).is_file():
+        print(f"[key] app cert not found at {cert} (capture security."
+              f"app_cert_install, or pass --cert)", file=sys.stderr)
+        return 1
+    out = str(Path.home() / ".x2d" / "printer_sign_key.pem")
+    rc = os.system(
+        f"cd {Path.home()} && python3 {esk.__file__} --serial {adb} "
+        f"--cert {cert} --out {out}")
+    if rc != 0 or not Path(out).is_file():
+        print("[key] extraction failed (is Handy running + Devices tab opened so "
+              "the key is in the heap?)", file=sys.stderr)
+        return 1
+    # write cert_id = <app-cert serial hex> + CN=GLOF<printerSerial>.bambulab.com
+    try:
+        from cryptography import x509
+        from beambam.cloud_control import mqtt_sign
+        serial_hex = format(
+            x509.load_pem_x509_certificate(Path(cert).read_bytes()).serial_number, "x")
+        printer_serial = _config.Creds.resolve(args).serial or os.environ.get("X2D_SERIAL", "")
+        cid = mqtt_sign.make_cert_id(serial_hex, printer_serial.replace("GLOF", ""))
+        (Path.home() / ".x2d" / "printer_cert_id.txt").write_text(cid)
+        print(f"[key] OK → {out}\n[key] cert_id → ~/.x2d/printer_cert_id.txt")
+    except Exception as e:                                # noqa: BLE001
+        print(f"[key] key saved, but cert_id write failed: {e}", file=sys.stderr)
+    return 0
