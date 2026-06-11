@@ -202,7 +202,7 @@ from beambam.cli.lan import (
 )
 
 def main() -> int:
-    p = argparse.ArgumentParser(description=__doc__,
+    p = argparse.ArgumentParser(prog="beambam", description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter,
                                 epilog=_build_epilog())
     p.add_argument("--version", action="version",

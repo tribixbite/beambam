@@ -154,6 +154,45 @@ def _cmd_init_cloud_only(args: argparse.Namespace) -> int:
     return 0
 
 
+def _maybe_setup_control_key(serial: str, non_interactive: bool) -> None:
+    """Optional setup step: detect / offer to recover the printer-control key.
+
+    Printer CONTROL (pause/resume/stop/start/skip) is gated by an RSA-SHA256
+    signature on X-series firmware; the key is recovered from a captured Bambu
+    Handy with `beambam key` (advanced — see runtime/handy_extract/). This step
+    is informational by default and only offers to run the recovery now when
+    the prerequisites (captured app cert + adb) are already present and the
+    session is interactive. Reading (status / camera) needs no key."""
+    from pathlib import Path
+    import shutil
+
+    home = Path.home()
+    sign_key = home / ".x2d" / "printer_sign_key.pem"
+    if sign_key.is_file():
+        print("\n✓ printer control key present — "
+              "pause/resume/stop/start/skip enabled")
+        return
+
+    print("\nPrinter control (optional):")
+    print("  pause/resume/stop/start/skip need an RSA signing key — X-series")
+    print("  firmware verifies control commands. Recover it from a captured")
+    print("  Bambu Handy:  beambam key --adb <ip:port>")
+    print("  (reading — status / camera / ams — works without it.)")
+
+    app_cert = home / ".x2d" / "printer_app_cert.pem"
+    if non_interactive or not (app_cert.is_file() and shutil.which("adb")):
+        return  # prerequisites absent / non-interactive → leave the note only
+
+    ans = _prompt("\n  Recover the control key now? (y/N)", default="N")
+    if ans.lower() != "y":
+        return
+    adb = _prompt("  Phone adb target (ip:port)")
+    if not adb:
+        return
+    from beambam.cli.control import cmd_key
+    cmd_key(argparse.Namespace(adb=adb, cert=str(app_cert), serial=serial))
+
+
 def cmd_init(args: argparse.Namespace) -> int:
     from beambam.config import Creds
     from beambam.configcli import _section_name, list_sections, _save, _load
@@ -242,11 +281,15 @@ def cmd_init(args: argparse.Namespace) -> int:
     _save(cp)
     print(f"\n✓ saved [{section}] → ~/.x2d/credentials (chmod 0600)")
 
-    # Step 6: suggest doctor
+    # Step 6: optional printer-control signing key
+    _maybe_setup_control_key(serial, args.non_interactive)
+
+    # Step 7: suggest doctor
     print(f"\nNext steps:")
     print(f"  beambam status            — pull live state")
     print(f"  beambam doctor            — full health check")
     print(f"  beambam ams status        — see AMS loadout")
+    print(f"  beambam key --adb IP:PORT — (optional) enable pause/start control")
     print(f"  beambam --help            — every subcommand")
     return 0
 

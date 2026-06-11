@@ -1119,6 +1119,75 @@ def cmd_cloud_get_access_code(args: argparse.Namespace) -> int:
     return 0
 
 
+def build_cloud_project_file(
+        serial: str, upload: dict, *, now: int, slot: int = 0,
+        plate: int = 1, bed_type: str = "textured_plate", bed_temp: int = 65,
+        use_ams: bool = True, flow_cali: bool = False, bed_leveling: bool = True,
+        vibration_cali: bool = False, timelapse: bool = False) -> dict:
+    """Compose the inner ``print`` body of a cloud ``print.project_file``
+    start-print command from an OSS ``upload`` dict (``url``/``md5``/
+    ``remote_name``). ``now`` (epoch seconds) is injected so the output is
+    deterministic/testable; it drives ``sequence_id``/``timestamp``/``job_id``.
+
+    Used by ``cmd_cloud_print`` (CLI start), which ``cmd_start``'s
+    print-next-in-queue path also routes through. The envelope
+    ``sequence_id``/``timestamp`` are present for the legacy unsigned publish;
+    the cloud-signed path (``CloudPrinter.build``) overwrites them with the
+    ms-resolution envelope values it signs.
+
+    NOTE: this schema is reverse-engineered from the issue tracker (#65/#66),
+    not yet byte-verified against a captured Handy ``project_file`` — validate
+    against a real capture before trusting unattended starts."""
+    job_id_int = now * 10
+    job_id_str = str(job_id_int)
+    name = upload["remote_name"]
+    name_no_3mf = name
+    if name_no_3mf.endswith(".gcode.3mf"):
+        name_no_3mf = name_no_3mf[: -len(".3mf")]
+    elif name_no_3mf.endswith(".3mf"):
+        name_no_3mf = name_no_3mf[: -len(".3mf")] + ".gcode"
+    ams_slot = int(slot)
+    return {
+        "sequence_id":              str(now),
+        "command":                  "project_file",
+        "param":                    "Metadata/plate_1.gcode",
+        "file":                     name,
+        "url":                      upload["url"],
+        "md5":                      upload["md5"],
+        "task_id":                  job_id_str,
+        "subtask_id":               job_id_str,
+        "subtask_name":             name_no_3mf,
+        "job_id":                   job_id_int,
+        "project_id":               job_id_str,
+        "profile_id":               "0",
+        "design_id":                "0",
+        "model_id":                 "0",
+        "plate_idx":                int(plate),
+        "dev_id":                   serial,
+        # 1 = CLOUD (vs 0 LAN)
+        "job_type":                 1,
+        "timestamp":                now,
+        "bed_type":                 bed_type,
+        "bed_temp":                 int(bed_temp),
+        "auto_bed_leveling":        1 if bed_leveling else 0,
+        "extrude_cali_flag":        1 if flow_cali else 0,
+        "nozzle_offset_cali":       0,
+        "extrude_cali_manual_mode": 0,
+        "flow_cali":                bool(flow_cali),
+        "bed_leveling":             bool(bed_leveling),
+        "vibration_cali":           bool(vibration_cali),
+        "timelapse":                bool(timelapse),
+        "layer_inspect":            False,
+        "use_ams":                  use_ams,
+        "ams_mapping":              [ams_slot] if use_ams else [],
+        "ams_mapping2":             ([{"ams_id": ams_slot // 4,
+                                        "slot_id": ams_slot %  4}]
+                                      if use_ams else []),
+        "skip_objects":             None,
+        "cfg":                      "0",
+    }
+
+
 def cmd_cloud_print(args: argparse.Namespace) -> int:
     """Submit a complete cloud-mediated print job:
        1. Upload the .gcode.3mf to Bambu's OSS via the upload-token API.
@@ -1169,58 +1238,23 @@ def cmd_cloud_print(args: argparse.Namespace) -> int:
         print(f"[cloud-print] upload failed: {e}", file=sys.stderr)
         return 1
 
-    # 2. Compose the print.project_file payload (cloud variant)
-    job_id_int = int(time.time()) * 10
-    job_id_str = str(job_id_int)
-    name = upload["remote_name"]
-    name_no_3mf = name
-    if name_no_3mf.endswith(".gcode.3mf"):
-        name_no_3mf = name_no_3mf[: -len(".3mf")]
-    elif name_no_3mf.endswith(".3mf"):
-        name_no_3mf = name_no_3mf[: -len(".3mf")] + ".gcode"
-    use_ams = not args.no_ams
-    ams_slot = int(args.slot)
-    payload = {
-        "print": {
-            "sequence_id":              str(int(time.time())),
-            "command":                  "project_file",
-            "param":                    "Metadata/plate_1.gcode",
-            "file":                     name,
-            "url":                      upload["url"],
-            "md5":                      upload["md5"],
-            "task_id":                  job_id_str,
-            "subtask_id":               job_id_str,
-            "subtask_name":             name_no_3mf,
-            "job_id":                   job_id_int,
-            "project_id":               job_id_str,
-            "profile_id":               "0",
-            "design_id":                "0",
-            "model_id":                 "0",
-            "plate_idx":                int(args.plate),
-            "dev_id":                   serial,
-            # 1 = CLOUD (vs 0 LAN)
-            "job_type":                 1,
-            "timestamp":                int(time.time()),
-            "bed_type":                 args.bed_type,
-            "bed_temp":                 int(args.bed_temp),
-            "auto_bed_leveling":        1 if not args.no_level else 0,
-            "extrude_cali_flag":        1 if args.flow_cali else 0,
-            "nozzle_offset_cali":       0,
-            "extrude_cali_manual_mode": 0,
-            "flow_cali":                bool(args.flow_cali),
-            "bed_leveling":             not args.no_level,
-            "vibration_cali":           bool(args.vibration_cali),
-            "timelapse":                bool(args.timelapse),
-            "layer_inspect":            False,
-            "use_ams":                  use_ams,
-            "ams_mapping":              [ams_slot] if use_ams else [],
-            "ams_mapping2":             ([{"ams_id": ams_slot // 4,
-                                            "slot_id": ams_slot %  4}]
-                                          if use_ams else []),
-            "skip_objects":             None,
-            "cfg":                      "0",
-        }
-    }
+    # 2. Compose the print.project_file payload (cloud variant) via the
+    #    shared builder (also used by `beambam start` print-next-in-queue).
+    body = build_cloud_project_file(
+        serial, upload, now=int(time.time()), slot=int(args.slot),
+        plate=int(args.plate), bed_type=args.bed_type, bed_temp=int(args.bed_temp),
+        use_ams=not args.no_ams, flow_cali=bool(args.flow_cali),
+        bed_leveling=not args.no_level, vibration_cali=bool(args.vibration_cali),
+        timelapse=bool(args.timelapse))
+    name_no_3mf = body["subtask_name"]
+    payload = {"print": body}
+
+    # X-series firmware verifies the signature on print.* — sign the
+    # project_file when a recovered key is present (else publish unsigned
+    # for older firmware that doesn't enforce it). `signed_wire()` returns
+    # the exact bytes to publish.
+    wire, signed = _maybe_sign(serial, cli, "print", body, payload)
+
     if args.dry_run:
         print(json.dumps(payload, indent=2))
         return 0
@@ -1235,19 +1269,43 @@ def cmd_cloud_print(args: argparse.Namespace) -> int:
     c.on_publish = on_publish
     c.loop_start()
     try:
-        info = c.publish(topic_request, json.dumps(payload), qos=1)
+        info = c.publish(topic_request, wire, qos=1)
         info.wait_for_publish(timeout=args.timeout)
         if not published.wait(timeout=args.timeout):
             print(f"[cloud-print] no broker ack in {args.timeout}s",
                   file=sys.stderr)
             return 1
-        print(json.dumps({"published": True, "topic": topic_request,
+        print(json.dumps({"published": True, "signed": signed,
+                          "topic": topic_request,
                           "url": upload["url"], "md5": upload["md5"],
                           "subtask_name": name_no_3mf}, indent=2))
     finally:
         c.loop_stop()
         c.disconnect()
     return 0
+
+
+def _maybe_sign(serial: str, cli, family: str, command: dict,
+                unsigned_payload: dict) -> tuple[bytes, bool]:
+    """Return ``(wire_bytes, signed)`` for publishing ``command`` to a printer.
+
+    When a recovered RSA signing key is present at the default path, build the
+    cloud-signed message (X-series firmware verifies print.* — unsigned →
+    ``mqtt message verify failed``). Otherwise fall back to the unsigned JSON
+    (older firmware that doesn't enforce). ``command`` must NOT include the
+    envelope ``sequence_id``/``timestamp`` for signing — they're stripped here
+    and re-added by ``CloudPrinter.build`` so the signed pre-image matches."""
+    try:
+        from beambam.cli.control import _signing_key_path
+        from beambam.cloud_control import CloudPrinter
+    except Exception:
+        return json.dumps(unsigned_payload).encode(), False
+    if not _signing_key_path().is_file():
+        return json.dumps(unsigned_payload).encode(), False
+    cmd = {k: v for k, v in command.items()
+           if k not in ("sequence_id", "timestamp")}
+    cp = CloudPrinter.from_config(cli, serial, key_path=_signing_key_path())
+    return cp.build(family, cmd), True
 
 
 def cmd_cloud_publish(args: argparse.Namespace) -> int:

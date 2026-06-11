@@ -408,11 +408,65 @@ def _cloud_printer_state(args: argparse.Namespace) -> dict:
     return got
 
 
+def _start_next_in_queue(args: argparse.Namespace):
+    """Print-next-in-queue for `cmd_start`: if ~/.x2d/queue.json has a pending
+    job for the default printer, mark it running and start it as a cloud print
+    (upload its .gcode.3mf to Bambu OSS + signed print.project_file, via
+    `cmd_cloud_print`). Returns the dispatch rc (0/1) when a job was started,
+    or None when the queue is empty (so the caller falls through to
+    print-again)."""
+    import os
+    from pathlib import Path
+    try:
+        from runtime.queue.manager import QueueManager
+    except Exception as e:                                # noqa: BLE001
+        print(f"[start] queue subsystem unavailable: {e}", file=sys.stderr)
+        return None
+    qm = QueueManager(dispatch_cb=lambda _j: True)
+    printer = getattr(args, "printer", "") or ""
+    job = qm.start_next(printer)
+    if job is None:
+        return None
+    src = Path(job.gcode)
+    if not src.is_file():
+        qm.mark_failed(job.id, f"file missing: {src}")
+        print(f"[start] queued job {job.id[:8]} .3mf missing: {src}",
+              file=sys.stderr)
+        return 1
+    print(f"[start] printer idle → print next in queue: {job.label} "
+          f"({src.name})", file=sys.stderr)
+    # DRY: a queued job is just a cloud-print of its .3mf. Reuse cmd_cloud_print
+    # (upload→compose→sign→publish). Resolve the serial the same way the signed
+    # control path does so the cloud topic matches.
+    from beambam.cli.cloud import cmd_cloud_print
+    serial = _config.Creds.resolve(args).serial or os.environ.get("X2D_SERIAL")
+    ns = argparse.Namespace(
+        file=str(src), serial=serial, slot=int(job.slot), no_ams=False,
+        plate=1, bed_type="textured_plate", bed_temp=65, no_level=False,
+        flow_cali=False, vibration_cali=False, timelapse=False,
+        dry_run=False, timeout=30.0)
+    try:
+        rc = cmd_cloud_print(ns)
+    except Exception as e:                                # noqa: BLE001
+        qm.mark_failed(job.id, str(e))
+        print(f"[start] queue dispatch failed: {e}", file=sys.stderr)
+        return 1
+    if rc != 0:
+        qm.mark_failed(job.id, f"cloud-print rc={rc}")
+    else:
+        # Started → drop it from the queue. Leaving it "running" would be
+        # demoted back to "pending" on the next QueueManager load (crash
+        # recovery), causing a re-dispatch / double-print the next time the
+        # printer is idle. There's no daemon here to reconcile completion.
+        qm.remove(job.id)
+    return rc
+
+
 def cmd_start(args: argparse.Namespace) -> int:
-    """Smart start, ranked: **resume** a paused print → **print again** (re-run
-    the last task). 'Print next in queue' is not yet wired (it needs a captured
-    `project_file` payload — run one print through Handy with the x2dcap capture
-    on, see runtime/handy_extract/SIGNER_HANDOFF.md). Use `--lan` to force LAN."""
+    """Smart start, ranked: **resume** a paused print → **print next in queue**
+    (~/.x2d/queue.json, via `beambam queue add`) → **print again** (re-run the
+    last task from ~/.x2d/printer_project_file.json). Use `--lan` to force the
+    LAN publish path for the resume/print-again commands."""
     from beambam.cli._helpers import _print_cmd
     state = _cloud_printer_state(args)
     gs = (state.get("gcode_state") or "").upper()
@@ -422,7 +476,11 @@ def cmd_start(args: argparse.Namespace) -> int:
     if gs in ("RUNNING", "PREPARE", "SLICING"):
         print(f"[start] printer already {gs}; nothing to start", file=sys.stderr)
         return 0
-    # idle / finished / failed → print again (re-run the last task)
+    # idle / finished / failed → (2) print next in queue, else (3) print again
+    rc = _start_next_in_queue(args)
+    if rc is not None:
+        return rc
+    # (3) print again (re-run the last task)
     from pathlib import Path
     pf = Path.home() / ".x2d" / "printer_project_file.json"
     if not pf.is_file():

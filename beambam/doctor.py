@@ -321,6 +321,28 @@ def check_environment() -> list[Check]:
         out.append(Check("Environment", "python-cryptography", "fail",
                          "not installed — cloud + signed-MQTT will not work. "
                          "Install: `pip install cryptography`"))
+
+    # Printer-control signing key (optional). X-series firmware verifies an
+    # RSA-SHA256 signature on print.* control commands; without the recovered
+    # key, pause/resume/stop/start/skip are rejected (`mqtt message verify
+    # failed`). Reading (status / camera / pushall) works without it.
+    sign_key = home / ".x2d" / "printer_sign_key.pem"
+    cert_id = home / ".x2d" / "printer_cert_id.txt"
+    if sign_key.is_file() and cert_id.is_file():
+        out.append(Check("Environment", "Printer control key", "pass",
+                         "RSA signing key + cert_id present — signed control "
+                         "(pause/resume/stop/start/skip) enabled"))
+    elif sign_key.is_file():
+        out.append(Check("Environment", "Printer control key", "warn",
+                         f"{sign_key} present but {cert_id} missing — re-run "
+                         "`beambam key --adb <ip:port>` to (re)write cert_id"))
+    else:
+        out.append(Check("Environment", "Printer control key", "info",
+                         "no RSA signing key — printer CONTROL (pause/resume/"
+                         "stop/start/skip) is gated on X-series firmware. "
+                         "Optional: `beambam key --adb <ip:port>` recovers it "
+                         "from a captured Bambu Handy (see "
+                         "runtime/handy_extract/SIGNER_HANDOFF.md)."))
     return out
 
 

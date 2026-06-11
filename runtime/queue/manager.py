@@ -220,6 +220,37 @@ class QueueManager:
             return any(j for j in self._jobs
                        if j.printer == printer and j.status == "running")
 
+    def start_next(self, printer: str) -> Job | None:
+        """Atomically mark the next pending job for `printer` as running and
+        return it (or None if none pending / one already running). For
+        one-shot CLI dispatch (`beambam start` print-next-in-queue) outside
+        the daemon's idle-driven `on_state` loop. The caller performs the
+        upload+publish, then calls `mark_failed` on error (success leaves
+        status=running, matching the daemon's behaviour)."""
+        with self._lock:
+            if self.has_running(printer):
+                return None
+            pending = self.pending_for(printer)
+            if not pending:
+                return None
+            job = pending[0]
+            job.status = "running"
+            job.started = time.time()
+            self._persist()
+            return job
+
+    def mark_failed(self, job_id: str, error: str) -> None:
+        """Revert a job to failed with an error string (e.g. when a one-shot
+        CLI dispatch's upload/publish raised after `start_next`)."""
+        with self._lock:
+            for j in self._jobs:
+                if j.id == job_id:
+                    j.status = "failed"
+                    j.error = error
+                    j.finished = time.time()
+                    self._persist()
+                    return
+
     # ----- dispatch ----------------------------------------------------
     def on_state(self, printer: str, state: dict | None) -> None:
         """Hook into the daemon's per-printer state callback. If the
