@@ -825,6 +825,78 @@ def _cloud_mqtt_connect(serial: str, cli) -> mqtt.Client:
     return c
 
 
+# A printer's full pushall state arrives across several MQTT report messages —
+# the first is often a tiny delta (~5 keys); the complete snapshot (~100 keys,
+# incl. `ams`) comes a beat later. A reader that returns on the first message
+# misses AMS entirely. This threshold distinguishes a full snapshot from a
+# delta so we keep merging until the real state lands.
+_FULL_STATE_MIN_KEYS = 40
+
+
+def _state_is_complete(merged: dict, require=("gcode_state",)) -> bool:
+    """True once the merged report is a full snapshot (all `require` keys
+    present AND enough keys to be a snapshot, not a tiny delta). The bug this
+    guards: returning on the first message — which often carries `gcode_state`
+    in a ~5-key delta, BEFORE the ~100-key snapshot that actually holds `ams`."""
+    return (all(k in merged for k in require)
+            and len(merged) >= _FULL_STATE_MIN_KEYS)
+
+
+def cloud_pull_state(cli, serial: str, *, require=("gcode_state",),
+                     timeout: float = 12.0, settle: float = 1.0) -> dict:
+    """Pull the printer's full `print` state over the cloud broker.
+
+    Publishes a `pushall` and MERGES every `print` report message until the
+    full snapshot lands (the required keys are present AND the merged dict has
+    >= `_FULL_STATE_MIN_KEYS` keys — i.e. a real snapshot, not a delta), then a
+    brief `settle` to fold in trailing deltas. Returns the merged `print` dict
+    (possibly partial on timeout). This is the cloud counterpart of the LAN
+    `X2DClient.request_state`; without the merge, AMS / tray data is missed
+    because it rides in a later message than `gcode_state`."""
+    import ssl
+    import threading
+    import time
+    import paho.mqtt.client as mqtt
+
+    cli._ensure_fresh()
+    user, pwd = cli.mqtt_credentials()
+    merged: dict = {}
+    full = threading.Event()
+
+    def on_connect(c, d, f, rc, props=None):
+        c.subscribe(f"device/{serial}/report", qos=1)
+
+    def on_message(c, d, m):
+        try:
+            j = json.loads(m.payload)
+        except Exception:                                  # noqa: BLE001
+            return
+        p = j.get("print")
+        if isinstance(p, dict):
+            merged.update(p)
+            if _state_is_complete(merged, require):
+                full.set()
+
+    c = mqtt.Client(client_id=f"bb-state-{serial[-4:]}", protocol=mqtt.MQTTv311)
+    c.username_pw_set(user, pwd)
+    c.tls_set_context(ssl.create_default_context())
+    c.on_connect = on_connect
+    c.on_message = on_message
+    c.connect(cli.mqtt_broker(), 8883, 30)
+    c.loop_start()
+    try:
+        time.sleep(1.2)                                    # let subscribe settle
+        c.publish(f"device/{serial}/request", json.dumps({
+            "pushing": {"command": "pushall", "sequence_id": "1",
+                        "version": 1, "push_target": 1}}), qos=1)
+        full.wait(timeout=timeout)
+        time.sleep(settle)                                 # fold trailing deltas
+    finally:
+        c.loop_stop()
+        c.disconnect()
+    return merged
+
+
 def _cloud_publish_payload(serial: str, payload: dict,
                             timeout: float = 10.0) -> int:
     """Internal helper used by every cloud-side print-control CLI.

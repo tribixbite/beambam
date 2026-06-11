@@ -363,58 +363,26 @@ def cmd_ams_load(args: argparse.Namespace) -> int:
 
 def _cloud_printer_state(args: argparse.Namespace) -> dict:
     """Best-effort current printer state via a cloud `pushall` (read-only,
-    unsigned). Returns {} if no cloud session / serial."""
+    unsigned). Returns the full merged `print` dict (incl. `ams`), or {} if no
+    cloud session / serial. Delegates to `cloud_pull_state`, which merges the
+    multi-message pushall — the full snapshot (with AMS) rides in a later
+    message than `gcode_state`, so the old first-message read missed it."""
     import os
-    import ssl
-    import time
     try:
         import cloud_client
-        import paho.mqtt.client as mqtt
-    except Exception:
+        from beambam.cli.cloud import cloud_pull_state
+    except Exception:                                      # noqa: BLE001
         return {}
     cli = cloud_client.CloudClient.load_or_anonymous()
     if cli.session.empty:
         return {}
-    cli._ensure_fresh()
     serial = _config.Creds.resolve(args).serial or os.environ.get("X2D_SERIAL")
     if not serial:
         return {}
-    user, password = cli.mqtt_credentials()
-    uid = cli.session.user_id
-    got: dict = {}
-
-    def on_connect(c, d, f, rc, props=None):
-        c.subscribe(f"device/{serial}/report", qos=1)
-
-    def on_message(c, d, m):
-        try:
-            j = json.loads(m.payload).get("print", {})
-        except Exception:
-            return
-        for k in ("gcode_state", "subtask_id", "task_id", "subtask_name", "mc_percent"):
-            if isinstance(j, dict) and k in j:
-                got[k] = j[k]
-
-    c = mqtt.Client(client_id="bb-state", protocol=mqtt.MQTTv311)
-    c.username_pw_set(user, password)
-    c.tls_set_context(ssl.create_default_context())
-    c.on_connect = on_connect
-    c.on_message = on_message
-    c.connect(cli.mqtt_broker(), 8883, 30)
-    c.loop_start()
     try:
-        time.sleep(1.5)
-        c.publish(f"device/{serial}/request",
-                  json.dumps({"user_id": uid,
-                              "pushing": {"sequence_id": "1", "command": "pushall",
-                                          "version": 1}}), qos=1)
-        deadline = time.time() + 5
-        while time.time() < deadline and "gcode_state" not in got:
-            time.sleep(0.1)
-    finally:
-        c.loop_stop()
-        c.disconnect()
-    return got
+        return cloud_pull_state(cli, serial)
+    except Exception:                                      # noqa: BLE001
+        return {}
 
 
 def _start_next_in_queue(args: argparse.Namespace):

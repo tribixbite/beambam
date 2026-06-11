@@ -320,16 +320,49 @@ def add_subparser(sub: "argparse._SubParsersAction") -> argparse.ArgumentParser:
     return p
 
 
+def fetch_printer_state(args: argparse.Namespace, *,
+                        timeout: float = 10.0) -> dict | None:
+    """Pull the printer's full pushall state, LAN first then CLOUD fallback.
+
+    The LAN path (`Printer.state`) is fastest when on the printer's network;
+    if it fails (off-LAN / printer asleep) we fall back to the cloud broker via
+    `cloud_pull_state`, which merges the multi-message pushall so `ams` is
+    actually captured. Returns the `{"print": {...}}`-shaped dict, or None when
+    both transports fail."""
+    from beambam import Printer
+    try:
+        with Printer() as printer:
+            return printer.state(timeout=timeout)
+    except Exception as lan_err:                           # noqa: BLE001
+        try:
+            import cloud_client
+            from beambam.cli.cloud import cloud_pull_state
+            from beambam import config as _config
+            cli = cloud_client.CloudClient.load_or_anonymous()
+            if cli.session.empty:
+                raise lan_err
+            serial = (_config.Creds.resolve(args).serial
+                      or os.environ.get("X2D_SERIAL"))
+            if not serial:
+                raise lan_err
+            pr = cloud_pull_state(cli, serial, timeout=timeout + 4)
+            if pr:
+                print("[ams] LAN unreachable — read via cloud", file=sys.stderr)
+                return {"print": pr}
+        except Exception:                                  # noqa: BLE001
+            pass
+        print(f"failed to fetch state (LAN: {lan_err}; cloud fallback failed)",
+              file=sys.stderr)
+        return None
+
+
 def cmd_ams(args: argparse.Namespace) -> int:
     from beambam import Printer
 
     if args.ams_cmd in ("status", "info"):
-        # Read-only: pull state.
-        try:
-            with Printer() as printer:
-                state = printer.state(timeout=10.0)
-        except Exception as e:                              # noqa: BLE001
-            print(f"failed to fetch state: {e}", file=sys.stderr)
+        # Read-only: pull state (LAN, cloud fallback).
+        state = fetch_printer_state(args, timeout=10.0)
+        if state is None:
             return 1
         ams_block = state.get("print", {}).get("ams", {})
         if args.ams_cmd == "status":
