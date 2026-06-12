@@ -27,11 +27,15 @@ Headers (the ones that matter):
 - `x-bbl-app-certification-id: CN=GLOF1000000000.bambulab.com:0123456789abcdef0123456789abcdef`
   — the app cert id (same cert as the MQTT signing; note the `CN=...:<hex>` order
   is the reverse of the MQTT `cert_id`'s `<hex>CN=...`).
-- `x-bbl-device-security-sign: <base64 ~256-byte RSA-2048 signature>`
-  — **the remaining piece to reverse.** Signed with the app cert private key (the
-  same key we recovered for MQTT, `~/.x2d/printer_sign_key.pem`). Pre-image TBD
-  (likely the request body or a canonical method+path+body+nonce). Reproducing
-  this is the last step for a fully beambam-initiated cloud print.
+- `x-bbl-device-security-sign: <base64 256-byte RSA-2048 signature>`
+  — **SOLVED (2026-06-12).** It is a RAW PKCS#1 v1.5 (type 1) RSA signature of the
+  **ASCII millisecond-timestamp string** — NOT a hash, NOT the body:
+  `EM = 00 01 FF…FF 00 || ascii(str(now_ms))`, `sig = EM^d mod n`, header =
+  base64(sig). Signed with the recovered app key (`~/.x2d/printer_sign_key.pem`).
+  The cloud RSA-decrypts it to recover the timestamp (anti-replay) and trusts the
+  app cert; body integrity rides on TLS. Reproduces real Handy signatures
+  byte-for-byte. Implemented in `beambam/cloud_slice.py`
+  (`device_security_sign` / `signed_headers` / `cloud_slice_print`).
 
 Poll the task: `GET /v1/iot-service/api/user/task/{taskId}` + `GET /v1/user-service/my/task/{taskId}`.
 
@@ -100,7 +104,11 @@ the AMS loadout via the fixed `cloud_pull_state`).
 ## Status
 
 - Endpoint + full body schema: **DONE** (this doc).
-- `x-bbl-device-security-sign` HTTP request signing: **the only remaining piece.**
-  Once reversed (the app RSA key is in hand), beambam can start a cloud-slice
-  print of any MakerWorld model on the X2D with one REST call — no local slicing,
-  no MQTT project_file, no OSS upload.
+- `x-bbl-device-security-sign` HTTP request signing: **SOLVED** (raw PKCS#1 v1.5
+  RSA-sign of the ms-timestamp string; `beambam/cloud_slice.py`).
+- So beambam now has everything to start a cloud-slice print of any MakerWorld
+  model on the X2D with one REST call — no local slicing, no MQTT project_file,
+  no OSS upload. Remaining: wire `build_cloud_slice_body` to resolve the
+  design/instance/profile + AMS mapping (via `get_design_instances` +
+  `filament_match` + `cloud_pull_state`) and a `beambam cloud-print-model` verb,
+  then poll `get_task`.
