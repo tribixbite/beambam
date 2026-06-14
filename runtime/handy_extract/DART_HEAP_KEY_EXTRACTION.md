@@ -28,19 +28,32 @@ the printer for real. (Only `print.project_file` start is still blocked, and
 
 ### Printer err-code disambiguation (from `device/<serial>/request` acks)
 
-All four share the misleading reason string `"mqtt message verify failed"`
-except `0`; the **code** is what distinguishes them:
+All the failures share the misleading reason string `"mqtt message verify
+failed"` — the **code** is what distinguishes them. Empirically the codes form a
+**staged verification ladder** (each stage only reached if the previous passed),
+mapped by feeding the printer deliberately-broken inputs:
 
-| `err_code` | Meaning | Triggered by |
-|---|---|---|
-| `0` | accepted | a correctly-signed command (pause/resume confirmed live) |
-| `84033543` | no / missing signature | unsigned command |
-| `84033548` | signature present but **invalid** | a corrupted signature |
-| `84033544` | signature **valid**, downstream **file/task** verify failed | a valid-sig `project_file` whose X2D dual-nozzle fields are incomplete |
+| Stage | `err_code` | Meaning | Probe that produced it |
+|---|---|---|---|
+| 1. header present? | `84033543` (0x5024807) | no / missing signature | unsigned command |
+| 2. cert valid for `print.*`? | `84033545` (0x5024809) | signing cert not authorized for print.* | a **self-signed** cert (installed via `app_cert_install`) **or** an unknown cert_id — *identical code* |
+| 3. signature verifies? | `84033548` (0x502480C) | cert OK but signature bytes wrong | a trusted cert's signature with one byte flipped |
+| 4. file/task valid? | `84033544` (0x5024808) | sig+cert+auth all OK, downstream file/task failed | a valid-sig `project_file` with incomplete X2D dual-nozzle fields |
+| 5. all pass | `0` | accepted | the recovered Handy cert on `pause`/`resume` (live SUCCESS) |
 
-Because a valid signature (`84033544`) yields a *different* code than a corrupt
-one (`84033548`), the signature layer is provably passing — `84033544` is a
-file/task problem, not a crypto problem.
+Two consequences fall out of this ladder:
+
+- `84033544` (stage 4) proves the **signature + cert + authorization all pass** —
+  the only failure is the file/task payload, not crypto.
+- `84033545` (stage 2) is the answer to "can I just install my own cert?" — **no**.
+  A self-signed cert is accepted into the trust list by `app_cert_install`
+  (`result:SUCCESS`, gated on the LAN access code alone), but `print.*` rejects
+  it at stage 2 with the *same* code as a never-installed cert. The `print.*`
+  tier requires a genuinely **Bambu-CA-issued** cert (chain to `BBL Device CA
+  N6-V2` / the per-device `GLOF…bambulab.com` issuer), which is exactly the
+  per-installation Handy cert recovered here — there is **no self-cert shortcut**
+  for print control. (See [[../../UNANSWERED_QUESTIONS]] / `bambu_cert.py` for the
+  `system.*`-only leaked Bambu Connect cert.)
 
 ## Why this works — find `p`, don't factor `n`
 
