@@ -6,8 +6,12 @@ Control is gated by an **RSA-SHA256 signature the printer verifies**.
 
 **STATUS 2026-06-10: SOLVED — beambam can command the printer.** The signing
 scheme is reverse-engineered AND the private key is recovered AND the live printer
-accepts beambam's signatures (signed `print.pause` → `reason:"ERROR STATE"`, i.e.
-it passed verification, vs unsigned → `"mqtt message verify failed"`).
+accepts beambam's signatures. **Fully validated 2026-06-11:** live `beambam pause`
+and `beambam resume` both return `err_code:0, result:"SUCCESS", is_from_mqtt:true`
+(a real running print paused + resumed) — beyond the earlier `"ERROR STATE"`
+(which only proved verification passed). Full write-up of the key recovery — with
+flowchart, byte-layout diagram, and the err-code table — is in
+**`DART_HEAP_KEY_EXTRACTION.md`**.
 
 How the key was recovered (no Frida, no hooking — `extract_signing_key.py`): the
 signing is **pure Dart** (not libflutter BoringSSL — hooks never fired; not
