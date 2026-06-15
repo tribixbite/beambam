@@ -21,6 +21,18 @@ are tracked in their own deep-dive plan files.
 
 ## Shipped
 
+**v1.5.0** (2026-06) — [changelog](CHANGELOG.md)
+- **Signed printer control + pure-LAN print on authorization-control firmware,
+  no cloud account, no Developer Mode** — the capability no other open client has.
+- `beambam key` recovers the per-installation RSA signing key from a Bambu Handy
+  Dart heap; `pause/resume/stop/start/skip/gcode` auto-route signed.
+- `beambam device-cert` fetches the printer device cert; X2D/H2D LAN print builds
+  a signed `project_file` with `url_enc`. Validated live (`err_code 0`).
+- `beambam capture-params`; `get_auto_nozzle_mapping` building block.
+- Security: redacted identifying values, untracked local PII dumps, hardened
+  gitignore + package excludes. See [docs/COMPARISON.md](docs/COMPARISON.md).
+- `x2d_bridge.py` shim removed (bridge-split complete).
+
 **v1.2.0** (2026-05-21) — [changelog](CHANGELOG.md#v120--12-new-commands--bridge-split-phase-2)
 - 12 new CLI subcommands (download / ams / cam / slice / find / cloud-fetch /
   history / whoami / config / mqtt / queue / doctor)
@@ -388,6 +400,15 @@ the bare name. The ratchet test
 - **macOS/Windows live tests** — `@pytest.mark.live` only runs when `BEAMBAM_TEST_IP`
   is set. No actual matrix for "does signed-MQTT work against a real printer on
   every platform" — we test it manually on Termux against the X2D.
+
+- **`cloud-print-model` CLI verb (MakerWorld cloud-slice)** — the building blocks
+  are done + tested (`cloud_slice.build_cloud_slice_body`, `device_security_sign`,
+  `signed_headers`, `app_certification_id`), but there's no end-to-end CLI verb
+  yet: the live `POST /my/task` returns a body-validation error that needs more
+  cloud-API reverse-engineering of the exact required field set. Lower priority —
+  the no-cloud LAN print path (shipped in v1.5.0) is the primary way to print, and
+  cloud-slice is only needed to have Bambu's servers slice a MakerWorld model
+  remotely. Tracked in [CLOUD_SLICE_API.md](runtime/handy_extract/CLOUD_SLICE_API.md).
 
 ---
 

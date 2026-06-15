@@ -17,8 +17,9 @@ doesn't ship to (aarch64 Linux / Termux / Android phones / macOS / WSL).
 > work); the package was renamed to `beambam` in v1.1.0 to reflect that
 > the bridge supports every Bambu model, not just the X2D.
 
-Roadmap: see [`ROADMAP.md`](ROADMAP.md) for v1.3.0 candidates + the
-long-tail backlog. Per-release notes in [`CHANGELOG.md`](CHANGELOG.md).
+Roadmap: see [`ROADMAP.md`](ROADMAP.md) for the backlog. Per-release
+notes in [`CHANGELOG.md`](CHANGELOG.md). How beambam stacks up against
+other open clients: [`docs/COMPARISON.md`](docs/COMPARISON.md).
 
 ## What is this
 
@@ -79,13 +80,47 @@ long-tail backlog. Per-release notes in [`CHANGELOG.md`](CHANGELOG.md).
 Full per-entity comparison vs ha-bambulab in
 [`docs/HA_VS_BAMBULAB.md`](docs/HA_VS_BAMBULAB.md).
 
+## How beambam compares to other open-source Bambu tools
+
+On Bambu's Jan-2025+ **authorization-control** firmware, the printer rejects
+unsigned control commands. Almost every open client handles writes by asking the
+user to turn on the printer's **Developer LAN Mode** — which by design *severs
+Bambu Cloud and disables auth verification entirely*. beambam is the only one
+that signs `print.*` and **starts a print over pure LAN with no cloud account and
+no Developer Mode**, by recovering the per-installation signing key from a Bambu
+Handy install and RSA-encrypting the file location (`url_enc`) to the printer's
+device cert.
+
+| Project | LAN-only | Signs `print.*` on signed FW | **Start print, signed FW, no cloud / no DevMode** | X2D/H2D | aarch64/Termux |
+|---|:---:|:---:|:---:|:---:|:---:|
+| **beambam** | ✓ | ✓ (auto-recovered per-install key) | **✓** | ✓ | ✓ |
+| bambu-mcp | ✓ | ◐ user must supply key | ◐ start needs DevMode | ✗ | ◐ |
+| ha-bambulab / pybambu | ◐ | ◐ write needs DevMode | ✗ (DevMode only) | partial | ✓ |
+| bambulabs_api | ✓ | ✗ | ✗ (DevMode only) | ✗ | ✓ |
+| OrcaSlicer / BambuStudio | ◐ | ◐ Studio = cloud client | ◐ DevMode or cloud | ✓ (Studio) | ✗ |
+
+Full matrix, sources, and honest caveats: [`docs/COMPARISON.md`](docs/COMPARISON.md).
+
 ## Printer compatibility
 
 The bridge talks to every Bambu Lab printer that exposes the standard
-LAN MQTT + FTPS endpoints. The signed-MQTT requirement (Jan-2025+ firmware
-on most models, always-on for X2D/H2D-family) is handled transparently
-using the publicly-leaked Bambu Connect cert — no cloud account or token
-needed.
+LAN MQTT + FTPS endpoints. How the signed-MQTT requirement (Jan-2025+
+firmware on most models, always-on for the X2D/H2D family) is satisfied
+depends on the firmware:
+
+- **Older / unenforced firmware** — the bundled publicly-leaked Bambu
+  Connect cert (`bambu_cert.py`) signs control directly; no extra setup,
+  no cloud account.
+- **Authorization-control firmware** (X2D/H2D family, refreshed P1/X1) —
+  `print.*` additionally requires a signing cert whose CN matches the
+  printer's *own* serial, which a single shared cert can't provide. beambam
+  uses a **per-installation key recovered once** from a Bambu Handy install
+  (`beambam key --adb <ip:port>`; see
+  [`SIGNER_HANDOFF.md`](runtime/handy_extract/SIGNER_HANDOFF.md)). Control
+  (pause/resume/stop/start/skip) then works over LAN with **no cloud account
+  and no Developer Mode**. X2D/H2D LAN *print* additionally needs the
+  printer's device cert (`beambam device-cert`) to RSA-encrypt the file
+  location (`url_enc`). See [how beambam compares](docs/COMPARISON.md).
 
 | Model       | Bambu code | Signed MQTT | Status | Upload | Print | AMS | Camera | Notes |
 |-------------|:----------:|:-----------:|:------:|:------:|:-----:|:---:|:------:|-------|
@@ -98,9 +133,12 @@ needed.
 | H2S / H2C   | O1S / O1C2 | required    | ✅ | ✅ | ✅ | ✅ | RTSPS | |
 | **X2D**     | N6         | required    | ✅ | ✅ | ✅ | ✅ (multi-AMS, dynamic map) | RTSPS | primary target — `beambam analyze` was developed against X2D 3-color prints |
 
-¹ X1/X1C with pre-2025 firmware accept unsigned MQTT; bridge signs anyway
-(zero overhead, forward-compat).
-² P1S/P1P/A1 enforcement varies by firmware; bridge signs regardless.
+¹ X1/X1C with pre-2025 firmware accept unsigned MQTT; the bridge signs
+anyway with the leaked Bambu Connect cert (zero overhead, forward-compat).
+² P1S/P1P/A1 enforcement varies by firmware. On pre-2025 firmware the
+leaked cert suffices; on refreshed (authorization-control) firmware,
+`print.*` needs the per-installation key from `beambam key` (and X2D/H2D
+LAN print also needs `beambam device-cert`).
 
 If your model isn't listed and it has the LAN MQTT switch in
 Settings → Network, it almost certainly works — open an issue with the

@@ -2,7 +2,50 @@
 
 All notable changes to this project.
 
-## v1.5.0 — `x2d_bridge.py` removed (unreleased)
+## v1.5.0 — signed LAN control + no-cloud X2D/H2D print (unreleased)
+
+Two headline capabilities land in this release, plus the final bridge-split
+cleanup.
+
+### Signed printer control + pure-LAN print on authorization-control firmware
+
+Jan-2025+ Bambu firmware rejects unsigned `print.*` MQTT and requires a signing
+cert whose CN matches the printer's own serial — a shared/leaked cert can't
+satisfy it, which is why every other open client falls back to Developer Mode.
+beambam now drives such printers **with no cloud account and no Developer Mode**:
+
+- **`beambam key --adb <ip:port>`** recovers the per-installation RSA signing key
+  from a running Bambu Handy app by scanning its Dart heap for a 128-byte window
+  that divides the known modulus (a prime factor → full private key). No Frida, no
+  hooking. Writes `~/.x2d/printer_sign_key.pem` + `printer_cert_id.txt`. Optional
+  step in `beambam init` / surfaced by `beambam doctor`. See
+  [`DART_HEAP_KEY_EXTRACTION.md`](runtime/handy_extract/DART_HEAP_KEY_EXTRACTION.md).
+- **`pause` / `resume` / `stop` / `start` / `skip` / `gcode`** auto-route through
+  the signed cloud-control path when the key is present (RSA-SHA256 over the
+  header-stripped body). Validated live: `pause` + `resume` return
+  `err_code:0, result:"SUCCESS"`. `beambam start` is ranked: resume → print next
+  in queue → reprint.
+- **X2D/H2D LAN print** — `beambam print` FTPs the `.gcode.3mf` to `cache/` then
+  publishes a signed `print.project_file`. The file location is `url_enc` =
+  base64(RSA-PKCS1v15(device_cert_pubkey, `ftp:///cache/<file>`)), which the
+  printer decrypts with its own device key. **`beambam device-cert`** fetches +
+  caches that cert (unsigned `security.app_cert_install` → `printer_cert`).
+  Verified live (`err_code 0`, print starts) — no cloud task required, disproving
+  the earlier "cloud task must pre-exist" assumption.
+- **`beambam capture-params`** snapshots a cloud task's print parameters
+  (ams mapping, bed type, filament) for replay; `get_auto_nozzle_mapping` building
+  block for multi-filament auto-assignment.
+
+### Security: pre-public-release scrub
+
+- Redacted device-identifying example/test values (serial, uid, LAN IPs, access
+  code, factory cert-id MD5s) to placeholders across docs + tests.
+- Swapped the real captured signing vector in `test_mqtt_sign.py` for a frozen
+  stand-in (no real key material in-tree).
+- Untracked local device/account dumps (HA export, Handy data-audit); hardened
+  `.gitignore` + wheel/sdist excludes against `~/.x2d` material.
+
+### `x2d_bridge.py` removed
 
 Final step of the bridge-split: the 255-LoC back-compat shim is gone.
 Everything ships from `beambam.cli` proper.

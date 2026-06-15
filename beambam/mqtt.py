@@ -7,9 +7,13 @@ Canonical home as of v1.3.0:
 Signing
 -------
 Bambu's Jan-2025+ firmware rejects MQTT messages whose `header.sign_string`
-doesn't verify against a recognised RSA cert. The bridge uses the
-publicly-leaked Bambu Connect cert (cert_id GLOF1000000000-...) shipped
-in `bambu_cert.py`:
+doesn't verify against a recognised RSA cert. `sign_payload()` here is the
+**leaked-cert path**: it signs with the publicly-leaked Bambu Connect cert
+(cert_id GLOF1000000000-...) shipped in `bambu_cert.py`. That satisfies
+firmware that trusts the Bambu Connect chain, but NOT authorization-control
+firmware's `print.*` check (which wants a cert whose CN matches the printer's
+own serial) — for that, control routes through `beambam.cloud_control` using
+the per-installation key recovered by `beambam key`. Usage of this path:
 
     payload = {"print": {"sequence_id": "0", "command": "pause"}}
     signed = sign_payload(payload)
