@@ -2,10 +2,12 @@
 
 Two kinds of check:
   1. Round-trip with a stand-in RSA key (the code is correct).
-  2. A REAL captured Bambu Handy `print.stop` signature verifies against the real
-     app-cert public key with our reconstructed pre-image — this is the proof that
-     the reverse-engineered scheme (`{"<fam>":<cmd>,"user_id":"<uid>"}`, SHA-256,
-     RSA-PKCS#1-v1.5) is exactly what the firmware signs.
+  2. A FROZEN stand-in vector — a generated key signing the reconstructed
+     pre-image — verifies against its public key. This is a regression guard on
+     the exact byte serialization (`{"<fam>":<cmd>,"user_id":"<uid>"}`, SHA-256,
+     RSA-PKCS#1-v1.5): if the pre-image format ever drifts, the frozen signature
+     stops verifying. The real device key material that the live firmware signs
+     with is never committed — it lives only in `~/.x2d/printer_sign_key.pem`.
 """
 from __future__ import annotations
 
@@ -25,27 +27,30 @@ from cryptography.hazmat.primitives.asymmetric import rsa  # noqa: E402
 from cryptography.hazmat.primitives.asymmetric.rsa import RSAPublicNumbers  # noqa: E402
 
 
-# --- real capture (print.stop), public data only -------------------------------
+# --- frozen stand-in vector (no real key material) ------------------------------
+# Generated once: a throwaway RSA-2048 key signs the EXACT reconstructed pre-image
+# for a `print.stop`. Same shape as a live capture, but the modulus + signature
+# belong to a disposable key, and the uid / cert-id are placeholders.
 REAL = {
     "family": "print",
     "command": {"command": "stop", "sequence_id": "2009", "timestamp": 1780996597017},
     "user_id": "2000000001",
     "sign_string": (
-        "wuCtstj3csDe9BcrozO2RYbvWF+wwi88nGH0sOHXTJLahSuH89sHc53FopoKD4X8qtp8Xc1Htp+"
-        "QUILnWOJOU91/MkVuTJ2uKMKiBOg1/eLwfJTJyA7dG1BDxIEhRXt7OWgWZ1j5ptz5NJUq1q1XeDf"
-        "BiYn6PiHbAIbePjht/75QyFevdCw6cDAB2QZLJ8L9VLkWYUFcBjCqEG3apoqOF+hL8GPPwmDi+wW"
-        "BDwBbhLrn7FZIkbpRij9hNBVk9BLOAXuY0NEQWU9bcEW9z4tmLPSCQyNIjQtpz1P2IT52zuUTpJL"
-        "ue2/XhSsucWYC8IAJLGiKIJl2soQ8/QBQvqhgcw=="),
+        "B6zPQ8N2xMhf59SQRB6KDZDz9LXyWbTokjYHElDJ5IoGdIrPzKg5aHsbWoEjdtVBtfdMufDLDLz0"
+        "FQlXRtxDSyiNR0Dn/5vhd4MxXe1/3wXkbeQpsagjDxSk8B6G3xI5ndjkr0nju6+gVYeuRqxPXVrY"
+        "GxKLum3jjB5HEgjtWYHcCKBCUraj9qgjzf9Rw79wneuEyMwz8q8cb4z5a8xBOJFI8Fjob2ic65Kg"
+        "/BxP8ayj+RnGU/xRKsmvym16gPvYXl22ArOvzCjq0a4wLfNV5XxP8GSL+PCFNzlnA2Ybjt4q+/Mb"
+        "gbdA4ZhvjK+XYMctltd2azRnq+eDCUmq+8Xe+A=="),
     "cert_id": "0123456789abcdef0123456789abcdefCN=GLOF1000000000.bambulab.com",
     "payload_len": 98,
     "n_hex": (
-        "c2ee2cae650ffc11be0fe403dfa2d0feaec4a98c1d11bdd3a6e2d879c7469be306aa428a929c"
-        "5c3876cf748218a2c1906c17285c39507bb5782261cdf318a8b9042e5e2bd4c0f9d957ee3c7b1"
-        "e6c6e8292987b4d8cbff87cf0ca4a8c9ce0a94675e280ee912e948f3adc5de314f92b57fd21dc"
-        "c337f7b4e1b444f9548d24da49a7fe6a851c235bf67fdfb03b2fd729df433d67822ccc6f21831"
-        "391b235f66d937462e6345ca67633ce0f4ea2bdd5bb1f3b2a9460d87c40c6aa210f1c3563821d"
-        "091eef0a76dfe394851bf3626d5851de89f13e6d3a3d7dd416f938619914268a0115cf8f83592"
-        "03e3309e46530b61ca2f1ef20b2bcb57f50fcb6877fc24ecf97"),
+        "c5030c9e27a6af72df99c3b0b6d9cf3f34341e024caa3060974cfa9664145108376686d252b24"
+        "8b071c56c2ae828168fc843e03be1abdee8495a3f8ab5aa2496429adda1fdb29f4c7e4c6f3d42"
+        "86faf79b39c3480af7999568ee19a34d88f0630d62981ea67ea903921604e536175da2f03daa2"
+        "6ff0ea45903f455f3e55840911cf2d8d050e700fd1e6b0ec60898928a966cddc0f632c4c2eb3d"
+        "9d0c05f4e55e87c8a6287c4df31ddbfe551e3c6de20acd83e39de89ea4bc0c078ed3f7428082e"
+        "7caf157e63a7fcc151767429ac48a8b5747666d88a5a08b9551ebb5e492345c2f7e4887a19b16"
+        "c668a5d86c8a9d5af731dbdc2e5c52eb9c8bd9bdbd26d818c5"),
     "e": 65537,
 }
 
@@ -62,9 +67,9 @@ def test_preimage_is_body_minus_header():
     assert len(pre) == REAL["payload_len"] == 98
 
 
-def test_real_captured_signature_verifies():
-    """The crux: the genuine Handy signature verifies against the app cert pubkey
-    using our pre-image — i.e. we reproduce exactly what the firmware signs."""
+def test_frozen_vector_verifies():
+    """The frozen stand-in signature verifies against its public key using our
+    pre-image — proves the construction byte-for-byte without real key material."""
     published = (mqtt_sign.preimage(REAL["family"], REAL["command"], REAL["user_id"])[:-1]
                  + b',"header":' + json.dumps({
                      "sign_ver": "v1.0", "sign_alg": "RSA_SHA256",

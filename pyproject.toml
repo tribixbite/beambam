@@ -146,6 +146,10 @@ exclude = [
     "runtime/**/test_*.py",
     "runtime/**/__pycache__/**",
     "**/*.pyc",
+    # Local device/account dumps — never ship (also untracked + gitignored).
+    "runtime/handy_extract/HANDY_DATA_AUDIT*.md",
+    "runtime/handy_extract/postlogin/**",
+    "docs/ha-live-proof/**",
 ]
 
 [tool.hatch.build.targets.sdist]
@@ -176,6 +180,10 @@ exclude = [
     "/runtime/network_shim/build/**",
     "**/__pycache__",
     "**/*.pyc",
+    # Local device/account dumps — never ship (also untracked + gitignored).
+    "/runtime/handy_extract/HANDY_DATA_AUDIT*.md",
+    "/runtime/handy_extract/postlogin/**",
+    "/docs/ha-live-proof/**",
 ]
 
 # --- Tooling ---------------------------------------------------------------

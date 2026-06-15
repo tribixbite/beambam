@@ -38,7 +38,7 @@ ETA: ~30 minutes. No reverse-engineering required.
   official BambuStudio (NOT Termux, NOT Android — those use the same
   VMProtect-wrapped plugin we can't unpack).
 - The Bambu account credentials you used to bind your X2D
-  (`willstone@gmail.com` for the user this guide targets).
+  (`<your-bambu-email>` for the user this guide targets).
 - ~5 minutes of foreground BambuStudio use on that machine.
 
 ## Why this works

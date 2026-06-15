@@ -44,6 +44,31 @@ _*.py
 secrets/
 .x2d.env
 
+# === Sensitive material — never commit ===
+# Per-installation Bambu state lives in ~/.x2d (outside the repo); these patterns
+# are defence-in-depth in case any of it is ever copied in-tree.
+*.pem
+*.key
+*.pfx
+*.p12
+.x2d/
+**/credentials
+**/cloud_session.json
+**/printer_sign_key.pem
+**/printer_device_cert.pem
+**/captured_project_file.json
+**/printer_last_task.json
+*token*.json
+*captured*.json
+*project_file*.json
+# Real device/account dumps (serials + unrelated home devices + secrets)
+docs/ha-live-proof/
+runtime/handy_extract/HANDY_DATA_AUDIT.md
+runtime/handy_extract/HANDY_DATA_AUDIT_PART2.md
+runtime/handy_extract/cache/
+runtime/handy_extract/captures/
+runtime/handy_extract/postlogin/
+
 # Build helpers we no longer need
 build-deps.sh
 build-cli.sh
