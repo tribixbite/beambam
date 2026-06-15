@@ -343,6 +343,20 @@ def check_environment() -> list[Check]:
                          "Optional: `beambam key --adb <ip:port>` recovers it "
                          "from a captured Bambu Handy (see "
                          "runtime/handy_extract/SIGNER_HANDOFF.md)."))
+
+    # Device cert (X2D/H2D LAN print only). The signed `project_file` carries the
+    # FTP file location as `url_enc` = RSA-encrypted to the printer's own device
+    # cert; without it, X2D/H2D LAN print can't build a body the firmware accepts.
+    # P1/A1/X1 use a plaintext `url` and don't need this.
+    device_cert = home / ".x2d" / "printer_device_cert.pem"
+    if device_cert.is_file():
+        out.append(Check("Environment", "Printer device cert", "pass",
+                         "device cert present — X2D/H2D LAN print (url_enc) enabled"))
+    else:
+        out.append(Check("Environment", "Printer device cert", "info",
+                         "no device cert — only needed for X2D/H2D LAN print "
+                         "(P1/A1/X1 don't use url_enc). Fetch with "
+                         "`beambam device-cert`."))
     return out
 
 

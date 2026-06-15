@@ -530,3 +530,24 @@ def cmd_key(args: argparse.Namespace) -> int:
     except Exception as e:                                # noqa: BLE001
         print(f"[key] key saved, but cert_id write failed: {e}", file=sys.stderr)
     return 0
+
+
+def cmd_device_cert(args: argparse.Namespace) -> int:
+    """Fetch + cache the printer's RSA device cert — required for X2D/H2D LAN
+    start-print (the project_file `url_enc` encrypts the file URL to this cert's
+    public key). Connects to the LAN broker and sends the unsigned
+    `security.app_cert_install` (gated only by the access code), then caches the
+    leaf at ~/.x2d/printer_device_cert.pem. One-time setup, like `beambam key`."""
+    from beambam.device_cert import fetch_device_cert
+    creds = _config.Creds.resolve(args)
+    cli = _mqtt.X2DClient(creds)
+    cli.connect()
+    try:
+        out = fetch_device_cert(cli, cn=getattr(args, "cn", None))
+    except Exception as e:                                # noqa: BLE001
+        print(f"[device-cert] failed: {e}", file=sys.stderr)
+        return 1
+    finally:
+        cli.disconnect()
+    print(f"[device-cert] cached printer device cert → {out}")
+    return 0

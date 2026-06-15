@@ -177,7 +177,7 @@ from beambam.cli.control import (
     cmd_home, cmd_level, cmd_set_temp, cmd_chamber_light,
     cmd_reboot, cmd_jog, cmd_record, cmd_timelapse, cmd_resolution,
     cmd_fod_check, cmd_ams_load, cmd_ams_unload,
-    cmd_start, cmd_key, cmd_skip,
+    cmd_start, cmd_key, cmd_skip, cmd_device_cert,
 )
 from beambam.cli.cloud import (
     cmd_cloud_login, cmd_cloud_status, cmd_cloud_printers,
@@ -337,6 +337,13 @@ def main() -> int:
     ky.add_argument("--adb", help="phone adb serial ip:port (or env X2D_ADB)")
     ky.add_argument("--cert", help="app cert PEM (default ~/.x2d/printer_app_cert.pem)")
     ky.set_defaults(fn=cmd_key)
+
+    dvc = sub.add_parser("device-cert",
+                         help="Fetch + cache the printer's RSA device cert "
+                              "(needed for X2D/H2D LAN start-print url_enc)")
+    dvc.add_argument("--cn", help="GLOF<n>.bambulab.com CN for the probe "
+                                  "(default: derived from ~/.x2d/printer_cert_id.txt)")
+    dvc.set_defaults(fn=cmd_device_cert)
 
     rb = sub.add_parser(
         "reboot",
