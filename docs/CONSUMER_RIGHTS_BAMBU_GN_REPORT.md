@@ -140,6 +140,12 @@ The concrete concession was an **optional LAN "Developer Mode"** (added after fe
 The ecosystem trade-off (Repo-verified, `docs/COMPARISON.md:16-23`): **Developer LAN Mode by design severs Bambu Cloud and disables auth verification** — so the sanctioned way to regain full local/third-party control costs you cloud, MakerWorld sync, and remote access. That is precisely the trade-off `beambam` avoids (Part 5.1).
 - Sources: [3D Printing Industry — Bambu responds](https://3dprintingindustry.com/news/bambu-lab-responds-to-backlash-over-new-firmware-update-235771/), [All3DP — promises Developer Mode](https://all3dp.com/4/bambu-lab-responds-to-security-update-controversy-promises-developer-mode/).
 
+**Causation — what was, and was not, a response to the backlash (Verified):**
+- **Plain "LAN mode" was *not* added in response to anything** — it pre-dated the controversy; the original grievance was that authorization control applied *even in LAN mode*. Bambu confirmed ordinary LAN mode stays (community: "LAN mode isn't going away"; "Unsupported Developer Mode = what was sold to us as supported 'LAN Mode' when we bought the printer").
+- **"Developer Mode" *was* a concession to the outcry.** Per 3D Printing Industry reporting Bambu's communications, it was added "following feedback from 3D print farms"; the contemporaneous community thread (started Jan 20 2025) reads: "After tremendous outcry from users and influencers over the new firmware 'Authorization' fiasco, Bambu Lab has made some small concessions and will include a 'Developer Mode' … likely would not have been included had we not spoken out strongly."
+- **The reverse-engineering work was an *indirect* driver, not the stated cause.** No source shows Bambu attributing Developer Mode to the RE/key-extraction; Bambu credited "feedback" (and dismissed much criticism as "misinformation"). But the RE-adjacent grievances fed the backlash — third-party software (OrcaSlicer/Home Assistant) breakage is the *interoperability* problem RE solves, and the **Jan 19 Bambu Connect private-key extraction** publicly discredited the "security" rationale the day before the Jan 20 concession. The community thread itself demands documented APIs "so this should not need to be reverse engineered by users" — framing RE as the symptom, not the cited cause.
+- Source: [Bambu forum — "Developer Mode - Help Define!" (Jan 20 2025)](https://forum.bambulab.com/t/developer-mode-help-define/137639).
+
 ---
 
 # Part 3 — The Gamers Nexus / Louis Rossmann flashpoint (May 2026)
