@@ -52,6 +52,75 @@ def _md5_of(local_path: Path) -> str:
     return h.hexdigest().upper()
 
 
+def _inner_gcode_md5(local_path: Path, plate_idx: int = 1) -> str:
+    """Hex MD5 of the INNER `Metadata/plate_<N>.gcode` inside a .gcode.3mf.
+
+    This — NOT the md5 of the whole .3mf zip — is what the firmware's
+    `print.project_file` `md5` field must carry (verified live on the X2D: the
+    wrong md5 trips the file-verify stage → err_code 84033544). The slicer
+    already stores it alongside the gcode as `Metadata/plate_<N>.gcode.md5`; we
+    prefer that, falling back to hashing the extracted gcode. Uppercase hex to
+    match the slicer's stored form + the captured BS-Windows LAN wire."""
+    import zipfile as _zfm
+    inner = f"Metadata/plate_{plate_idx}.gcode"
+    try:
+        with _zfm.ZipFile(local_path) as z:
+            try:
+                return z.read(inner + ".md5").decode("ascii", "ignore").strip().upper()
+            except KeyError:
+                return hashlib.md5(z.read(inner)).hexdigest().upper()
+    except (_zfm.BadZipFile, KeyError, OSError) as e:
+        raise PrintRefusal(
+            f"cannot read {inner} from {local_path.name} for md5: {e}")
+
+
+def _signing_user_id() -> str:
+    """`user_id` embedded in the signed pre-image — read from the LOCAL cloud
+    session file (no network). The signed scheme hashes
+    `{"<family>":<cmd>,"user_id":"<uid>"}`; the uid is just a value in that
+    blob, so reading it locally keeps a LAN print fully offline."""
+    import json
+    import os
+    try:
+        j = json.loads((Path.home() / ".x2d" / "cloud_session.json").read_text())
+        if j.get("user_id"):
+            return str(j["user_id"])
+    except Exception:                                       # noqa: BLE001
+        pass
+    return os.environ.get("X2D_USER_ID", "")
+
+
+def _publish_signed_or_legacy(client: "X2DClient", payload: dict) -> None:
+    """Publish a `print.*` payload with the right signature for this firmware.
+
+    Jan-2025+ X2D/H2D firmware verifies `print.*` against a Bambu-CA-issued cert.
+    If the recovered per-install key is present (`~/.x2d/printer_sign_key.pem` +
+    `printer_cert_id.txt`) we sign the command with it (`mqtt_sign`) and publish
+    the raw wire — the only signature the printer accepts for print control. The
+    legacy `X2DClient.publish` path signs with the leaked Bambu Connect cert,
+    which the firmware rejects for `print.*` (err 84033545). Falls back to it
+    only when the recovered key is absent (older firmware)."""
+    key_path = Path.home() / ".x2d" / "printer_sign_key.pem"
+    cid_path = Path.home() / ".x2d" / "printer_cert_id.txt"
+    # Take the signed-raw path only when the recovered key is present AND the
+    # client exposes a real paho `.client` (raw publish). Test/simulate clients
+    # capture via their high-level `publish()` and have no `.client`.
+    if (not (key_path.is_file() and cid_path.is_file())
+            or getattr(client, "client", None) is None):
+        client.publish(payload)
+        return
+    from beambam import mqtt_sign
+    from cryptography.hazmat.primitives.serialization import load_pem_private_key
+    key = load_pem_private_key(key_path.read_bytes(), None)
+    cert_id = cid_path.read_text().strip()
+    family = next(iter(payload))                            # "print"
+    command = payload[family]                               # already has seq+ts
+    wire = mqtt_sign.signed_message(family, command, _signing_user_id(),
+                                    signer=mqtt_sign.key_signer(key), cert_id=cert_id)
+    topic = f"device/{client.creds.serial}/request"
+    client.client.publish(topic, wire, qos=1)
+
+
 def _filament_class(s: str) -> str:
     """Collapse a Bambu-style filament_type string to its class prefix
     for compatibility comparison. PLA / PLA Silk / PLA-CF -> 'PLA';
@@ -294,7 +363,7 @@ def start_print(client: "X2DClient", gcode_filename: str, *,
       * `dev_id`              — device serial; binds the publish to this printer
       * `task_id` / `subtask_id` / `subtask_name` / `job_id` — task identity
       * `project_id` / `profile_id` / `design_id` / `model_id` / `plate_idx`
-      * `md5`                 — MD5 of the uploaded .gcode.3mf bytes
+      * `md5`                 — MD5 of the INNER `plate_<N>.gcode` (not the .3mf zip)
       * `timestamp`           — unix seconds
       * `job_type`            — 0 for LAN local, 1 for cloud
       * `bed_temp`            — int degrees C
@@ -305,12 +374,13 @@ def start_print(client: "X2DClient", gcode_filename: str, *,
       * `ams_mapping2`        — newer `[{"ams_id": 0, "slot_id": N}]` form
       * `cfg`                 — string "0"
 
-    URL scheme: X2D's printer profile maps the FTP root (`/`) to the SD-mount
-    `sdcard/` prefix internally. We pass `ftp:///<name>` (firmware translates),
-    matching what the Windows BS LAN flow does."""
+    URL scheme: the .gcode.3mf is FTP-uploaded into the printer's `cache/` dir
+    and referenced as `ftp:///cache/<name>` — exactly what the Windows BS LAN
+    flow does (verified from a captured wire diff). A root-level `ftp:///<name>`
+    is NOT found by the firmware (file-verify stage → err 84033544)."""
     if local_path is None:
         local_path = Path.cwd() / gcode_filename
-    md5_hex = _md5_of(local_path) if local_path.is_file() else ""
+    md5_hex = _inner_gcode_md5(local_path) if local_path.is_file() else ""
 
     # Safety: derive bed_type / bed_temp from the .gcode.3mf when callers
     # don't pass them. The pre-2026-05 defaults ("textured_plate" / 65 °C)
@@ -388,7 +458,7 @@ def start_print(client: "X2DClient", gcode_filename: str, *,
             "command":                  "project_file",
             "param":                    "Metadata/plate_1.gcode",
             "file":                     gcode_filename,
-            "url":                      f"ftp:///{gcode_filename}",
+            "url":                      f"ftp:///cache/{gcode_filename}",
             "md5":                      md5_hex,
             # Task identity — firmware insists these are present even
             # for LAN. Numeric-looking strings; same value across the
@@ -430,4 +500,4 @@ def start_print(client: "X2DClient", gcode_filename: str, *,
             "cfg":                      "0",
         }
     }
-    client.publish(payload)
+    _publish_signed_or_legacy(client, payload)

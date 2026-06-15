@@ -134,7 +134,8 @@ def cmd_print(args: argparse.Namespace) -> int:
     # Step 3: upload (if requested) BEFORE we open the MQTT client so a
     # transient FTPS failure doesn't leave a stale subscription.
     if not args.no_upload:
-        upload_file(creds, local, remote_name=args.remote)
+        # cache/ — the firmware-accepted LAN print URL is ftp:///cache/<file>
+        upload_file(creds, local, remote_name=args.remote, remote_dir="cache")
 
     # Step 4: open the MQTT client and validate live AMS state.
     cli = X2DClient(creds)
@@ -316,7 +317,7 @@ def cmd_slice_print(args: argparse.Namespace) -> int:
 
         # Upload + print via existing path
         creds = Creds.resolve(args)
-        upload_file(creds, out_3mf, remote_name=args.remote)
+        upload_file(creds, out_3mf, remote_name=args.remote, remote_dir="cache")
         cli = X2DClient(creds)
         cli.connect()
         name = args.remote or out_3mf.name

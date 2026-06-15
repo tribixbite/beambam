@@ -267,14 +267,27 @@ def list_files(creds: "Creds", path: str = "") -> list[str]:
 
 
 def upload_file(creds: "Creds", local_path: Path,
-                remote_name: str | None = None) -> None:
-    """Upload a file to the printer's SD card via implicit FTPS."""
+                remote_name: str | None = None,
+                remote_dir: str | None = None) -> None:
+    """Upload a file to the printer's SD card via implicit FTPS.
+
+    `remote_dir` (e.g. ``"cache"``) STORs into that subdirectory, creating it if
+    needed. The LAN print flow uploads the .gcode.3mf to ``cache/`` because the
+    firmware-accepted `print.project_file` URL is ``ftp:///cache/<file>`` — what
+    Bambu Studio's desktop LAN flow does. With no `remote_dir` the file lands at
+    the FTP root (back-compat)."""
     if not local_path.is_file():
         sys.exit(f"file not found: {local_path}")
     if remote_name is None:
         remote_name = local_path.name
     ftp = _manual_ftp_tls(creds, timeout=15.0)
     try:
+        if remote_dir:
+            try:
+                ftp.cwd(remote_dir)
+            except ftplib.error_perm:
+                ftp.mkd(remote_dir)
+                ftp.cwd(remote_dir)
         with local_path.open("rb") as f:
             ftp.storbinary(f"STOR {remote_name}", f, blocksize=32768)
     finally:
