@@ -750,7 +750,32 @@ def run_bs_slice(input_3mf: Path, out_3mf: Path, plate: int = 0, debug: int = 1)
         str(input_3mf),
     ]
     env = os.environ.copy()
-    env.setdefault("DISPLAY", ":1")
+    # bs-bionic is BIND_NOW-linked against ffmpeg 7.0 and needs its bundled libs;
+    # LD_LIBRARY_PATH is filtered by some parent shells (bun-on-termux), so set
+    # it explicitly. The empty ffmpeg stubs (runtime/ffmpeg-stubs) satisfy the
+    # loader on the slice path (ffmpeg is GUI-camera-only). Headless software GL,
+    # no X server (the GL context is only for optional thumbnails). See
+    # tools/SLICER_SETUP.md.
+    libdirs = [
+        X2D_ROOT / "runtime" / "ffmpeg-stubs",
+        X2D_ROOT / "bs-bionic" / "build" / "src",
+        X2D_ROOT / "bs-bionic" / "build" / "src" / "local" / "lib",
+        X2D_ROOT / "bs-bionic" / "deps" / "build" / "destdir" / "usr" / "local" / "lib",
+    ]
+    parts = [str(p) for p in libdirs]
+    if env.get("LD_LIBRARY_PATH"):
+        parts.append(env["LD_LIBRARY_PATH"])
+    env["LD_LIBRARY_PATH"] = ":".join(parts)
+    env.update({"LIBGL_ALWAYS_SOFTWARE": "1", "GALLIUM_DRIVER": "llvmpipe",
+                "EGL_PLATFORM": "surfaceless", "MESA_LOADER_DRIVER_OVERRIDE": "llvmpipe",
+                "LC_ALL": "C", "LANG": "C"})
+    env.pop("DISPLAY", None)
+    # ensure the flattened *_full preset dirs BS loads system presets from exist
+    res = X2D_ROOT / "bs-bionic" / "resources" / "profiles" / "BBL"
+    if (res / "machine").is_dir() and not (res / "process_full").is_dir():
+        flat = X2D_ROOT / "tools" / "flatten_bbl_profiles.py"
+        if flat.is_file():
+            subprocess.call([sys.executable, str(flat), str(res)])
     print(f"[x2d_slice] running: {' '.join(cmd)}", file=sys.stderr)
     return subprocess.call(cmd, env=env)
 
