@@ -22,6 +22,7 @@ unchanged.
 """
 from __future__ import annotations
 
+import base64
 import hashlib
 import json as _json
 import time
@@ -402,6 +403,88 @@ def _validate_ams_slot(state: dict, ams_global_slot: int,
                 f"swap spool).")
 
 
+_DEVICE_CERT_PATH = Path.home() / ".x2d" / "printer_device_cert.pem"
+
+
+def _device_url_enc(url: str, device_cert_path: Path | None = None) -> str:
+    """Encrypt a file URL for the project_file `url_enc` field.
+
+    Jan-2025+ X2D/H2D firmware takes the print file's location as `url_enc` —
+    `base64(RSA-PKCS1v15(printer_device_pubkey, url))` — NOT a plaintext `url`;
+    the printer decrypts it with its own device private key. The RSA-4096 device
+    cert comes from the unsigned `security.app_cert_install` response
+    (`printer_cert`), cached at ~/.x2d/printer_device_cert.pem. Verified live:
+    sending a plaintext `url` is why a hand-built command failed file-verify
+    (err 84033544); `url_enc` makes the X2D accept + start the print."""
+    from cryptography import x509
+    from cryptography.hazmat.primitives.asymmetric import padding as _pad
+    p = device_cert_path or _DEVICE_CERT_PATH
+    cert = x509.load_pem_x509_certificate(p.read_bytes())
+    enc = cert.public_key().encrypt(url.encode("utf-8"), _pad.PKCS1v15())
+    return base64.b64encode(enc).decode("ascii")
+
+
+def build_x2d_project_file(gcode_filename: str, md5_hex: str, *,
+                           ams_slots: list[int], bed_type: str,
+                           use_ams: bool = True,
+                           subtask_name: str | None = None,
+                           timelapse: bool = False,
+                           device_cert_path: Path | None = None) -> dict:
+    """Build the X2D/H2D `print.project_file` body — the exact field shape
+    captured from a real Bambu Studio desktop LAN print (verified live: the
+    printer accepts it with `err_code 0` and starts).
+
+    Differs from the legacy single-nozzle body: the file is `url_enc`
+    (encrypted, see `_device_url_enc`), NOT a plaintext `url`; `ams_mapping` is a
+    10-wide array of GLOBAL slots padded with -1; `ams_mapping2` is 10-wide
+    `{ams_id,slot_id}` padded with `{255,255}`; task/subtask/project ids are all
+    `"0"`; `cfg` is `"4"`; and `bed_temp`/`plate_idx`/`dev_id`/`job_type`/
+    `nozzle_mapping` are absent (the firmware reads them from the gcode). Keys
+    are sorted to match BS's serialization."""
+    width = 10
+    ams_mapping = [-1] * width
+    ams_mapping2: list[dict] = [{"ams_id": 255, "slot_id": 255}
+                                for _ in range(width)]
+    for i, s in enumerate(ams_slots[:width]):
+        ams_mapping[i] = int(s)
+        ams_mapping2[i] = {"ams_id": int(s) // 4, "slot_id": int(s) % 4}
+    if subtask_name is None:
+        subtask_name = gcode_filename
+        for suf in (".gcode.3mf", ".3mf"):
+            if subtask_name.endswith(suf):
+                subtask_name = subtask_name[: -len(suf)]
+                break
+    body = {
+        "ams_mapping": ams_mapping,
+        "ams_mapping2": ams_mapping2,
+        "auto_bed_leveling": 2,
+        "bed_leveling": False,
+        "bed_type": bed_type,
+        "cfg": "4",
+        "command": "project_file",
+        "extrude_cali_flag": 2,
+        "extrude_cali_manual_mode": 0,
+        "file": gcode_filename,
+        "flow_cali": False,
+        "layer_inspect": True,
+        "md5": md5_hex,
+        "nozzle_offset_cali": 0,
+        "param": "Metadata/plate_1.gcode",
+        "profile_id": "0",
+        "project_id": "0",
+        "sequence_id": str(int(time.time() * 1000)),
+        "subtask_id": "0",
+        "subtask_name": subtask_name,
+        "task_id": "0",
+        "timelapse": bool(timelapse),
+        "url_enc": _device_url_enc(f"ftp:///cache/{gcode_filename}",
+                                   device_cert_path),
+        "use_ams": bool(use_ams),
+        "vibration_cali": False,
+    }
+    return dict(sorted(body.items()))
+
+
 def start_print(client: "X2DClient", gcode_filename: str, *,
                 use_ams: bool = True,
                 ams_slot: int | list[int] = 0,
@@ -495,6 +578,21 @@ def start_print(client: "X2DClient", gcode_filename: str, *,
     else:
         ams_mapping_legacy = []
         ams_mapping_v2 = []
+
+    # X2D / H2D auth-control firmware uses a DIFFERENT project_file shape: the
+    # file is an RSA-encrypted `url_enc` (not a plaintext `url`), a 10-wide
+    # ams_mapping, and "0" task ids — see build_x2d_project_file. We detect it by
+    # the cached device cert (only present once `security.app_cert_install` has
+    # handed it over). Captured from a real BS desktop LAN print + verified live
+    # (printer accepts with err_code 0 and starts). The legacy shape below is for
+    # pre-auth-control firmware.
+    if _DEVICE_CERT_PATH.is_file():
+        x2d_body = build_x2d_project_file(
+            gcode_filename, md5_hex, ams_slots=ams_mapping_legacy,
+            bed_type=bed_type, use_ams=use_ams, timelapse=timelapse)
+        _publish_signed_or_legacy(client, {"print": x2d_body})
+        return
+
     # Task identity numbers — must be numeric-looking 9-10 digit IDs
     # (not "0") so the firmware's command handler accepts them. Use
     # timestamp so each invocation gets a fresh ID and we don't collide
