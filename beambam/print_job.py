@@ -121,6 +121,66 @@ def _publish_signed_or_legacy(client: "X2DClient", payload: dict) -> None:
     client.client.publish(topic, wire, qos=1)
 
 
+def request_auto_nozzle_mapping(client: "X2DClient", group_info: list[dict], *,
+                                version: int = 1, wait: float = 8.0):
+    """Ask a dual-nozzle X2D/H2D to AUTO-compute the filament→nozzle mapping —
+    the "automatic switch" (`get_auto_nozzle_mapping`, `DevMappingNozzle.cpp`).
+
+    `group_info` is one entry per used nozzle group, derived from the .gcode.3mf
+    (`filament_map` / `nozzle_diameter` / `nozzle_volume_type`):
+    `{"id": group_id, "ext": extruder_id+1, "dia": float, "vol": "Standard"|"High Flow"|"TPU Flow"}`.
+    The printer replies with a `mapping` array (one assigned nozzle per group)
+    which becomes the project_file's `nozzle_mapping`. Signed (print.* tier);
+    requires the recovered key + a connected client.
+
+    Returns the `mapping` list, or None on timeout. Verified live on the X2D
+    (`result:success`). NOTE: the *full* X2D dual-nozzle project_file field set
+    that consumes this mapping is NOT yet reproduced — a beambam-built
+    project_file still returns err 84033544 at the task-verify stage. The exact
+    fields are only emitted by the cloud / BS-desktop closed networking lib and
+    are absent from any captured Handy traffic (the cloud, not Handy, publishes
+    the project_file). Capture the cloud's publish to `device/<serial>/request`
+    to finish this.  # TODO(lan-print): complete the project_file field set.
+    """
+    import json
+    import time
+    key_path = Path.home() / ".x2d" / "printer_sign_key.pem"
+    cid_path = Path.home() / ".x2d" / "printer_cert_id.txt"
+    if not (key_path.is_file() and cid_path.is_file()
+            and getattr(client, "client", None) is not None):
+        return None
+    from beambam import mqtt_sign
+    from cryptography.hazmat.primitives.serialization import load_pem_private_key
+    key = load_pem_private_key(key_path.read_bytes(), None)
+    cert_id = cid_path.read_text().strip()
+    now = int(time.time() * 1000)
+    cmd = {"command": "get_auto_nozzle_mapping", "sequence_id": str(now),
+           "timestamp": now, "group_info": group_info, "version": int(version)}
+    wire = mqtt_sign.signed_message("print", cmd, _signing_user_id(),
+                                    signer=mqtt_sign.key_signer(key), cert_id=cert_id)
+    result: dict = {}
+    prev = client.client.on_message
+
+    def _on(c, d, m):
+        try:
+            p = json.loads(m.payload).get("print", {})
+        except Exception:                                  # noqa: BLE001
+            return
+        if isinstance(p, dict) and p.get("command") == "get_auto_nozzle_mapping" \
+                and "mapping" in p:
+            result["mapping"] = p["mapping"]
+
+    client.client.on_message = _on
+    client.client.subscribe(f"device/{client.creds.serial}/report", qos=1)
+    time.sleep(0.8)
+    client.client.publish(f"device/{client.creds.serial}/request", wire, qos=1)
+    deadline = time.time() + wait
+    while time.time() < deadline and "mapping" not in result:
+        time.sleep(0.2)
+    client.client.on_message = prev
+    return result.get("mapping")
+
+
 def _filament_class(s: str) -> str:
     """Collapse a Bambu-style filament_type string to its class prefix
     for compatibility comparison. PLA / PLA Silk / PLA-CF -> 'PLA';
