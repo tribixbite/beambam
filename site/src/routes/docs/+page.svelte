@@ -41,6 +41,8 @@
             docs: [
                 { id: 'LOCAL_CONTROL_PATHS',   name: 'docs/LOCAL_CONTROL_PATHS.md',    desc: 'LAN MQTT, FTPS, RTSPS, LVL-Local — every protocol the printer speaks on the local network.' },
                 { id: 'SIGNED_VS_UNSIGNED',    name: 'docs/SIGNED_VS_UNSIGNED.md',     desc: 'Signed vs unsigned MQTT truth table per firmware version. Includes the leaked-cert background.' },
+                { id: 'DART_HEAP_KEY',         name: 'runtime/handy_extract/DART_HEAP_KEY_EXTRACTION.md', desc: 'How beambam recovers the per-installation signing key from the Bambu Handy Dart heap — scanning for a 128-byte window that divides the known modulus (a prime factor). No Frida, no hooking.' },
+                { id: 'COMPARISON',            name: 'docs/COMPARISON.md',            desc: 'How beambam compares to ha-bambulab, bambu-mcp, bambulabs_api, OrcaSlicer and others — and why it is the only one that starts a print over pure LAN on signed firmware with no cloud and no Developer Mode.' },
                 { id: 'X2D_RUNTIME_PIPELINE',  name: 'docs/X2D_RUNTIME_PIPELINE.md',   desc: 'How a print command flows from CLI through the bridge to the printer\u2019s firmware.' },
                 { id: 'CLOUD_BRIDGE',          name: 'docs/CLOUD_BRIDGE.md',           desc: 'Optional Bambu Cloud bridge — cloud-print, cloud-state, cloud-pause.' }
             ]
@@ -50,7 +52,7 @@
             intro: 'The things you\u2019ll learn while operating beambam in the field.',
             docs: [
                 { id: 'c-signed',        name: 'Signed MQTT',
-                  desc: 'Jan-2025+ firmware rejects every MQTT command lacking a header.sign_string that verifies against a recognised RSA cert. beambam signs every publish using the publicly-leaked Bambu Connect cert. Your access code stays on your LAN.' },
+                  desc: 'Jan-2025+ firmware rejects every MQTT command lacking a header.sign_string that verifies against a recognised RSA cert. The leaked Bambu Connect cert covers older firmware; authorization-control firmware (X2D/H2D, refreshed P1/X1) requires a signing cert whose CN matches the printer serial, which beambam recovers per-installation from a Bambu Handy app (beambam key). Your access code stays on your LAN.' },
                 { id: 'c-credentials',   name: 'Credentials INI',
                   desc: '~/.x2d/credentials is an INI file with [printer] (default) or [printer:NAME] sections. Multi-printer setups select via --printer NAME or X2D_PRINTER env var.' },
                 { id: 'c-analyzer',      name: 'Phases + flush analysis',

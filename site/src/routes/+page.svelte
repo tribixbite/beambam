@@ -70,8 +70,8 @@ Summary: 6 pass, 2 warn, 0 fail`;
     const claims = [
         {
             tag: 'BRIDGE',
-            head: 'Signed MQTT over the LAN. No cloud account.',
-            body: 'Bambu firmware since Jan-2025 requires RSA-SHA256 signed MQTT for every command. beambam signs transparently using the publicly-leaked Bambu Connect cert. Your printer never has to phone home, your access code never leaves your network, and the bridge speaks the same wire format the official Studio + Network Plugin do.'
+            head: 'Start a print over pure LAN. No cloud. No Developer Mode.',
+            body: 'Bambu firmware since Jan-2025 rejects unsigned control commands and wants a signing cert whose CN matches the printer, so a shared cert will not do — every other open client falls back to Developer Mode, which severs Bambu Cloud entirely. beambam recovers the per-installation signing key from a Bambu Handy install, signs pause / resume / stop / start / skip, and starts a print by FTP-ing the .gcode.3mf plus a signed project_file whose file location is RSA-encrypted to the printer device cert. No cloud account. No Developer Mode.'
         },
         {
             tag: 'INTEGRATIONS',
@@ -101,7 +101,7 @@ Summary: 6 pass, 2 warn, 0 fail`;
         <!-- Status pill — "we shipped a thing" -->
         <div class="pill mb-[var(--space-2xl)]">
             <span class="pill-dot"></span>
-            <span>v1.3.0 · ams sync · printables chain · short verbs (boo / ha / led)</span>
+            <span>v1.5.0 · signed control · no-cloud LAN print · per-install key recovery</span>
         </div>
 
         <!-- Wordmark — its own row so it can breathe. Hero size capped at
