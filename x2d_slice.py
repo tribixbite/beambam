@@ -479,6 +479,11 @@ def patch_project_settings_for_multi_color(json_bytes: bytes,
 
     old_n = len(data.get("filament_colour") or [1])
     data["filament_colour"] = list(new_colours)
+    # Each filament must map to a nozzle. The X2D/H2D are dual-nozzle, so cycle
+    # the filaments across the real nozzle count — if filament_map just copies
+    # nozzle 1 for every slot (the naive expansion), BS keeps every filament on
+    # nozzle 1 and the 2nd-nozzle colour is never printed (emits invalid T).
+    nozzle_count = len(data.get("nozzle_diameter") or []) or 2
 
     # Expand every other list whose len matches the OLD filament_colour len.
     # This catches filament_type / filament_settings_id / filament_ids etc.
@@ -490,7 +495,9 @@ def patch_project_settings_for_multi_color(json_bytes: bytes,
         v = data[k]
         if not isinstance(v, list) or not v:
             continue
-        if len(v) == old_n and k.startswith("filament_"):
+        if k == "filament_map" and len(v) == old_n:
+            data[k] = [str((i % nozzle_count) + 1) for i in range(n)]
+        elif len(v) == old_n and k.startswith("filament_"):
             data[k] = [v[0]] * n
         elif len(v) == old_n and k == "default_filament_colour":
             data[k] = [v[0]] * n
@@ -505,34 +512,45 @@ def patch_project_settings_for_multi_color(json_bytes: bytes,
     return _json.dumps(data, indent=4).encode("utf-8")
 
 
-def patch_model_settings_for_per_object_extruder(xml_bytes: bytes,
-                                                   copies: int) -> bytes:
-    """For multi-color prints with --copies, give each copy/object its
-    own extruder index (1, 2, 3, ... N) so the slicer assigns a
-    different filament slot to each.
+def patch_model_settings_for_per_object_extruder(
+        xml_bytes: bytes, copies: int,
+        extruders: "list[int] | None" = None) -> bytes:
+    """Assign each <object> (copy) to a nozzle/extruder.
 
-    The model_settings.config <object id="N"> blocks each have
-    `<metadata key="extruder" value="1"/>` — we cycle through 1..N for
-    successive objects keyed by `<object id="...">`. The order of
-    <object> blocks in this file matches the order of copies, which
-    matches the slot assignment from _grid_layout()."""
-    if copies <= 1:
+    On the X2D/H2D the per-object `<metadata key="extruder" value="N"/>` is the
+    NOZZLE index (1 or 2) — so THIS is what actually makes a multi-copy print
+    come out in different colours: a copy on nozzle 1 prints filament 1, a copy
+    on nozzle 2 prints filament 2 (the filament_colour palette expanded by
+    patch_project_settings_for_multi_color). Without it every copy defaults to
+    extruder 1 and prints the first colour only.
+
+    `extruders` — explicit per-object nozzle list (1-based), e.g. ``[1, 2, 1, 2]``;
+    walked in <object> order and cycled if shorter than the object count. Callers
+    pass a list already capped to the printer's real nozzle count (extruder ids
+    beyond that have no nozzle bound and trip BS's "out of bed area" check). When
+    omitted, falls back to the legacy 1..copies cycle (kept for the copies=1
+    no-op + back-compat)."""
+    if extruders is None and copies <= 1:
         return xml_bytes
     import re as _re
     text = xml_bytes.decode("utf-8", errors="replace")
-    # Walk <object id="X"> ... </object> blocks in order and rewrite
-    # the inner extruder= metadata to slot (index+1).
+    seq = [int(e) for e in extruders] if extruders else [i + 1 for i in range(copies)]
+    if not seq:
+        return xml_bytes
+
     def _replace_block(m: "_re.Match", idx_box: list = [0]) -> str:
         block = m.group(0)
-        slot = idx_box[0] + 1
+        slot = seq[idx_box[0] % len(seq)]
         idx_box[0] += 1
         return _re.sub(
             r'(<metadata key="extruder" value=")\d+(")',
             rf'\g<1>{slot}\g<2>',
             block, count=1,
         )
+    # Explicit map → patch every object; legacy cycle → only the first `copies`.
+    count = 0 if extruders else copies
     new_text = _re.sub(r'<object\s+id="\d+">.*?</object>', _replace_block,
-                       text, count=copies, flags=_re.DOTALL)
+                       text, count=count, flags=_re.DOTALL)
     return new_text.encode("utf-8")
 
 
@@ -633,7 +651,8 @@ def graft_stl_into_template(template: Path, stl: Path, out: Path,
                               bed_type: str | None = None,
                               copies: int = 1,
                               colors: list[str] | None = None,
-                              orient: str = "original") -> None:
+                              orient: str = "original",
+                              nozzle_map: list[int] | None = None) -> None:
     """Copy template 3MF, replace its 3D geometry with the STL's, and write
     to `out`. Preserves project_settings, machine, filament, etc.
 
@@ -706,19 +725,22 @@ def graft_stl_into_template(template: Path, stl: Path, out: Path,
                         data = patch_model_settings_for_color(data, color)
                     if int(copies) > 1:
                         data = _patch_model_settings_for_copies(data, int(copies), vlist, float(scale))
-                    # NOTE: we intentionally do NOT call
-                    # patch_model_settings_for_per_object_extruder() here.
-                    # The `<metadata key="extruder" value="N"/>` on an
-                    # <object> is the NOZZLE index (X2D has 2 nozzles =
-                    # extruders 1 and 2), not the AMS slot. Setting it
-                    # to >2 trips BS's "out of bed area" check at slice
-                    # time because the slicer assigns no nozzle to those
-                    # extruder ids. AMS-slot binding lives in paint maps
-                    # / the wipe-tower config — out of scope for our
-                    # template-graft pipeline. --colors provisions the
-                    # slots in project_settings.config so a downstream
-                    # paint step or hand-edited model_settings can pick
-                    # them up.
+                    # Per-object nozzle assignment. The `<metadata key="extruder"
+                    # value="N"/>` on an <object> is the NOZZLE index (X2D/H2D =
+                    # extruders 1 and 2). When the caller supplies a nozzle_map
+                    # (one entry per copy, already capped to the printer's real
+                    # nozzle count), bind each copy to its nozzle — that's what
+                    # makes a multi-copy --colors print actually come out in
+                    # different colours (copy on nozzle 1 → filament 1, copy on
+                    # nozzle 2 → filament 2). Without a map we leave the template
+                    # default (all on nozzle 1) and the printer's
+                    # get_auto_nozzle_mapping decides at print time. Ids beyond
+                    # the nozzle count are NOT assignable here (no nozzle bound →
+                    # BS "out of bed area"); >2 distinct colours need the AMS
+                    # filament switcher via a painted 3MF, not this graft path.
+                    if nozzle_map:
+                        data = patch_model_settings_for_per_object_extruder(
+                            data, int(copies), extruders=nozzle_map)
                     zout.writestr(name, data)
                 elif name == "Metadata/project_settings.config":
                     data = zin.read(name)
@@ -778,6 +800,72 @@ def run_bs_slice(input_3mf: Path, out_3mf: Path, plate: int = 0, debug: int = 1)
             subprocess.call([sys.executable, str(flat), str(res)])
     print(f"[x2d_slice] running: {' '.join(cmd)}", file=sys.stderr)
     return subprocess.call(cmd, env=env)
+
+
+def _template_nozzle_count(template: Path) -> int:
+    """Nozzle/extruder count the template's printer profile declares (len of
+    `nozzle_diameter`). X2D/H2D = 2, single-nozzle (P1/A1/X1) = 1. Defaults to 2
+    if the template can't be read."""
+    import json as _json
+    import zipfile as _zf
+    try:
+        with _zf.ZipFile(template) as z:
+            for n in z.namelist():
+                if n.endswith("project_settings.config"):
+                    cfg = _json.loads(z.read(n).decode("utf-8", "replace"))
+                    nd = cfg.get("nozzle_diameter")
+                    if isinstance(nd, list) and nd:
+                        return len(nd)
+                    break
+    except (OSError, _zf.BadZipFile, _json.JSONDecodeError, ValueError):
+        pass
+    return 2
+
+
+def _parse_color_by_region(raw: object) -> tuple[list[str], list[int] | None]:
+    """Parse --color-by-region JSON into (colors, nozzle_map | None).
+
+    Each entry is one object/copy, in order. Accepted shapes::
+
+        ["Gold", "Red"]                              # colours only
+        [{"color": "Gold", "nozzle": 1}, ...]        # colours + explicit nozzles
+        {"0": "Gold", "1": "Red"}                    # colours only (ordered by key)
+        {"0": {"color": "Gold", "nozzle": 1}, ...}   # colours + nozzles
+
+    The nozzle_map is returned only when EVERY entry specifies a nozzle/extruder;
+    otherwise nozzle assignment falls back to the auto per-copy cycle in main().
+    `color` / `colour` and `nozzle` / `extruder` are both accepted spellings."""
+    if isinstance(raw, dict):
+        keys = list(raw.keys())
+        try:                                        # order numeric keys numerically
+            keys = sorted(keys, key=lambda k: int(k))
+        except (TypeError, ValueError):
+            pass
+        items: list = [raw[k] for k in keys]
+    elif isinstance(raw, list):
+        items = raw
+    else:
+        raise ValueError(f"expected JSON list or dict, got {type(raw).__name__}")
+    if not items:
+        raise ValueError("no colour entries")
+    colors: list[str] = []
+    nozzles: list[int] = []
+    all_have_nozzle = True
+    for it in items:
+        if isinstance(it, dict):
+            spec = it.get("color", it.get("colour"))
+            if spec is None:
+                raise ValueError("entry missing 'color'")
+            colors.append(resolve_color_name(str(spec)))
+            nz = it.get("nozzle", it.get("extruder"))
+            if nz is None:
+                all_have_nozzle = False
+            else:
+                nozzles.append(int(nz))
+        else:
+            colors.append(resolve_color_name(str(it)))
+            all_have_nozzle = False
+    return colors, (nozzles if all_have_nozzle and len(nozzles) == len(colors) else None)
 
 
 def main() -> int:
@@ -869,23 +957,17 @@ def main() -> int:
     if bed_type:
         print(f"[x2d_slice] bed-type {args.bed!r} → {bed_type!r}", file=sys.stderr)
 
-    # Resolve the multi-colour list from --colors or --color-by-region.
+    # Resolve the multi-colour list (+ optional explicit per-object nozzle map)
+    # from --colors / --color-by-region.
     colors_list: list[str] | None = None
+    nozzle_map: list[int] | None = None
     if args.color_by_region:
         import json as _json
         try:
             raw = _json.loads(Path(args.color_by_region).read_text())
-        except (OSError, _json.JSONDecodeError) as e:
-            print(f"--color-by-region: can't read {args.color_by_region}: {e}",
-                  file=sys.stderr); return 2
-        if isinstance(raw, list):
-            colors_list = [resolve_color_name(c) for c in raw]
-        elif isinstance(raw, dict):
-            # Dict form: keys can be slot indices or arbitrary region names.
-            # Today we collapse into a position-ordered list.
-            colors_list = [resolve_color_name(v) for v in raw.values()]
-        else:
-            print(f"--color-by-region: expected JSON list or dict, got {type(raw).__name__}",
+            colors_list, nozzle_map = _parse_color_by_region(raw)
+        except (OSError, _json.JSONDecodeError, ValueError) as e:
+            print(f"--color-by-region: {args.color_by_region}: {e}",
                   file=sys.stderr); return 2
     if args.colors:
         if colors_list is not None:
@@ -893,13 +975,30 @@ def main() -> int:
                   file=sys.stderr)
         colors_list = [resolve_color_name(c.strip())
                        for c in args.colors.split(",") if c.strip()]
+        nozzle_map = None       # --colors carries no explicit nozzle assignment
     if colors_list:
-        # If --copies > 1, cycle the list to match copies count so each
-        # copy/object lands on a distinct slot.
+        # Cycle the colour list to match --copies so each copy lands on a slot.
         if int(args.copies) > 1 and len(colors_list) < int(args.copies):
             colors_list = [colors_list[i % len(colors_list)]
                            for i in range(int(args.copies))]
-        print(f"[x2d_slice] multi-color slots: {colors_list}", file=sys.stderr)
+        # Per-copy → nozzle assignment. X2D/H2D are dual-nozzle, so only the
+        # printer's real nozzle count maps directly; >N distinct colours need
+        # the AMS filament switcher via a painted 3MF, not this graft path.
+        nozzles = _template_nozzle_count(args.template)
+        n_distinct = len(set(colors_list))
+        if n_distinct > nozzles:
+            print(f"warning: {n_distinct} distinct colours but the printer has "
+                  f"{nozzles} nozzle(s) — only {nozzles} map to nozzles on the "
+                  f"STL→graft path; more needs a painted 3MF + the filament "
+                  f"switcher (slice that .3mf with `beambam slice-print "
+                  f"--load-filament-ids`).", file=sys.stderr)
+        if nozzle_map is not None:                 # explicit, from --color-by-region
+            nozzle_map = [min(max(int(n), 1), nozzles) for n in nozzle_map]
+        elif int(args.copies) > 1:                 # auto: cycle copies over nozzles
+            nozzle_map = [(i % nozzles) + 1 for i in range(int(args.copies))]
+        print(f"[x2d_slice] multi-color slots: {colors_list}"
+              + (f" · per-copy nozzles: {nozzle_map}" if nozzle_map else ""),
+              file=sys.stderr)
 
     with tempfile.TemporaryDirectory(prefix="x2d_slice_") as td:
         graft = Path(td) / "graft.gcode.3mf"
@@ -907,7 +1006,8 @@ def main() -> int:
                                  scale=args.scale, color=color_hex,
                                  bed_type=bed_type, copies=int(args.copies),
                                  colors=colors_list,
-                                 orient=args.orient)
+                                 orient=args.orient,
+                                 nozzle_map=nozzle_map)
         if args.keep_graft:
             kept = args.out.with_suffix(".graft.3mf")
             shutil.copy2(graft, kept)

@@ -6,12 +6,25 @@ All notable changes to this project.
 
 ### Added
 - `beambam slice` and `beambam slice-print` now expose the **full slicer option
-  set** for STL input — `--colors` (multi-AMS-slot color list), `--color-by-region`
-  (per-region color JSON), and `--orient` — matching `x2d_slice.py`. Previously
-  only `--color` was forwarded, so multi-color STL slicing wasn't reachable from
-  the CLI.
+  set** for STL input — `--colors`, `--color-by-region`, and `--orient` — matching
+  `x2d_slice.py`. Previously only `--color` was forwarded.
+- **Working dual-nozzle multi-colour from an STL.** `--colors A,B` + `--copies N`
+  now assigns each copy to a nozzle (extruder 1/2, cycled across the printer's
+  real nozzle count) so a 2-up print actually comes out in two colours — verified
+  on a real X2D slice (copy 1 → `#E4BD68` 2.98 g, copy 2 → `#FF0000` 2.47 g).
+- **`--color-by-region` is now structured**: accepts `[{"color": "...", "nozzle":
+  N}, ...]` (or a `{"0": {...}}` dict) for explicit per-object colour **and**
+  nozzle assignment, not just a colour-list alias. Falls back to the auto per-copy
+  nozzle cycle when nozzles aren't specified.
 
 ### Fixed
+- **Multi-colour `filament_map` bug**: expanding the colour palette copied
+  nozzle 1 for every filament (`['1','1']`), so the second-nozzle colour never
+  printed (BS emitted invalid tool commands). It now maps each filament to a
+  distinct nozzle (`['1','2']`), cycling across the nozzle count — the fix that
+  makes per-copy multi-colour actually slice. (Dual-nozzle = up to 2 distinct
+  colours; more needs the AMS filament switcher via a painted 3MF + `slice-print
+  --load-filament-ids`.)
 - GUI one-line installer (`install.sh`) pulled the BambuStudio runtime tarball
   from `releases/latest`, which 404'd once the CLI-only pip releases (1.1.0+)
   became "latest". It now resolves the newest release that actually ships the

@@ -34,10 +34,96 @@ from x2d_slice import (
     patch_project_settings_for_color,
     patch_project_settings_for_multi_color,
     patch_model_settings_for_per_object_extruder,
+    _parse_color_by_region,
+    _template_nozzle_count,
     graft_stl_into_template,
     resolve_color_name,
     DEFAULT_TEMPLATE,
 )
+
+
+# --- per-copy → nozzle assignment + --color-by-region structured parsing -------
+
+_OBJS = (b'<config>'
+         b'<object id="1"><metadata key="extruder" value="1"/></object>'
+         b'<object id="2"><metadata key="extruder" value="1"/></object>'
+         b'<object id="3"><metadata key="extruder" value="1"/></object>'
+         b'</config>')
+
+
+def test_per_object_extruder_explicit_map_cycles():
+    """An explicit nozzle map is walked in <object> order and cycled."""
+    out = patch_model_settings_for_per_object_extruder(
+        _OBJS, 3, extruders=[1, 2]).decode()
+    assert re.findall(r'value="(\d)"', out) == ["1", "2", "1"]
+
+
+def test_per_object_extruder_explicit_map_full():
+    out = patch_model_settings_for_per_object_extruder(
+        _OBJS, 3, extruders=[2, 1, 2]).decode()
+    assert re.findall(r'value="(\d)"', out) == ["2", "1", "2"]
+
+
+def test_per_object_extruder_copies_one_is_noop():
+    assert patch_model_settings_for_per_object_extruder(_OBJS, 1) == _OBJS
+
+
+def test_parse_color_by_region_colors_only():
+    colors, nozzles = _parse_color_by_region(["#E4BD68", "#FF0000"])
+    assert colors == ["#E4BD68", "#FF0000"]
+    assert nozzles is None                       # no explicit nozzles → auto
+
+
+def test_parse_color_by_region_with_nozzles():
+    colors, nozzles = _parse_color_by_region(
+        [{"color": "#E4BD68", "nozzle": 1}, {"color": "#FF0000", "nozzle": 2}])
+    assert colors == ["#E4BD68", "#FF0000"]
+    assert nozzles == [1, 2]
+
+
+def test_parse_color_by_region_dict_ordered_by_numeric_key():
+    colors, nozzles = _parse_color_by_region(
+        {"1": {"color": "#FF0000", "nozzle": 1},
+         "0": {"color": "#00FF00", "nozzle": 2}})
+    assert colors == ["#00FF00", "#FF0000"]      # key "0" first
+    assert nozzles == [2, 1]
+
+
+def test_parse_color_by_region_mixed_nozzles_falls_back_to_auto():
+    colors, nozzles = _parse_color_by_region(
+        [{"color": "#E4BD68", "nozzle": 1}, {"color": "#FF0000"}])
+    assert colors == ["#E4BD68", "#FF0000"]
+    assert nozzles is None                       # partial → auto, not explicit
+
+
+def test_parse_color_by_region_rejects_scalar():
+    with pytest.raises(ValueError):
+        _parse_color_by_region("nope")
+
+
+def test_template_nozzle_count_reads_nozzle_diameter(tmp_path):
+    """nozzle count = len(nozzle_diameter) from the template's project_settings."""
+    tpl = tmp_path / "tpl.gcode.3mf"
+    with zipfile.ZipFile(tpl, "w") as z:
+        z.writestr("Metadata/project_settings.config",
+                   json.dumps({"nozzle_diameter": ["0.4", "0.4"]}))
+    assert _template_nozzle_count(tpl) == 2
+
+
+def test_template_nozzle_count_single_nozzle(tmp_path):
+    tpl = tmp_path / "tpl.gcode.3mf"
+    with zipfile.ZipFile(tpl, "w") as z:
+        z.writestr("Metadata/project_settings.config",
+                   json.dumps({"nozzle_diameter": ["0.4"]}))
+    assert _template_nozzle_count(tpl) == 1
+
+
+def test_template_nozzle_count_defaults_to_two(tmp_path):
+    tpl = tmp_path / "missing.gcode.3mf"          # unreadable → default 2
+    assert _template_nozzle_count(tpl) == 2
+
+
+
 
 # Skip the entire template-dependent test set if the template is missing
 # (CI doesn't ship it; locally it's built by the first `x2d_slice` run).
