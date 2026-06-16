@@ -2,6 +2,15 @@
 
 All notable changes to this project.
 
+## [Unreleased]
+
+### Changed
+- **Relicensed from MIT to AGPL-3.0-or-later.** The pure-Python tree (previously
+  MIT) is now AGPL-3.0, matching the already-AGPL BambuStudio fork +
+  `runtime/network_shim/`. Bars closed-source forks and, via AGPL §13, closed
+  hosted/network forks; aligns with upstream BambuStudio / OrcaSlicer / SFC
+  `baltobu` licensing.
+
 ## v1.5.1 — Developer-Mode option documented + accuracy fixes (2026-06-16)
 
 **Clarified — two ways to authorize writes on authorization-control firmware, your choice:**

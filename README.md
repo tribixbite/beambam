@@ -778,6 +778,13 @@ Built and tested on:
 * termux-x11 Android app, software-rendering display `:1`
 * Bambu Lab X2D, dual-extruder, AMS HT 4-slot, firmware ≥ Jan 2025
 
-GPL-3.0+ (matches upstream BambuStudio). Bambu and BambuStudio are
-trademarks of Shenzhen Bambu Lab Technology Co., Ltd. — this repo is not
-affiliated with or endorsed by them.
+**License: AGPL-3.0-or-later.** Copyright © 2025–2026 Will Stone (tribixbite).
+beambam is free software: you may redistribute and/or modify it under the GNU
+Affero General Public License, version 3, or (at your option) any later version
+— see [`LICENSE`](LICENSE). Per **AGPL §13**, anyone who runs a modified beambam
+as a network service must offer its users the complete corresponding source.
+The bundled BambuStudio fork and `runtime/network_shim/` are AGPL-3.0 by
+derivation from upstream BambuStudio.
+
+Bambu and BambuStudio are trademarks of Shenzhen Bambu Lab Technology Co.,
+Ltd. — this repo is not affiliated with or endorsed by them.
