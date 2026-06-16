@@ -203,6 +203,18 @@ from beambam.cli.lan import (
 )
 
 def main() -> int:
+    # On Windows the default console codepage (cp1252) can't encode the
+    # em-dashes / arrows / degree signs in our help + status text, which
+    # crashes `--help` (and any unicode output) with UnicodeEncodeError.
+    # Force UTF-8 on the std streams so the CLI prints cleanly on any console.
+    if sys.platform == "win32":                       # pragma: no cover (POSIX CI)
+        for _stream in (sys.stdout, sys.stderr):
+            _reconfigure = getattr(_stream, "reconfigure", None)
+            if _reconfigure is not None:
+                try:
+                    _reconfigure(encoding="utf-8")
+                except (ValueError, OSError):
+                    pass
     p = argparse.ArgumentParser(prog="beambam", description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter,
                                 epilog=_build_epilog())
