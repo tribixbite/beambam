@@ -2,7 +2,7 @@
 
 All notable changes to this project.
 
-## v1.5.0 — signed LAN control + no-cloud X2D/H2D print (unreleased)
+## v1.5.0 — signed LAN control + no-cloud X2D/H2D print (2026-06-16)
 
 Two headline capabilities land in this release, plus the final bridge-split
 cleanup.
