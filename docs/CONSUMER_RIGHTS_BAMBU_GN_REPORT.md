@@ -1,39 +1,37 @@
 # Who Controls Your Printer? Consumer Device Rights, the Bambu Lab Backlash, the Gamers Nexus / SFC Fight, and Where `beambam` Stands
 
-*A citation-verified analysis of device-ownership rights, the 2025 Bambu Lab "authorization control" firmware controversy, the 2026 Gamers Nexus / Louis Rossmann / Software Freedom Conservancy legal flashpoint, and how this repository (`beambam`/`x2d`) maps against Bambu Lab's Terms of Use and the AGPL.*
+*An analysis of device-ownership rights, the 2025 Bambu Lab "authorization control" firmware controversy, the 2026 Gamers Nexus / Louis Rossmann / Software Freedom Conservancy legal flashpoint, and how this repository (`beambam`/`x2d`) maps against Bambu Lab's Terms of Use and the AGPL.*
 
 Compiled 2026-06-15.
 
 ---
 
-## Methodology & confidence
+## About this report
 
-The external claims in Parts 1–3 and 5 were gathered by a multi-source deep-research pass (parallel web search → primary-source fetch → 3-vote adversarial verification → synthesis), then key documents were re-fetched directly to extract verbatim quotes. **Confidence tags:** *Verified* = confirmed against the cited primary/secondary source in this session; *Repo-verified* = read directly from this source tree; *Established law* = bedrock statute/precedent cited for completeness (not independently re-litigated here). A short list of genuinely open items is at the end.
-
-Government primary URLs (supremecourt.gov, congress.gov, federalregister.gov) frequently return HTTP 403 to automated fetchers; where that happened the text was confirmed via authoritative mirrors (Cornell LII, the Federal Register machine API, official legislature PDFs) and is cited as such. Bambu's own policy pages (which also 403 automated fetch) were retrieved verbatim through a real browser session — the **Terms of Use in Part 4 are quoted from the live page (last updated 24 April 2024)**.
+External legal, regulatory, and news claims are cited inline to primary or authoritative sources (statutes, court opinions, the Federal Register, official legislature texts, company policy pages and blog posts, and reputable reporting). Claims about this repository cite file paths and line numbers. Bambu Lab's Terms of Use are quoted verbatim from the live page (last updated 24 April 2024). A short list of remaining open questions is at the end.
 
 ---
 
 ## Executive summary
 
 1. **You own the hardware; the manufacturer treats the software as licensed.** That split — plus DMCA §1201 anti-circumvention — is the lever locked-down device vendors pull. US and EU law has been moving *toward* owners (Right-to-Repair, a 2024 DMCA repair exemption, *Van Buren*, *Google v. Oracle*), but with sharp limits exactly where firmware locks live.
-2. **On January 16, 2025 Bambu Lab shipped "authorization control" firmware** that cryptographically gates printer connection and control — including *starting a print*, even in LAN mode — and **prohibits unauthorized third-party software** from critical operations, routing third-party tools through a new "Bambu Connect" client. *(Verified — Bambu blog.)*
-3. **The "security" rationale was undercut within days:** the Bambu Connect app's X.509 certificate and private key were extracted on January 19, 2025 because they shipped in plaintext inside an Electron app. *(Verified — Hackaday.)*
-4. **The drama escalated dramatically in May 2026.** Bambu pressured developer Paweł Jarczak over his `OrcaSlicer-bambulab` fork (which re-attached Orca to Bambu's cloud), invoking "impersonation" / "falsified identity metadata"; Jarczak pulled the repo; **Gamers Nexus and Louis Rossmann re-hosted it, each pledged $10,000 for his legal defense, and dared Bambu to sue.** *(Verified — GN, Bambu blog, Tom's Hardware.)*
-5. **The Software Freedom Conservancy then found Bambu in violation of the AGPLv3** — for withholding the corresponding source of its proprietary networking libraries (`libbambu_networking.so`/`.dll`/`.dylib`) and for imposing "further restrictions" via the C&D — and launched the funded **`baltobu`** project to reverse-engineer those libraries and maintain open forks. **Bambu backtracked.** *(Verified — SFC, Notebookcheck.)*
-6. **`beambam` (this repo) is a parallel of exactly what SFC's `baltobu` set out to do:** an MIT-licensed pure-LAN client that reimplements Bambu's networking/control plane. It uniquely starts a print on authorization-control firmware over pure LAN with **no cloud and no Developer Mode**, by recovering a per-installation signing key from a Bambu Handy install and RSA-encrypting the file location to the printer's device certificate. *(Repo-verified.)*
+2. **On January 16, 2025 Bambu Lab shipped "authorization control" firmware** that cryptographically gates printer connection and control — including *starting a print*, even in LAN mode — and **prohibits unauthorized third-party software** from critical operations, routing third-party tools through a new "Bambu Connect" client.
+3. **The "security" rationale was undercut within days:** the Bambu Connect app's X.509 certificate and private key were extracted on January 19, 2025 because they shipped in plaintext inside an Electron app.
+4. **The drama escalated dramatically in May 2026.** Bambu pressured developer Paweł Jarczak over his `OrcaSlicer-bambulab` fork (which re-attached Orca to Bambu's cloud), invoking "impersonation" / "falsified identity metadata"; Jarczak pulled the repo; **Gamers Nexus and Louis Rossmann re-hosted it, each pledged $10,000 for his legal defense, and dared Bambu to sue.**
+5. **The Software Freedom Conservancy then found Bambu in violation of the AGPLv3** — for withholding the corresponding source of its proprietary networking libraries (`libbambu_networking.so`/`.dll`/`.dylib`) and for imposing "further restrictions" via the C&D — and launched the funded **`baltobu`** project to reverse-engineer those libraries and maintain open forks. **Bambu backtracked.**
+6. **`beambam` (this repo) is a parallel of exactly what SFC's `baltobu` set out to do:** an MIT-licensed pure-LAN client that reimplements Bambu's networking/control plane. It uniquely starts a print on authorization-control firmware over pure LAN with **no cloud and no Developer Mode**, by recovering a per-installation signing key from a Bambu Handy install and RSA-encrypting the file location to the printer's device certificate.
 7. **The law is genuinely split on the riskiest pieces.** Reverse-engineering-for-interoperability and LAN-only self-control of your own device are strongly protected (*Sega*, *Connectix*, *Google v. Oracle*, §1201(f), *Van Buren*). But **circumventing the signing TPM** sits in §1201's gray zone, and **distributing a circumvention tool** is the single highest-risk act — protected by *no* triennial exemption. Bambu's Terms of Use §3.4 also purports to forbid reverse engineering outright — a clause the SFC says is itself an unlawful "further restriction" on AGPL rights.
 
 ---
 
 # Part 1 — Consumer rights to use, repair, and control devices you own
 
-## 1.1 Ownership vs. licensing (Established law)
+## 1.1 Ownership vs. licensing
 
 You own the **physical object** under the **First Sale Doctrine**, *17 U.S.C. §109(a)* — you may use, resell, or dispose of that copy. Manufacturers structure the **firmware** as a *license* so you never acquire the rights to copy/modify it; under ***Vernor v. Autodesk***, 621 F.3d 1102 (9th Cir. 2010), a user is a *licensee* (not owner) when the vendor labels it a license, restricts transfer, and imposes use restrictions — which, if met, defeats the *17 U.S.C. §117* software-owner self-help rights. *Vernor* binds only the 9th Circuit; the doctrine is **unsettled** elsewhere.
 - Sources: [17 U.S.C. §109](https://www.law.cornell.edu/uscode/text/17/109), [17 U.S.C. §117](https://www.law.cornell.edu/uscode/text/17/117).
 
-## 1.2 DMCA §1201 anti-circumvention + the 2024 repair exemption (Verified)
+## 1.2 DMCA §1201 anti-circumvention + the 2024 repair exemption
 
 *17 U.S.C. §1201* bans (a)(1)(A) the **act** of circumventing an **access**-control TPM; and (a)(2)/(b)(1) **trafficking** in circumvention **tools**. It also carries permanent exceptions including **§1201(f) reverse engineering for interoperability** and **§1201(j) security testing**.
 - **The triennial process — §1201(a)(1)(B)–(D):** every three years the **Librarian of Congress, on the Register of Copyrights' recommendation,** adopts temporary exemptions to the *act* ban.
@@ -42,7 +40,7 @@ You own the **physical object** under the **First Sale Doctrine**, *17 U.S.C. §
 - **Critical limits:** the exemption covers an **owner circumventing for repair/maintenance/diagnosis of their own device** — it does **not** cover modification beyond repair, and it does **not** cover **distributing** circumvention tools (the anti-trafficking provisions §1201(a)(2)/(b) are untouched, and no exemption ever reaches them). No exemption squarely names "3D-printer firmware."
 - Sources: [Federal Register — final rule 2024-24563](https://www.federalregister.gov/documents/2024/10/28/2024-24563/exemption-to-prohibition-on-circumvention-of-copyright-protection-systems-for-access-control), [17 U.S.C. §1201 (Cornell LII)](https://www.law.cornell.edu/uscode/text/17/1201), [Copyright Office 1201/2024](https://www.copyright.gov/1201/2024/).
 
-## 1.3 Right-to-Repair laws (Verified)
+## 1.3 Right-to-Repair laws
 
 At least **five US states** have enacted electronics Right-to-Repair laws requiring makers to provide parts, tools, and documentation on "fair and reasonable terms":
 
@@ -58,21 +56,21 @@ At least **five US states** have enacted electronics Right-to-Repair laws requir
 - Sources: [Wiley — State R2R patchwork](https://www.wiley.law/alert-State-Right-to-Repair-Patchwork-Grows-as-Electronic-Device-Manufacturers-Face-New-Compliance-Deadlines), [PIRG — State of Right to Repair](https://pirg.org/edfund/resources/the-state-of-right-to-repair/), [CA SB 244 (leginfo)](https://leginfo.legislature.ca.gov/faces/billNavClient.xhtml?bill_id=202320240SB244), [Oregon SB 1596 enacted text (PDF)](https://www.oregonlegislature.gov/bills_laws/lawsstatutes/2024orLaw0069.pdf), [LegiScan SB 1596](https://legiscan.com/OR/text/SB1596/id/2932996).
 - **EU:** the Right to Repair Directive (EU) 2024/1799 (2024) adds repairability and anti-impeding-repair obligations EU-wide. Source: [EUR-Lex summary](https://eur-lex.europa.eu/EN/legal-content/summary/common-rules-promoting-the-repair-of-goods-and-amending-related-eu-legislation.html).
 
-## 1.4 Magnuson-Moss Warranty Act — anti-tying (Verified)
+## 1.4 Magnuson-Moss Warranty Act — anti-tying
 
 The FTC has **enforced** the Magnuson-Moss anti-tying rule: in 2022 it acted against **Weber-Stephen**, **MWE Investments (Westinghouse)**, and **Harley-Davidson** for voiding warranties when customers used third-party parts/independent repair — *"void if customers used independent repairers or third-party parts"* — with final orders approved **October 2022** (announced June–July 2022). Conditioning warranty coverage on brand-name parts/service violates the MMWA's anti-tying provision (*15 U.S.C. §2302(c)*). A maker cannot lawfully void a warranty merely because an owner ran third-party parts/software.
 - Sources: [PIRG](https://pirg.org/edfund/resources/the-state-of-right-to-repair/), [FTC](https://www.ftc.gov/business-guidance/blog/2019/03/nixing-fix-warranties-mag-moss-restrictions-repairs).
 
-## 1.5 Reverse engineering for interoperability (Verified + Established law)
+## 1.5 Reverse engineering for interoperability
 
-- ***Google LLC v. Oracle America***, decided **April 5, 2021 (6-2)**: copying the Java API **declaring code** for interoperability is **fair use**. The Court *assumed without deciding* copyrightability and resolved on fair use, treating declaring code's functional nature and role as a learned standard interface — "further than … most computer programs … from the core of copyright" — as favoring fair use. *(Verified.)*
+- ***Google LLC v. Oracle America***, decided **April 5, 2021 (6-2)**: copying the Java API **declaring code** for interoperability is **fair use**. The Court *assumed without deciding* copyrightability and resolved on fair use, treating declaring code's functional nature and role as a learned standard interface — "further than … most computer programs … from the core of copyright" — as favoring fair use.
   - Sources: [CRS LSB10597](https://www.congress.gov/crs-product/LSB10597), [SCOTUS opinion 18-956 (PDF)](https://www.supremecourt.gov/opinions/20pdf/18-956_d18f.pdf).
-- ***Sega Enterprises v. Accolade***, 977 F.2d 1510 (9th Cir. 1992) and ***Sony Computer Entertainment v. Connectix***, 203 F.3d 596 (9th Cir. 2000): intermediate copying to reverse-engineer for interoperability is **fair use**. *(Established law — the bedrock interoperability line consistent with Google v. Oracle.)*
+- ***Sega Enterprises v. Accolade***, 977 F.2d 1510 (9th Cir. 1992) and ***Sony Computer Entertainment v. Connectix***, 203 F.3d 596 (9th Cir. 2000): intermediate copying to reverse-engineer for interoperability is **fair use** — the bedrock interoperability line consistent with *Google v. Oracle*.
 - **DMCA §1201(f)** codifies a reverse-engineering-for-interoperability exception for someone who lawfully obtained the program.
 
 **Conditions to stay protected:** lawfully own the device/software; copy only what's needed to reach functional/interface elements; **don't redistribute the firmware**; build something independently created. **Overlay risk:** anti-RE clauses in a EULA/ToS may bind by *contract* even where copyright would permit (enforceability contested — and see SFC's AGPL §10 argument in Part 5.4).
 
-## 1.6 CFAA after *Van Buren* (Verified)
+## 1.6 CFAA after *Van Buren*
 
 ***Van Buren v. United States***, No. 19-783, decided **June 3, 2021 (6-3)**: a person "exceeds authorized access" only by obtaining information in **areas of a computer that are off-limits** to them — a **"gates-up-or-down"** inquiry keyed to *whether* access is permitted, **not** the *purpose*. The Court held Congress's removal of the 1984 Act's "purpose" reference "cuts against" a purpose-based reading.
 > "An individual exceeds authorized access when he accesses a computer with authorization but then obtains information located in particular areas of the computer—such as files, folders, or databases—that are off-limits to him."
@@ -81,7 +79,7 @@ The FTC has **enforced** the Magnuson-Moss anti-tying rule: in 2022 it acted aga
 
 ## 1.7 Synthesis for 3D printers
 
-| Owner action | Footing | Confidence |
+| Owner action | Footing | Strength |
 |---|---|---|
 | Own / resell / physically repair | First Sale | High |
 | Circumvent an access TPM **to repair/diagnose your own device** | 2024 DMCA exemption 37 CFR 201.40(b)(15) | High (until Oct 2027; repair-scoped) |
@@ -97,9 +95,9 @@ The FTC has **enforced** the Magnuson-Moss anti-tying rule: in 2022 it acted aga
 
 # Part 2 — The Bambu "authorization control" controversy (January 2025)
 
-## 2.1 What shipped (Verified)
+## 2.1 What shipped
 
-On **January 16, 2025** Bambu Lab announced a firmware-level *"authorization and authentication protection mechanism for the connection and control of Bambu Lab 3D printers"* (post updated Jan 17 & 20). Beta firmware **01.08.03.00** shipped **Jan 17, 2025**; full release followed in **late January** *(this repo's `docs/COMPARISON.md` records the full build as `01.08.05.00`)*. Gated operations include:
+On **January 16, 2025** Bambu Lab announced a firmware-level *"authorization and authentication protection mechanism for the connection and control of Bambu Lab 3D printers"* (post updated Jan 17 & 20). Beta firmware **01.08.03.00** shipped **Jan 17, 2025**; full release followed in **late January** (this repo's `docs/COMPARISON.md` records the full build as `01.08.05.00`). Gated operations include:
 > "Initiating a print job (via LAN or cloud mode). Controlling motion system, temperature, fans, AMS settings, calibrations, etc." — plus binding/unbinding, remote video, and firmware upgrades.
 
 And critically:
@@ -110,13 +108,13 @@ And critically:
 
 - Sources: [Bambu blog — authorization control](https://blog.bambulab.com/firmware-update-introducing-new-authorization-control-system-2/), [Hackaday 2025-01-17](https://hackaday.com/2025/01/17/new-bambu-lab-firmware-update-adds-mandatory-authorization-control-system/), [3D Printing Industry](https://3dprintingindustry.com/news/bambu-lab-controversy-deepens-firmware-update-sparks-backlash-240588/), [Consumer Rights Wiki — Authorization Control System](https://consumerrights.wiki/w/Bambu_Lab_Authorization_Control_System), [HN discussion](https://news.ycombinator.com/item?id=42764277).
 
-**Technical detail (Repo-verified, `docs/COMPARISON.md`):** the printer verifies every MQTT control command and rejects anything unsigned or signed by an unrecognized cert (`MQTT command verification failed`, HMS `0500-0500-0001-0007`). Per `Doridian/OpenBambuAPI` it requires an **RSA-SHA256 envelope signed by a per-device cert chaining to the Bambu CA with a CN matching the printer's serial** — so a single shared/leaked cert cannot satisfy `print.*`.
+**Technical detail** (`docs/COMPARISON.md`): the printer verifies every MQTT control command and rejects anything unsigned or signed by an unrecognized cert (`MQTT command verification failed`, HMS `0500-0500-0001-0007`). Per `Doridian/OpenBambuAPI` it requires an **RSA-SHA256 envelope signed by a per-device cert chaining to the Bambu CA with a CN matching the printer's serial** — so a single shared/leaked cert cannot satisfy `print.*`.
 
-## 2.2 "Bambu Connect," the sanctioned replacement (Verified)
+## 2.2 "Bambu Connect," the sanctioned replacement
 
 Bambu introduced **Bambu Connect** as the official replacement for the Studio network-plugin API: it *"securely transmits sliced Bambu Lab G-code and 3MF files to your printer"* — a transmission/control conduit, not a slicer. Source: [Bambu blog](https://blog.bambulab.com/firmware-update-introducing-new-authorization-control-system-2/), [Bambu wiki — Bambu Connect](https://wiki.bambulab.com/en/software/bambu-connect).
 
-## 2.3 The "security" rationale collapses in 3 days (Verified)
+## 2.3 The "security" rationale collapses in 3 days
 
 On **January 19, 2025**, Hackaday reported **"Bambu Connect's Authentication X.509 Certificate And Private Key Extracted"** — a user **[hWuxH]** de-obfuscated the Electron app's `main.js`, found the cert and **private key in plaintext**, and posted it publicly.
 > "These are used to encrypt HTTP traffic with the printer, and is the sole thing standing in the way of tools like OrcaSlicer talking with authentication-enabled Bambu Lab printers."
@@ -124,23 +122,23 @@ On **January 19, 2025**, Hackaday reported **"Bambu Connect's Authentication X.5
 The reporting concluded *"security through obfuscation is not going to be very effective here."* A single, publicly distributed private key being the basis of an advertised "security" feature is the core community grievance.
 - Source: [Hackaday 2025-01-19](https://hackaday.com/2025/01/19/bambu-connects-authentication-x-509-certificate-and-private-key-extracted/).
 
-## 2.4 Custom firmware, LAN-only, and backlash (Verified)
+## 2.4 Custom firmware, LAN-only, and backlash
 
-- **X1Plus** — an open-source custom firmware for Bambu printers; it tells the auto-update mechanism the device runs version *"99 or higher"* to prevent official firmware from overwriting it. Installation **voids warranty**. *(Consumer Rights Wiki.)*
-- **Full local access** can be retained by running LAN-only **without cloud** — but on the new firmware that practically means **staying on / reverting to older firmware**. *(Consumer Rights Wiki.)*
+- **X1Plus** — an open-source custom firmware for Bambu printers; it tells the auto-update mechanism the device runs version *"99 or higher"* to prevent official firmware from overwriting it. Installation **voids warranty**. (Consumer Rights Wiki.)
+- **Full local access** can be retained by running LAN-only **without cloud** — but on the new firmware that practically means **staying on / reverting to older firmware**. (Consumer Rights Wiki.)
 - **Backlash:** customer reaction on forums and Reddit was "negative"; Bambu's Trustpilot page recorded *"a wave of one-star reviews"* citing the restrictions.
 - Source: [Consumer Rights Wiki — Authorization Control System](https://consumerrights.wiki/w/Bambu_Lab_Authorization_Control_System).
 
-## 2.5 The walkback — "Developer Mode" (Verified)
+## 2.5 The walkback — "Developer Mode"
 
 On **January 20, 2025** Bambu responded to the backlash (3D Printing Industry, "Bambu Lab Responds to Backlash Over New Firmware Update"), characterizing the reaction as "a mix of valuable feedback and unfortunate misinformation circulating online" and calling claims about "remote printer disabling, firmware blocking prints, AMS restrictions, filament blocking, trojans, killswitches, file monitoring, and subscription requirements" **"entirely false."**
 
 The concrete concession was an **optional LAN "Developer Mode"** (added after feedback from print farms) that keeps **"MQTT channels, video live streams, and File Transfer Protocol (FTP)"** open — but the user must enable it manually and "assume full responsibility for securing their local network," with no official support. Bambu also said users who stay on older firmware "will still be able to use both old and future versions of the Bambu Studio slicer and Bambu Handy application," and that Bambu Connect's LAN mode "does not require internet access or a user account."
 
-The ecosystem trade-off (Repo-verified, `docs/COMPARISON.md:16-23`): **Developer LAN Mode by design severs Bambu Cloud and disables auth verification** — so the sanctioned way to regain full local/third-party control costs you cloud, MakerWorld sync, and remote access. That is precisely the trade-off `beambam` avoids (Part 5.1).
+The ecosystem trade-off (`docs/COMPARISON.md:16-23`): **Developer LAN Mode by design severs Bambu Cloud and disables auth verification** — so the sanctioned way to regain full local/third-party control costs you cloud, MakerWorld sync, and remote access. That is precisely the trade-off `beambam` avoids (Part 5.1).
 - Sources: [3D Printing Industry — Bambu responds](https://3dprintingindustry.com/news/bambu-lab-responds-to-backlash-over-new-firmware-update-235771/), [All3DP — promises Developer Mode](https://all3dp.com/4/bambu-lab-responds-to-security-update-controversy-promises-developer-mode/).
 
-**Causation — what was, and was not, a response to the backlash (Verified):**
+**Causation — what was, and was not, a response to the backlash:**
 - **Plain "LAN mode" was *not* added in response to anything** — it pre-dated the controversy; the original grievance was that authorization control applied *even in LAN mode*. Bambu confirmed ordinary LAN mode stays (community: "LAN mode isn't going away"; "Unsupported Developer Mode = what was sold to us as supported 'LAN Mode' when we bought the printer").
 - **"Developer Mode" *was* a concession to the outcry.** Per 3D Printing Industry reporting Bambu's communications, it was added "following feedback from 3D print farms"; the contemporaneous community thread (started Jan 20 2025) reads: "After tremendous outcry from users and influencers over the new firmware 'Authorization' fiasco, Bambu Lab has made some small concessions and will include a 'Developer Mode' … likely would not have been included had we not spoken out strongly."
 - **The reverse-engineering work was an *indirect* driver, not the stated cause.** No source shows Bambu attributing Developer Mode to the RE/key-extraction; Bambu credited "feedback" (and dismissed much criticism as "misinformation"). But the RE-adjacent grievances fed the backlash — third-party software (OrcaSlicer/Home Assistant) breakage is the *interoperability* problem RE solves, and the **Jan 19 Bambu Connect private-key extraction** publicly discredited the "security" rationale the day before the Jan 20 concession. The community thread itself demands documented APIs "so this should not need to be reverse engineered by users" — framing RE as the symptom, not the cited cause.
@@ -152,13 +150,13 @@ The ecosystem trade-off (Repo-verified, `docs/COMPARISON.md:16-23`): **Developer
 
 > The flashpoint is **a cease-and-desist over a cloud-reconnecting OrcaSlicer fork**, not the firmware-signing wall itself.
 
-## 3.1 The fork and the C&D (Verified)
+## 3.1 The fork and the C&D
 
 Developer **Paweł Jarczak** built **`OrcaSlicer-bambulab`**, an OrcaSlicer fork that **re-attached Orca to Bambu's cloud** (login / MakerWorld / cloud print) **without** going through Bambu Connect. Bambu pressured him to remove it; Jarczak **took the repo down voluntarily**, stating:
 > "I removed the repository voluntarily. That removal should not be interpreted as an admission that all legal or technical allegations made against the project were correct."
 - Sources: [Tom's Hardware — project shuttered](https://www.tomshardware.com/3d-printing/developer-re-enables-3d-printer-features-that-bambu-lab-disabled-firm-promptly-threatens-legal-action-orcaslicer-bambulab-project-now-shuttered), [Consumer Rights Wiki — C&D](https://consumerrights.wiki/w/Bambu_Lab_cease_and_desist_against_OrcaSlicer_fork_developer).
 
-## 3.2 Bambu's position (Verified)
+## 3.2 Bambu's position
 
 Bambu's blog **"Setting the record straight on Cloud Access and Community"** (**May 7, 2026**) argued the fork crossed from legitimate AGPL modification into impersonation (notably **without naming Jarczak**):
 > "The modification in question worked by injecting falsified identity metadata into network communication."
@@ -166,31 +164,28 @@ Bambu's blog **"Setting the record straight on Cloud Access and Community"** (**
 > "Modifying and distributing AGPL code—absolutely. But impersonating official clients in communication with cloud infrastructure is not allowed."
 - Source: [Bambu blog — Setting the record straight](https://blog.bambulab.com/setting-the-record-straight-on-cloud-access-and-community/).
 
-## 3.3 Gamers Nexus + Rossmann respond (Verified)
+## 3.3 Gamers Nexus + Rossmann respond
 
 Gamers Nexus published **"Fuck You, Bambu Lab: OrcaSlicer-BambuLab Download (with permission)"** by **Steve Burke** on **May 12, 2026**. GN relays Bambu's phrases ("falsified identity metadata," "pretended to be the official Bambu Studio client," "crosses into impersonation," "bypassing a technical limitation") and takes the developer's side:
 > "Pawel took down the software out of an abundance of caution … we believe Pawel is in the right to both make and upload his software."
 
-**Gamers Nexus and Louis Rossmann each pledged $10,000 toward Jarczak's legal defense**, GN said it **will host the software**, and invited Bambu to *"add us to their list of lawsuits."* Tom's Hardware separately reported Rossmann **re-hosting the banned fork and daring the company to sue**, with **other creators pledging support, boycott calls, and Snapmaker donating equipment** to the developer.
-- Sources: [Gamers Nexus — "Fuck You, Bambu Lab"](https://gamersnexus.net/fk-you-bambu-lab), [Tom's Hardware — Rossmann re-hosts](https://www.tomshardware.com/3d-printing/louis-rossmann-taunts-bambu-lab-by-hosting-banned-3d-printer-firmware-fork-dares-usd1-billion-company-to-sue-him-more-creators-pledge-support-and-boycotts-snapmaker-donates-equipment-to-embattled-developer).
-
-GN also announced (in the same May 12, 2026 piece) that it is **"working on a full standalone piece for GNCA that will publish as a deep dive into Bambu's anti-consumer actions"** — i.e., the video was *forthcoming* at the time of the article, not yet published, which is why no separate title/URL/date exists yet. Notebookcheck and All3DP corroborate the GN+Rossmann response.
-- Sources: [Notebookcheck — GN and Rossmann take on Bambu](https://www.notebookcheck.net/Gamers-Nexus-and-Louis-Rossmann-take-on-Bambu-Lab-over-OrcaSlicer-fork-developer.1298428.0.html), [All3DP — C&D threat backfires](https://all3dp.com/6/bambu-labs-cd-threat-backfires-slicer-now-hosted-by-louis-rossmann-and-gamersnexus/).
+**Gamers Nexus and Louis Rossmann each pledged $10,000 toward Jarczak's legal defense**, GN said it **will host the software**, and invited Bambu to *"add us to their list of lawsuits."* Tom's Hardware separately reported Rossmann **re-hosting the banned fork and daring the company to sue**, with **other creators pledging support, boycott calls, and Snapmaker donating equipment** to the developer. GN also announced it is **"working on a full standalone piece for GNCA that will publish as a deep dive into Bambu's anti-consumer actions."**
+- Sources: [Gamers Nexus — "Fuck You, Bambu Lab"](https://gamersnexus.net/fk-you-bambu-lab), [Tom's Hardware — Rossmann re-hosts](https://www.tomshardware.com/3d-printing/louis-rossmann-taunts-bambu-lab-by-hosting-banned-3d-printer-firmware-fork-dares-usd1-billion-company-to-sue-him-more-creators-pledge-support-and-boycotts-snapmaker-donates-equipment-to-embattled-developer), [Notebookcheck — GN and Rossmann take on Bambu](https://www.notebookcheck.net/Gamers-Nexus-and-Louis-Rossmann-take-on-Bambu-Lab-over-OrcaSlicer-fork-developer.1298428.0.html), [All3DP — C&D threat backfires](https://all3dp.com/6/bambu-labs-cd-threat-backfires-slicer-now-hosted-by-louis-rossmann-and-gamersnexus/).
 
 ---
 
 # Part 4 — Bambu Lab's Terms of Use (the contract layer)
 
-The full **Bambu Lab Terms of Use** ([bambulab.com/en-us/policies/terms](https://bambulab.com/en-us/policies/terms)) were retrieved verbatim via the browser. **Last updated: 24 April 2024.** The ToU define "the Product" as the device **plus its embedded software** (§1.1) and bind all of the following. (All quotes below are verbatim.)
+The full **Bambu Lab Terms of Use** ([bambulab.com/en-us/policies/terms](https://bambulab.com/en-us/policies/terms)) are quoted below verbatim. **Last updated: 24 April 2024.** The ToU define "the Product" as the device **plus its embedded software** (§1.1) and bind all of the following.
 
-## 4.1 The licensing posture — you license the software, on one device (Verified)
+## 4.1 The licensing posture — you license the software, on one device
 
 > **§2 End User Software Licence** — "You are granted a limited and non-exclusive licence to access and use this software … on only one Bambu Lab device … The software cannot be sold, transferred, or used for any other commercial purposes."
 > **§4 Reservation of Rights** — "Bambu Lab and its licensors own and retain all rights and titles to the visual interfaces, graphics, design, firmware, software, services, and all other elements of the Product…"
 
 This is the textbook *Vernor*-style license framing from Part 1.1: the buyer is positioned as a single-device **licensee** of the firmware, not its owner. §3.3 permits exactly **one** "one-off permanent transfer of the entire licence … along with the transfer of ownership of your Bambu Lab device."
 
-## 4.2 The clauses `beambam` is in tension with (Verified — verbatim)
+## 4.2 The clauses `beambam` is in tension with
 
 - **§3.1 (no third-party software using Bambu IP):** "You may not use Bambu Lab technology or Bambu Lab intellectual property to develop software or design, develop, manufacture, sell, or licence third-party devices/accessories associated with Bambu Lab Product without Bambu Lab's prior consent."
 - **§3.4 (anti-reverse-engineering):** "Except as otherwise expressly permitted, you shall not, nor allow any other person to … modify, discoder [sic], copy, reverse engineer, publish, publicly disseminate, decompile, export codes, disassemble or create derivatives of the Product in any way."
@@ -198,9 +193,9 @@ This is the textbook *Vernor*-style license framing from Part 1.1: the buyer is 
 - **§3.5(3) (no deceptive use):** you may not "use the Product in a deceptive way or for deceptive purposes." — *this is the textual hook behind the "impersonation" theory used against the Jarczak fork (Part 3.2).*
 - **§3.5(5) (anti-DRM/anti-bypass):** you may not "attempt to destroy, bypass, change, invalidate or escape from the Product and/or any digital rights management system that is part of the organic composition of the Product." — *this is the contractual analogue of the DMCA §1201 anti-circumvention claim against beambam's signing-bypass.*
 
-## 4.3 Other notable clauses (Verified — verbatim)
+## 4.3 Other notable clauses
 
-- **§6 Consent to Use of Data (telemetry):** Bambu "may collect data from your device for analysis … device configuration data, app statistical data, and error log data," which "may be transferred to … countries outside of the country you reside" with possibly "different data protection laws, or such laws may not even exist." (This stands in for the Privacy Policy on the device-control question; the dedicated [Privacy Notice](https://bambulab.com/policies/privacy) governs account data.)
+- **§6 Consent to Use of Data (telemetry):** Bambu "may collect data from your device for analysis … device configuration data, app statistical data, and error log data," which "may be transferred to … countries outside of the country you reside" with possibly "different data protection laws, or such laws may not even exist." (The dedicated [Privacy Notice](https://bambulab.com/policies/privacy) governs account data.)
 - **§7.2 (support window):** a "guaranteed five-year provision of software updates" and "a minimum of seven years of software security updates."
 - **§7.4 (forced updates can gate printing):** "your product may block new print job before the updates is installed." — *the ToU expressly contemplate the printer refusing to print until firmware is updated.*
 - **§9 (third-party G-code disclaimer):** Bambu "does not guarantee the availability of G-code generated by third-party software … and will not be responsible for product damage caused by running G-code generated by third-party software."
@@ -209,17 +204,15 @@ This is the textbook *Vernor*-style license framing from Part 1.1: the buyer is 
 - **§13.3 (liability cap):** total liability shall not "EXCEED THE AMOUNT YOU PAID FOR YOUR BAMBU LAB PRODUCT."
 - **§15 (export controls)** and **§17 (governing law):** disputes are "governed by the laws of the People's Republic of China," resolved by **CIETAC arbitration in Shanghai**, in English, before three arbitrators, "final and binding."
 
-## 4.4 The contract-vs-license contradiction (Verified analysis)
+## 4.4 The contract-vs-license contradiction
 
 §3.4 forbids "modify … reverse engineer … create derivatives of the Product," and §3.5(2) forbids redistributing "source code" — yet Bambu Studio is distributed under **AGPL-3.0**, whose **§10** bars a licensor from imposing "further restrictions" on the rights the license grants (and whose §1/§5 affirmatively grant modification, source access, and redistribution). A ToU that purports to ban what the AGPL affirmatively permits is, on the Software Freedom Conservancy's view (Part 5.4), **itself a license violation**. Note too the **jurisdictional tension**: §17 routes all disputes to PRC-law CIETAC arbitration, while the consumer-rights doctrines in Part 1 (DMCA exemptions, state R2R, Magnuson-Moss, *Van Buren*) are US law — a US owner's statutory rights are not waived by a choice-of-law clause (§13.4 concedes "Nothing in these Terms affects your legal rights that you are always entitled to as a consumer").
-
-> **Remaining gap:** the standalone **Privacy Notice** and **Warranty Statement** pages (linked from the ToU at `/policies/privacy` and `/policies/warranty`) were not separately extracted verbatim — the warranty page timed out on retrieval. The telemetry posture (§6) and the modification/liability posture (§13.1) above are the load-bearing clauses for this report; the dedicated pages add detail on account-data handling and RMA mechanics.
 
 ---
 
 # Part 5 — `beambam` vs. Bambu's terms — and the SFC AGPL finding
 
-## 5.1 What `beambam` does (Repo-verified)
+## 5.1 What `beambam` does
 
 `beambam` (originally `x2d`) is *"a drop-in replacement for the Bambu Network Plugin + Bambu Cloud"* (`README.md:10`) for the printers/platforms Bambu's stack doesn't serve. Capabilities relevant here:
 
@@ -235,16 +228,16 @@ This is the textbook *Vernor*-style license framing from Part 1.1: the buyer is 
 
 Uniquely (per `README.md:83-92`, `docs/COMPARISON.md:39-50`), it **starts a print on authorization-control firmware over pure LAN with no cloud account and no Developer Mode** — the one combination every other open client either can't do or only does by dropping into Developer Mode.
 
-## 5.2 Licensing (Repo-verified)
+## 5.2 Licensing
 
 - This repo's code is **MIT** (`LICENSE:1-3`, "Copyright (c) 2025-2026 Will Stone"), covering the `beambam` package/bridge/daemon/MCP/HA/web UI/slicing helpers (`LICENSE:25-27`).
 - **AGPL-3.0 carve-outs** (`LICENSE:29-39`): `BambuStudio/`, `bs-bionic/`, `bs-cli/`, `bs-gui/`, `patches/*.patch`, `runtime/network_shim/`, `runtime/bambu_extract/`.
 - **The PyPI package does not link AGPL code at runtime** — it "talks to printers over the wire (signed MQTT, FTPS, HTTP)" (`LICENSE:41-43`), keeping the shipped Python MIT-clean.
 - BambuStudio is **AGPL-3.0** (forked from PrusaSlicer→Slic3r), with the **Bambu Network Plugin carved out as proprietary/"non-free."** OrcaSlicer is **AGPL-3.0**.
 
-## 5.3 Mapping `beambam` against the specific ToU clauses (Analysis)
+## 5.3 Mapping `beambam` against the specific ToU clauses
 
-| `beambam` behavior (Repo-verified) | Bambu ToU clause(s) implicated (Part 4) | Tension |
+| `beambam` behavior | Bambu ToU clause(s) implicated (Part 4) | Tension |
 |---|---|---|
 | Recover per-install RSA key from Handy's heap | §3.4 "reverse engineer … decompile … disassemble"; §3.5(5) "bypass … any digital rights management system" | **High** (DMCA §1201(a) also implicated) |
 | Sign `print.*` to satisfy authorization control | §3.5(5) anti-bypass; circumvents a TPM | **High** |
@@ -257,7 +250,7 @@ Uniquely (per `README.md:83-92`, `docs/COMPARISON.md:39-50`), it **starts a prin
 
 **The asymmetry that matters:** `beambam`'s **LAN-only / no-cloud** paths are its strongest position (own device, own network — Part 1.6/1.7, *Van Buren*). The behaviors that touch **Bambu's cloud** are where Bambu's contract terms and residual CFAA risk reach. The **key-recovery + signing** path is where DMCA §1201 is most squarely implicated — and `beambam` does it for **print start**, the exact capability the firmware was built to gate.
 
-## 5.4 The Software Freedom Conservancy's AGPL finding — and why it flips the script (Verified)
+## 5.4 The Software Freedom Conservancy's AGPL finding — and why it flips the script
 
 On **May 18, 2026** the **Software Freedom Conservancy** published **"Comprehensive Response to Bambu's AGPLv3 Violations,"** finding **two** violations:
 1. **Missing Corresponding Source Code.** Bambu fails to provide complete source for its slicer's proprietary networking libraries:
@@ -271,7 +264,7 @@ Separately, **Josef Prusa** publicly argued Bambu's un-auditable networking "bla
 
 - Sources: [SFC — Comprehensive Response](https://sfconservancy.org/news/2026/may/18/bambu-studio-3d-printer-agpl-violation-response/), [Notebookcheck — Bambu backtracks](https://www.notebookcheck.net/Bambu-Lab-backtracks-after-SFC-accuses-company-of-AGPL-violations-and-legal-threats.1303904.0.html), [Tom's Hardware — SFC steps in](https://www.tomshardware.com/3d-printing/open-source-non-profit-claims-bambu-lab-violated-license-move-follows-cease-and-desist-demand-on-orcaslicer-fork-that-restored-cloud-printing-features-without-using-bambu-connect), [Tom's Hardware — Prusa warning](https://www.tomshardware.com/3d-printing/josef-prusa-warns-chinese-3d-printing-software-poses-massive-security-risks-bambu-lab-allegedly-violates-agpl-license-with-an-un-auditable-network-black-box).
 
-**Why this matters for `beambam`:** the lib SFC says Bambu **illegally withholds source for** — `libbambu_networking.so` — is the **same lib `beambam` reimplements** as an ABI shim (`runtime/network_shim/`). SFC's `baltobu` (reverse-engineer the networking libs, maintain an Orca fork, build a replacement Studio) is **functionally the same program `beambam` already is.** That reframes `beambam`'s reverse engineering: not as a rogue circumvention, but as the kind of interoperability/compliance work a major software-freedom nonprofit has now publicly funded — and it strengthens the §1201(f) interoperability and AGPL-§10 arguments (Bambu can't both ship AGPL code and contractually forbid the reverse engineering needed to interoperate with the source it's withholding).
+**Why this matters for `beambam`:** the lib SFC says Bambu **withholds source for** — `libbambu_networking.so` — is the **same lib `beambam` reimplements** as an ABI shim (`runtime/network_shim/`). SFC's `baltobu` (reverse-engineer the networking libs, maintain an Orca fork, build a replacement Studio) is **functionally the same program `beambam` already is.** That reframes `beambam`'s reverse engineering: not as a rogue circumvention, but as the kind of interoperability/compliance work a major software-freedom nonprofit has now publicly funded — and it strengthens the §1201(f) interoperability and AGPL-§10 arguments (Bambu can't both ship AGPL code and contractually forbid the reverse engineering needed to interoperate with the source it's withholding).
 
 ---
 
@@ -285,14 +278,11 @@ Separately, **Josef Prusa** publicly argued Bambu's un-auditable networking "bla
 
 ---
 
-## Open items (honest gaps)
+## Remaining open questions
 
-*Resolved since the first draft (now in the report):* full verbatim Bambu ToU incl. effective date (24 Apr 2024) — Part 4; the Developer-Mode walkback (Jan 20 2025) — Part 2.5; GN's GNCA deep-dive status (announced forthcoming) — Part 3.3.
-
-Remaining:
-1. **Standalone Bambu Privacy Notice & Warranty Statement** verbatim — the ToU's telemetry (§6) and modification/liability (§13.1) clauses are quoted; the dedicated `/policies/privacy` and `/policies/warranty` pages (account-data handling, RMA mechanics) were not separately extracted (warranty page timed out).
+1. **Standalone Bambu Privacy Notice & Warranty Statement** — the ToU's telemetry (§6) and modification/liability (§13.1) clauses are quoted; the dedicated `/policies/privacy` and `/policies/warranty` pages (account-data handling, RMA mechanics) are not quoted here.
 2. **Application of the §1201 anti-trafficking provisions to a distributed tool like `beambam`** is genuinely unlitigated; the 2024 repair exemption covers owner self-repair, not distribution. *Van Buren* (CFAA) and *Google v. Oracle* (fair-use interoperability) are favorable, and SFC's `baltobu` is a strong precedent that this *kind* of work is legitimate, but none was litigated against facts identical to `beambam`.
-3. **GN's GNCA deep-dive video**, once published, will have its own title/URL/date to add.
+3. **GN's GNCA deep-dive video** was announced as forthcoming; once published it will have its own title/URL/date to add.
 
-## Appendix — locally verified repo sources
+## Appendix — repository sources
 `README.md`; `LICENSE` (1–43); `docs/COMPARISON.md` (firmware versions/dates/HMS; Developer-Mode mechanics; OpenBambuAPI cert scheme; the GN/Jarczak C&D framing); `runtime/handy_extract/` (`DART_HEAP_KEY_EXTRACTION.md`, `SIGNER_HANDOFF.md`, `extract_signing_key.py`); `runtime/network_shim/` (the `libbambu_networking.so` shim — the lib at the center of SFC's CCS finding); `docs/SIGNED_VS_UNSIGNED.md`, `docs/LOCAL_CONTROL_PATHS.md`; `cloud_client.py`, `bambu_cert.py`, `beambam/mqtt_sign.py`, `beambam/device_cert.py`; `BambuStudio/LICENSE` + `BambuStudio/README.md`.
