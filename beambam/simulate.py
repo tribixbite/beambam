@@ -66,8 +66,12 @@ def simulate_start_print(
     from beambam.mqtt import sign_payload
     from beambam.print_job import start_print
     client = _CapturingClient(serial=serial)
+    # _CapturingClient is a deliberate duck-typed stand-in for X2DClient — it
+    # captures the payload instead of publishing, so start_print never touches a
+    # socket here. It has the .creds/.publish surface start_print uses.
     start_print(
-        client, gcode_filename,
+        client,  # type: ignore[arg-type]
+        gcode_filename,
         use_ams=use_ams, ams_slot=ams_slot,
         bed_type=bed_type, bed_temp=bed_temp,
         local_path=Path(local_path) if local_path else None,

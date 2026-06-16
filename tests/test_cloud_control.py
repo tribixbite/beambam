@@ -1,6 +1,8 @@
 """tests/test_cloud_control.py — signed cloud-command construction (no network)."""
 from __future__ import annotations
-import json, sys, types
+import json
+import sys
+import types
 from pathlib import Path
 import pytest
 
@@ -53,7 +55,8 @@ def test_topics_and_conveniences_target_the_serial():
 # ----- cmd_pause routes to the cloud-signed path when a key is present --------
 
 def test_cmd_pause_routes_to_cloud_signed(monkeypatch, tmp_path):
-    import types, argparse
+    import argparse
+    import types
     from beambam.cli import control
     # a real key file so _signing_key_path().is_file() passes
     keyp = tmp_path / "k.pem"
@@ -84,7 +87,8 @@ def test_cmd_pause_routes_to_cloud_signed(monkeypatch, tmp_path):
 
 def test_cmd_skip_routes_to_cloud_signed(monkeypatch, tmp_path):
     """`beambam skip 3 7` → signed print.skip_objects with obj_list=[3,7]."""
-    import types, argparse
+    import argparse
+    import types
     from beambam.cli import control
     keyp = tmp_path / "k.pem"
     key = rsa.generate_private_key(public_exponent=65537, key_size=2048)

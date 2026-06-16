@@ -66,18 +66,18 @@ if TYPE_CHECKING:
     from cloud_client import CloudClient, CloudError
 
 
-# Lazy re-exports — these live in x2d_bridge.py until v1.3.0. Eagerly
-# importing them here triggers a circular import (x2d_bridge imports
-# `Creds` from beambam.config). The package-level `__getattr__` hook
-# defers the import until the symbol is actually accessed.
-_LAZY_FROM_X2D_BRIDGE = {
-    "BAMBU_CERT_ID":  "x2d_bridge",
-    "X2DClient":      "x2d_bridge",
-    "sign_payload":   "x2d_bridge",
-    "upload_file":    "x2d_bridge",
-    "download_file":  "x2d_bridge",
-    "list_files":     "x2d_bridge",
-    "cli":            ("x2d_bridge", "main"),
+# Lazy re-exports from the canonical homes the bridge-split moved them to
+# (x2d_bridge.py was removed in v1.5.0). The package-level `__getattr__`
+# hook defers the import until the symbol is actually accessed, which also
+# avoids an import cycle (beambam.mqtt imports `Creds` from beambam.config).
+_LAZY_REEXPORTS = {
+    "BAMBU_CERT_ID":  "beambam.mqtt",
+    "X2DClient":      "beambam.mqtt",
+    "sign_payload":   "beambam.mqtt",
+    "upload_file":    "beambam.ftps",
+    "download_file":  "beambam.ftps",
+    "list_files":     "beambam.ftps",
+    "cli":            ("beambam.cli", "main"),
 }
 _LAZY_FROM_CLOUD = {
     "CloudClient":    "cloud_client",
@@ -87,7 +87,7 @@ _LAZY_FROM_CLOUD = {
 
 def __getattr__(name: str) -> Any:
     """Lazy load expensive / cycle-prone symbols on first access."""
-    spec = _LAZY_FROM_X2D_BRIDGE.get(name) or _LAZY_FROM_CLOUD.get(name)
+    spec = _LAZY_REEXPORTS.get(name) or _LAZY_FROM_CLOUD.get(name)
     if spec is None:
         raise AttributeError(f"module 'beambam' has no attribute {name!r}")
     if isinstance(spec, tuple):

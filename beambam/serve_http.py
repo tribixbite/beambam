@@ -32,7 +32,10 @@ import zipfile
 from dataclasses import asdict
 from pathlib import Path
 from threading import Event, Thread
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any, Callable
+
+if TYPE_CHECKING:                       # forward-ref types only, no runtime import
+    from beambam.state_hub import StateHub
 
 # Module-level helpers all sourced from the dedicated helpers module
 # (extracted in Phase 5e batches 2-4 of the original split work).
@@ -176,6 +179,8 @@ def _serve_http(bind: str,
         _AUTH_BYPASS_PATHS = {"/login.html", "/login.js", "/auth/info"}
 
         def _serve_static(self, fname: str) -> None:
+            if web_dir is None:                 # no web UI configured
+                self.send_response(404); self.end_headers(); return
             path = (web_dir / fname).resolve()
             try:
                 # Refuse traversal beyond the web dir.
@@ -553,15 +558,9 @@ def _serve_http(bind: str,
                         state = "unknown"
                 else:
                     state = "exited"
-                # Surface the latest log tail too (last 4 KiB) so HA
-                # users can see slice progress.
-                upload_dir = Path.home() / ".x2d" / "uploads"
-                log_tail = ""
-                for log_path in upload_dir.glob("*.log"):
-                    # We can't bind pid -> log without bookkeeping; users
-                    # passing the path in the spawn response can read the
-                    # log directly. Surface the most-recent one as a hint.
-                    pass
+                # The full slice log lives at the `log` path returned in the
+                # spawn response; we can't bind pid -> log here without extra
+                # bookkeeping, so callers read it directly (hint below).
                 self._send_json({
                     "ok":        True,
                     "pid":       pid,
@@ -655,7 +654,7 @@ def _serve_http(bind: str,
             self.wfile.write(body)
 
         def _publish_via_client(self, printer: str, payload: dict) -> tuple[int, dict]:
-            cli = clients.get(printer)
+            cli = (clients or {}).get(printer)
             if cli is None:
                 return 503, {"error": "no live MQTT client for printer "
                               f"{printer!r}; run with --http on the daemon"}

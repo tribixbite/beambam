@@ -474,9 +474,9 @@ def cmd_ams(args: argparse.Namespace) -> int:
         # Resolve + validate every profile up front so we don't push half a
         # batch and then crash.
         resolved: list[tuple[int, dict[str, Any], str | None]] = []
-        for e in entries:
-            slot = int(e["slot"])
-            prof_rel = e["profile"]
+        for entry in entries:
+            slot = int(entry["slot"])
+            prof_rel = entry["profile"]
             prof_path = (prof_rel if os.path.isabs(prof_rel)
                          else os.path.join(profiles_dir, prof_rel))
             try:
@@ -486,7 +486,7 @@ def cmd_ams(args: argparse.Namespace) -> int:
                 print(f"slot {slot}: failed to prepare {prof_rel!r}: {exc}",
                       file=sys.stderr)
                 return 1
-            resolved.append((slot, fields, e.get("color")))
+            resolved.append((slot, fields, entry.get("color")))
 
         # Pull live state once to fill in colors we don't override.
         live_colors: dict[int, str | None] = {}

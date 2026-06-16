@@ -105,7 +105,6 @@ def test_tampered_message_fails_verify():
     msg = mqtt_sign.signed_message(
         "print", {"command": "pause", "sequence_id": "0"}, "2000000001",
         signer=mqtt_sign.key_signer(key), cert_id="X")
-    tampered = msg.replace(b'"pause"', b'"stop"x'[:7]) if b'"pause"' in msg else msg
     # flip the command -> signature no longer matches
     bad = json.loads(msg)
     bad["print"]["command"] = "stop"
