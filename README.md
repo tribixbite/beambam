@@ -47,7 +47,8 @@ other open clients: [`docs/COMPARISON.md`](docs/COMPARISON.md).
 * You own an **X2D / H2D / X1E / refreshed P1+X1** and Bambu Studio
   refuses to connect — because the Network Plugin has no aarch64
   build, OR the firmware needs RSA-SHA256 signed MQTT, OR you don't
-  want a cloud account just to print over LAN.
+  want a live cloud connection (or Developer Mode) just to drive your
+  printer over LAN.
 * You want to drive your printer from **Home Assistant**, **Claude
   Desktop / MCP**, **a phone in your pocket**, or **a homelab dashboard**
   — and you don't want to run a 1.5 GB Bambu Studio install just to
@@ -86,18 +87,24 @@ On Bambu's Jan-2025+ **authorization-control** firmware, the printer rejects
 unsigned control commands. Almost every open client handles writes by asking the
 user to turn on the printer's **Developer LAN Mode** — which by design *severs
 Bambu Cloud and disables auth verification entirely*. beambam is the only one
-that signs `print.*` and **starts a print over pure LAN with no cloud account and
-no Developer Mode**, by recovering the per-installation signing key from a Bambu
-Handy install and RSA-encrypting the file location (`url_enc`) to the printer's
-device cert.
+that signs `print.*` and **starts a print over pure LAN with no Developer Mode
+and no live cloud connection at print time**, by recovering the per-installation
+signing key from a Bambu Handy install and RSA-encrypting the file location
+(`url_enc`) to the printer's device cert. (That key is Bambu-issued — a prior
+Handy cloud login provisioned it; beambam's setup is a one-time `adb` extraction
+of it, not an ongoing cloud dependency.)
 
-| Project | LAN-only | Signs `print.*` on signed FW | **Start print, signed FW, no cloud / no DevMode** | X2D/H2D | aarch64/Termux |
+| Project | LAN-only¹ | Signs `print.*` on signed FW | **Start print, signed FW, no DevMode** | X2D/H2D | aarch64/Termux |
 |---|:---:|:---:|:---:|:---:|:---:|
-| **beambam** | ✓ | ✓ (auto-recovered per-install key) | **✓** | ✓ | ✓ |
+| **beambam** | ◐¹ | ✓ (auto-recovered per-install key) | **✓** | ✓ | ✓ |
 | bambu-mcp | ✓ | ◐ user must supply key | ◐ start needs DevMode | ✗ | ◐ |
 | ha-bambulab / pybambu | ◐ | ◐ write needs DevMode | ✗ (DevMode only) | partial | ✓ |
 | bambulabs_api | ✓ | ✗ | ✗ (DevMode only) | ✗ | ✓ |
 | OrcaSlicer / BambuStudio | ◐ | ◐ Studio = cloud client | ◐ DevMode or cloud | ✓ (Studio) | ✗ |
+
+¹ beambam runs LAN-only at print time (no live cloud, no Developer Mode); the
+one-time signing-key recovery needs a Bambu Handy that's been signed in — the key
+is Bambu-issued, provisioned by a prior cloud login — plus `adb` to read it out.
 
 Full matrix, sources, and honest caveats: [`docs/COMPARISON.md`](docs/COMPARISON.md).
 
@@ -117,8 +124,10 @@ depends on the firmware:
   uses a **per-installation key recovered once** from a Bambu Handy install
   (`beambam key --adb <ip:port>`; see
   [`SIGNER_HANDOFF.md`](runtime/handy_extract/SIGNER_HANDOFF.md)). Control
-  (pause/resume/stop/start/skip) then works over LAN with **no cloud account
-  and no Developer Mode**. X2D/H2D LAN *print* additionally needs the
+  (pause/resume/stop/start/skip) then works over LAN with **no Developer Mode
+  and no live cloud connection** — though the key itself is Bambu-issued, so a
+  prior Handy cloud login (and `adb` to extract it) is a one-time prerequisite.
+  X2D/H2D LAN *print* additionally needs the
   printer's device cert (`beambam device-cert`) to RSA-encrypt the file
   location (`url_enc`). See [how beambam compares](docs/COMPARISON.md).
 

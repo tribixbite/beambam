@@ -2,7 +2,7 @@
 
 All notable changes to this project.
 
-## v1.5.0 — signed LAN control + no-cloud X2D/H2D print (2026-06-16)
+## v1.5.0 — signed LAN control + Developer-Mode-free X2D/H2D print (2026-06-16)
 
 Two headline capabilities land in this release, plus the final bridge-split
 cleanup.
@@ -12,7 +12,10 @@ cleanup.
 Jan-2025+ Bambu firmware rejects unsigned `print.*` MQTT and requires a signing
 cert whose CN matches the printer's own serial — a shared/leaked cert can't
 satisfy it, which is why every other open client falls back to Developer Mode.
-beambam now drives such printers **with no cloud account and no Developer Mode**:
+beambam now drives such printers **with no Developer Mode and no live cloud
+connection at print time** — the signing key is Bambu-issued (a prior Handy cloud
+login provisions it), so beambam's only cloud touchpoint is a one-time `adb`
+extraction of that key, not an ongoing dependency:
 
 - **`beambam key --adb <ip:port>`** recovers the per-installation RSA signing key
   from a running Bambu Handy app by scanning its Dart heap for a 128-byte window

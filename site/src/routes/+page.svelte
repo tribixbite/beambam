@@ -70,8 +70,8 @@ Summary: 6 pass, 2 warn, 0 fail`;
     const claims = [
         {
             tag: 'BRIDGE',
-            head: 'Start a print over pure LAN. No cloud. No Developer Mode.',
-            body: 'Bambu firmware since Jan-2025 rejects unsigned control commands and wants a signing cert whose CN matches the printer, so a shared cert will not do — every other open client falls back to Developer Mode, which severs Bambu Cloud entirely. beambam recovers the per-installation signing key from a Bambu Handy install, signs pause / resume / stop / start / skip, and starts a print by FTP-ing the .gcode.3mf plus a signed project_file whose file location is RSA-encrypted to the printer device cert. No cloud account. No Developer Mode.'
+            head: 'Start a print over pure LAN. No Developer Mode, no live cloud.',
+            body: 'Bambu firmware since Jan-2025 rejects unsigned control commands and wants a signing cert whose CN matches the printer, so a shared cert will not do — every other open client falls back to Developer Mode, which severs Bambu Cloud entirely. beambam recovers the per-installation signing key from a Bambu Handy install, signs pause / resume / stop / start / skip, and starts a print by FTP-ing the .gcode.3mf plus a signed project_file whose file location is RSA-encrypted to the printer device cert. At print time: no Developer Mode, no live cloud connection. The catch — that key is Bambu-issued, so a prior Handy cloud login provisioned it; beambam just extracts it once over adb. A heavier setup than a DevMode toggle, but it keeps cloud and remote access intact.'
         },
         {
             tag: 'INTEGRATIONS',
@@ -101,7 +101,7 @@ Summary: 6 pass, 2 warn, 0 fail`;
         <!-- Status pill — "we shipped a thing" -->
         <div class="pill mb-[var(--space-2xl)]">
             <span class="pill-dot"></span>
-            <span>v1.5.0 · signed control · no-cloud LAN print · per-install key recovery</span>
+            <span>v1.5.0 · signed control · pure-LAN print · per-install key recovery</span>
         </div>
 
         <!-- Wordmark — its own row so it can breathe. Hero size capped at
@@ -115,8 +115,8 @@ Summary: 6 pass, 2 warn, 0 fail`;
             <div class="md:col-span-7">
                 <p class="leading-[1.5] max-w-[55ch]" style="color: var(--color-ink); font-size: var(--text-lg);">
                     Signed-MQTT bridge and daemon stack for every Bambu Lab printer.
-                    Pure Python. No cloud account. Runs anywhere paho-mqtt does —
-                    Linux, macOS, WSL, Android via Termux.
+                    Pure Python. No live cloud dependency. Runs anywhere paho-mqtt
+                    does — Linux, macOS, WSL, Android via Termux.
                 </p>
                 <div class="mt-[var(--space-xl)] flex flex-wrap gap-[var(--space-md)]">
                     <a href="/cli" class="btn-primary">Command index →</a>

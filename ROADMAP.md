@@ -23,7 +23,9 @@ are tracked in their own deep-dive plan files.
 
 **v1.5.0** (2026-06) — [changelog](CHANGELOG.md)
 - **Signed printer control + pure-LAN print on authorization-control firmware,
-  no cloud account, no Developer Mode** — the capability no other open client has.
+  no Developer Mode, no live cloud at runtime** — the capability no other open
+  client has (the per-install signing key is a one-time `adb` extraction from a
+  signed-in Handy; that key is Bambu-issued, so a prior cloud login provisioned it).
 - `beambam key` recovers the per-installation RSA signing key from a Bambu Handy
   Dart heap; `pause/resume/stop/start/skip/gcode` auto-route signed.
 - `beambam device-cert` fetches the printer device cert; X2D/H2D LAN print builds
@@ -406,7 +408,7 @@ the bare name. The ratchet test
   `signed_headers`, `app_certification_id`), but there's no end-to-end CLI verb
   yet: the live `POST /my/task` returns a body-validation error that needs more
   cloud-API reverse-engineering of the exact required field set. Lower priority —
-  the no-cloud LAN print path (shipped in v1.5.0) is the primary way to print, and
+  the Developer-Mode-free LAN print path (shipped in v1.5.0) is the primary way to print, and
   cloud-slice is only needed to have Bambu's servers slice a MakerWorld model
   remotely. Tracked in [CLOUD_SLICE_API.md](runtime/handy_extract/CLOUD_SLICE_API.md).
 

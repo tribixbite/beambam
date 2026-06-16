@@ -42,7 +42,7 @@
                 { id: 'LOCAL_CONTROL_PATHS',   name: 'docs/LOCAL_CONTROL_PATHS.md',    desc: 'LAN MQTT, FTPS, RTSPS, LVL-Local — every protocol the printer speaks on the local network.' },
                 { id: 'SIGNED_VS_UNSIGNED',    name: 'docs/SIGNED_VS_UNSIGNED.md',     desc: 'Signed vs unsigned MQTT truth table per firmware version. Includes the leaked-cert background.' },
                 { id: 'DART_HEAP_KEY',         name: 'runtime/handy_extract/DART_HEAP_KEY_EXTRACTION.md', desc: 'How beambam recovers the per-installation signing key from the Bambu Handy Dart heap — scanning for a 128-byte window that divides the known modulus (a prime factor). No Frida, no hooking.' },
-                { id: 'COMPARISON',            name: 'docs/COMPARISON.md',            desc: 'How beambam compares to ha-bambulab, bambu-mcp, bambulabs_api, OrcaSlicer and others — and why it is the only one that starts a print over pure LAN on signed firmware with no cloud and no Developer Mode.' },
+                { id: 'COMPARISON',            name: 'docs/COMPARISON.md',            desc: 'How beambam compares to ha-bambulab, bambu-mcp, bambulabs_api, OrcaSlicer and others — and why it is the only one that starts a print over pure LAN on signed firmware with no Developer Mode and no live cloud at runtime (the one-time setup extracts a Bambu-issued key from a signed-in Handy).' },
                 { id: 'X2D_RUNTIME_PIPELINE',  name: 'docs/X2D_RUNTIME_PIPELINE.md',   desc: 'How a print command flows from CLI through the bridge to the printer\u2019s firmware.' },
                 { id: 'CLOUD_BRIDGE',          name: 'docs/CLOUD_BRIDGE.md',           desc: 'Optional Bambu Cloud bridge — cloud-print, cloud-state, cloud-pause.' }
             ]

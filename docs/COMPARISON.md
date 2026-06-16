@@ -45,9 +45,14 @@ it out of the app's Dart heap — no Frida, no manual capture; see
 **(2)** sends signed `pause / resume / stop / skip / gcode` (validated live), and
 **(3)** actually **starts a print over pure LAN** — FTP the `.gcode.3mf`, then a
 signed `print.project_file` whose file location is `url_enc` (RSA-encrypted to
-the printer's own device cert) — with **no cloud account and no Developer Mode**.
-That last combination is the one every other tool either can't do or only does by
-dropping into Developer Mode.
+the printer's own device cert) — with **no Developer Mode and no live cloud
+connection at print time**. That last combination is the one every other tool
+either can't do or only does by dropping into Developer Mode (which severs cloud
+entirely). The honest cost: the signing key beambam uses is Bambu-issued, so it
+only exists in Handy because of a prior cloud login — recovering it is a one-time
+`adb` extraction, not a cloud-free bootstrap. So beambam trades a heavier *setup*
+(adb + a signed-in Handy) for a lighter *runtime* (no DevMode, cloud/remote
+stays intact), where the others trade the reverse.
 
 It also adds X2D / H2D / H2S / H2C / P2S / X1E support, bundled slicing, and runs
 on aarch64 / Termux / Android — none of which the one other signing-capable
@@ -61,7 +66,7 @@ LAN Mode, which disables cloud + auth verification.
 
 | Project | LAN-only (no cloud acct) | Supports signed FW | **Start print on signed FW over LAN** | X2D / H2D | Slicing | AMS read / map | HA / MCP / Web UI | Lang + aarch64/Termux | License · maintenance |
 |---|:---:|:---:|:---:|:---:|:---:|:---:|---|---|---|
-| **beambam** (this project) | ✓ | ✓ recovers per-install key, signs `print.*` | **✓ FTP + signed `project_file`+`url_enc`, no cloud / no DevMode** | ✓ X2D/H2D/H2S/H2C/P2S/X1E | ✓ bundled BambuStudio | ✓ read + auto-match | HA + MCP + web UI | Python · ✓ aarch64/Termux/Android | — |
+| **beambam** (this project) | ◐ runtime only — key needs a cloud-provisioned Handy | ✓ recovers per-install key, signs `print.*` | **✓ FTP + signed `project_file`+`url_enc`, no DevMode + no live cloud** | ✓ X2D/H2D/H2S/H2C/P2S/X1E | ✓ bundled BambuStudio | ✓ read + auto-match | HA + MCP + web UI | Python · ✓ aarch64/Termux/Android | — |
 | [schwarztim/bambu-mcp](https://github.com/schwarztim/bambu-mcp) | ✓ | ◐ signs **only if user supplies** key/cert; unsigned fallback | ◐ control if key supplied; `.3mf` start needs DevMode | ✗ P1/X1/A1 only | ✗ | ✓ | MCP server | TS/Node 18+ | MIT · active |
 | [greghesp/ha-bambulab](https://github.com/greghesp/ha-bambulab) (pybambu) | ◐ read LAN-only; cloud acct to set up | ◐ read ok; write needs **DevMode** | ◐ only via DevMode (severs cloud) | partial (read) | ✗ | ✓ | HA integration | Python (under HA) | active |
 | [BambuTools/bambulabs_api](https://github.com/BambuTools/bambulabs_api) | ✓ (IP + access code) | ✗ no signing in client | ◐ `start_print_3mf()` but needs DevMode on signed FW | ✗ X1 partial, H2D untested | ✗ | ◐ read | library | Python | MIT · active |
@@ -74,6 +79,15 @@ LAN Mode, which disables cloud + auth verification.
 
 ## Honest caveats
 
+- **beambam's "no cloud" is a *runtime* claim, not "no cloud account ever."** The
+  per-installation signing key is Bambu-CA-issued (a self-signed substitute is
+  rejected with `84033545`), so it only exists in Handy because someone signed in
+  with a Bambu account and bound the printer. beambam reads that key out of Handy
+  (one-time, over `adb`) — after which control + print run over LAN with no
+  Developer Mode and no live cloud connection. So a cloud account is a one-time
+  *setup* prerequisite; it just isn't a *runtime* dependency. (This is a heavier
+  setup than the DevMode toggle other tools use, but it doesn't sever cloud/remote
+  access the way DevMode does.)
 - **`bambu-mcp`'s "defeats signed firmware" framing is overstated, not wholly
   false.** Its README implies the bundled public Bambu Connect cert auto-signs
   every command; its actual code (`src/mqtt-client.ts`) signs only with a
