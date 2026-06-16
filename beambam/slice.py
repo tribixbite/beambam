@@ -61,6 +61,16 @@ def add_subparser(sub: "argparse._SubParsersAction") -> argparse.ArgumentParser:
     p.add_argument("--color",
                    help="Primary filament color: #RRGGBB hex or Bambu name "
                         "(e.g. 'Gold', 'PLA Silk Gold')")
+    p.add_argument("--colors",
+                   help="Multi-AMS-slot color list, comma-separated (each "
+                        "entry hex or Bambu name). With --copies N the Nth "
+                        "copy is assigned the Nth slot, cycling if the list is "
+                        "shorter. Wins over --color. "
+                        "e.g. 'Gold,Red,Blue' or '#E4BD68,#FF0000,#0000FF'.")
+    p.add_argument("--color-by-region",
+                   help="Path to a JSON file of per-object/region color "
+                        "assignments (a list or dict of colors, same name/hex "
+                        "rules as --colors). --colors wins if both are given.")
     p.add_argument("--bed",
                    help="Bed type: cool/engineering/high_temp/textured/supertack "
                         "or BambuBedType int 1..5")
@@ -94,6 +104,10 @@ def cmd_slice(args: argparse.Namespace) -> int:
         new_argv += ["--copies", str(copies)]
     if args.color:
         new_argv += ["--color", args.color]
+    if getattr(args, "colors", None):
+        new_argv += ["--colors", args.colors]
+    if getattr(args, "color_by_region", None):
+        new_argv += ["--color-by-region", args.color_by_region]
     if args.bed:
         new_argv += ["--bed", args.bed]
     if args.keep_graft:

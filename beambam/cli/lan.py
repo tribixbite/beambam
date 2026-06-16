@@ -285,6 +285,12 @@ def cmd_slice_print(args: argparse.Namespace) -> int:
                 cmd.extend(["--copies", str(int(args.copies))])
             if args.color:
                 cmd.extend(["--color", args.color])
+            if getattr(args, "colors", None):
+                cmd.extend(["--colors", args.colors])
+            if getattr(args, "color_by_region", None):
+                cmd.extend(["--color-by-region", args.color_by_region])
+            if getattr(args, "orient", "original") != "original":
+                cmd.extend(["--orient", args.orient])
             rc = subprocess.call(cmd)
         if rc != 0:
             sys.exit(f"slicing failed rc={rc}")

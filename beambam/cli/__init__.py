@@ -534,6 +534,17 @@ def main() -> int:
     sp.add_argument("--color",
                     help="Primary filament color #RRGGBB (forwards to "
                          "x2d_slice.py --color; ignored for 3MF input)")
+    sp.add_argument("--colors",
+                    help="Multi-AMS-slot color list, comma-separated (hex or "
+                         "Bambu names). With --copies N the Nth copy gets the "
+                         "Nth slot. Mirrors x2d_slice.py --colors. (STL input)")
+    sp.add_argument("--color-by-region", dest="color_by_region",
+                    help="JSON file of per-object/region color assignments. "
+                         "Mirrors x2d_slice.py --color-by-region. (STL input)")
+    sp.add_argument("--orient", default="original",
+                    choices=("original", "flat", "tall", "auto"),
+                    help="Pre-slice mesh orientation: original / flat / tall / "
+                         "auto. Mirrors x2d_slice.py --orient. (STL input)")
     # Multi-filament + cross-printer-profile re-slice (3MF inputs only).
     # Forwarded verbatim to `bambu-studio --slice 0`. Lets a project .3mf
     # authored for A1/X1 etc. be re-sliced for X2D with proper per-AMS-slot

@@ -181,6 +181,79 @@ def test_cmd_slice_omits_new_flags_at_defaults():
     assert "--copies" not in argv
 
 
+def test_subparser_accepts_multicolor_flags():
+    """--colors / --color-by-region (the full x2d_slice option set) parse."""
+    p = _parser()
+    args = p.parse_args([
+        "slice", "in.stl", "-o", "out.gcode.3mf",
+        "--colors", "Gold,Red,Blue",
+        "--color-by-region", "regions.json",
+        "--orient", "flat",
+    ])
+    assert args.colors == "Gold,Red,Blue"
+    assert args.color_by_region == "regions.json"
+    assert args.orient == "flat"
+
+
+def test_cmd_slice_forwards_multicolor_flags():
+    """--colors / --color-by-region must reach x2d_slice.main's argv."""
+    args = argparse.Namespace(
+        stl=Path("m.stl"), out=Path("m.3mf"), template=Path("t.3mf"),
+        plate=0, scale=1.0, scale_pct=None, mm=None, copies=1,
+        color=None, colors="Gold,Red", color_by_region="r.json",
+        bed=None, keep_graft=False, orient="original",
+    )
+    captured_argv: list[list[str]] = []
+
+    def fake_main():
+        captured_argv.append(sys.argv[:])
+        return 0
+
+    saved = sys.argv[:]
+    with patch("x2d_slice.main", side_effect=fake_main):
+        cmd_slice(args)
+    sys.argv = saved
+    argv = captured_argv[0]
+    assert "--colors" in argv and "Gold,Red" in argv
+    assert "--color-by-region" in argv and "r.json" in argv
+
+
+def test_cmd_slice_omits_multicolor_when_unset():
+    args = argparse.Namespace(
+        stl=Path("m.stl"), out=Path("m.3mf"), template=Path("t.3mf"),
+        plate=0, scale=1.0, scale_pct=None, mm=None, copies=1,
+        color=None, colors=None, color_by_region=None,
+        bed=None, keep_graft=False, orient="original",
+    )
+    captured_argv: list[list[str]] = []
+
+    def fake_main():
+        captured_argv.append(sys.argv[:])
+        return 0
+
+    saved = sys.argv[:]
+    with patch("x2d_slice.main", side_effect=fake_main):
+        cmd_slice(args)
+    sys.argv = saved
+    argv = captured_argv[0]
+    assert "--colors" not in argv
+    assert "--color-by-region" not in argv
+
+
+def test_slice_print_help_lists_full_slice_options():
+    """`slice-print --help` must expose the multi-color + orient slice
+    options (parity with `beambam slice` / x2d_slice.py)."""
+    import subprocess
+    r = subprocess.run(
+        [sys.executable, "-m", "beambam.cli", "slice-print", "--help"],
+        capture_output=True, text=True, timeout=20,
+        cwd=str(Path(__file__).resolve().parents[1]),
+    )
+    assert r.returncode == 0, r.stderr
+    for flag in ("--colors", "--color-by-region", "--orient"):
+        assert flag in r.stdout, f"{flag} missing from `slice-print --help`"
+
+
 def test_cmd_slice_restores_argv_on_error():
     """Even if x2d_slice.main raises, sys.argv must be restored."""
     args = argparse.Namespace(

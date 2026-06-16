@@ -4,6 +4,20 @@ All notable changes to this project.
 
 ## [Unreleased]
 
+### Added
+- `beambam slice` and `beambam slice-print` now expose the **full slicer option
+  set** for STL input — `--colors` (multi-AMS-slot color list), `--color-by-region`
+  (per-region color JSON), and `--orient` — matching `x2d_slice.py`. Previously
+  only `--color` was forwarded, so multi-color STL slicing wasn't reachable from
+  the CLI.
+
+### Fixed
+- GUI one-line installer (`install.sh`) pulled the BambuStudio runtime tarball
+  from `releases/latest`, which 404'd once the CLI-only pip releases (1.1.0+)
+  became "latest". It now resolves the newest release that actually ships the
+  tarball, and `pip install`s the current `beambam` CLI so the GUI's
+  `libbambu_networking.so` shim has a modern `python -m beambam.cli` to spawn.
+
 ### Changed
 - **Relicensed from MIT to AGPL-3.0-or-later.** The pure-Python tree (previously
   MIT) is now AGPL-3.0, matching the already-AGPL BambuStudio fork +
