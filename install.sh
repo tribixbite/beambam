@@ -120,6 +120,18 @@ else
     c_green "paho-mqtt already importable"
 fi
 
+# The beambam CLI itself, latest from PyPI. --no-deps because paho-mqtt (above)
+# and cryptography (the `python-cryptography` pkg) are already satisfied, and pip
+# must NOT try to build cryptography from source on Termux — that fails. This
+# gives the GUI's libbambu_networking.so shim a real `python -m beambam.cli` to
+# spawn, and a modern `beambam` on PATH regardless of the tarball's age. Best-
+# effort: if PyPI is unreachable, the copy bundled in the tarball is the fallback.
+if pip install --no-deps --upgrade beambam >/dev/null 2>&1; then
+    c_green "beambam CLI installed from PyPI ($(beambam --version 2>/dev/null || echo '?'))"
+else
+    c_yellow "couldn't pip-install beambam (offline?) — using the copy bundled in the tarball"
+fi
+
 # Optional: install the WebRTC stack so `beambam webrtc` works.
 # Skip silently if deps fail to build — the rest of the toolkit still
 # functions without WebRTC. On Termux this needs libsrtp built from
@@ -154,7 +166,38 @@ require_cmd tar
 
 mkdir -p "$INSTALL_ROOT" || fatal "can't mkdir $INSTALL_ROOT" 3
 
-REL_BASE="https://github.com/${REPO}/releases/latest/download"
+# The GUI runtime tarball ships only on releases that actually build it; the
+# CLI-only pip releases (1.1.0+) don't carry it, so `releases/latest` can point
+# at a release with no tarball (→ 404). Resolve the newest release whose assets
+# include $TARBALL and download from its tag, falling back to releases/latest
+# only if the GitHub API is unreachable / rate-limited.
+resolve_tarball_tag() {
+    curl -fsSL "https://api.github.com/repos/${REPO}/releases?per_page=40" 2>/dev/null \
+      | python3 -c '
+import sys, json
+target = sys.argv[1]
+try:
+    rels = json.load(sys.stdin)
+except Exception:
+    sys.exit(0)
+for r in rels:                      # GitHub lists releases newest-first
+    if r.get("draft"):
+        continue
+    if target in [a.get("name", "") for a in r.get("assets", [])]:
+        print(r.get("tag_name", ""))
+        break
+' "$TARBALL"
+}
+
+REL_TAG=$(resolve_tarball_tag || true)
+if [ -n "${REL_TAG:-}" ]; then
+    REL_BASE="https://github.com/${REPO}/releases/download/${REL_TAG}"
+    c_green "GUI runtime tarball found on release ${REL_TAG}"
+else
+    REL_BASE="https://github.com/${REPO}/releases/latest/download"
+    c_yellow "couldn't resolve a tarball-bearing release via the GitHub API;"
+    c_yellow "falling back to releases/latest (404s if the latest release is CLI-only)"
+fi
 TMP=$(mktemp -d) || fatal "mktemp failed" 3
 trap 'rm -rf "$TMP"' EXIT
 
@@ -361,9 +404,12 @@ if [ -d "$BOOT_DIR" ]; then
 #!/usr/bin/env bash
 # Auto-spawned by Termux:Boot on phone power-on. Starts the beambam
 # bridge daemon so the GUI shim can immediately reach the printer.
+# Prefer the pip-installed console-script; fall back to the tarball copy.
+if command -v beambam >/dev/null 2>&1; then
+    exec beambam daemon --interval 5 --http 127.0.0.1:8765 --quiet
+fi
 export PYTHONPATH="$INSTALL_ROOT:\${PYTHONPATH:-}"
-exec python3 -m beambam.cli daemon \\
-    --interval 5 --http 127.0.0.1:8765 --quiet
+exec python3 -m beambam.cli daemon --interval 5 --http 127.0.0.1:8765 --quiet
 EOF
     chmod +x "$BOOT_DIR/x2d-bridge"
     c_green "$BOOT_DIR/x2d-bridge installed"
@@ -389,7 +435,7 @@ Next steps:
   3. Launch the GUI:
           $INSTALL_ROOT/run_gui.sh
   4. Test the bridge from CLI without the GUI:
-          PYTHONPATH=$INSTALL_ROOT python3 -m beambam.cli status
+          beambam status
 
 Re-run this installer any time to upgrade to the newest release —
 your AppConfig and credentials file are preserved.
