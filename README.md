@@ -118,18 +118,20 @@ depends on the firmware:
 - **Older / unenforced firmware** — the bundled publicly-leaked Bambu
   Connect cert (`bambu_cert.py`) signs control directly; no extra setup,
   no cloud account.
-- **Authorization-control firmware** (X2D/H2D family, refreshed P1/X1) —
-  `print.*` additionally requires a signing cert whose CN matches the
-  printer's *own* serial, which a single shared cert can't provide. beambam
-  uses a **per-installation key recovered once** from a Bambu Handy install
-  (`beambam key --adb <ip:port>`; see
-  [`SIGNER_HANDOFF.md`](runtime/handy_extract/SIGNER_HANDOFF.md)). Control
-  (pause/resume/stop/start/skip) then works over LAN with **no Developer Mode
-  and no live cloud connection** — though the key itself is Bambu-issued, so a
-  prior Handy cloud login (and `adb` to extract it) is a one-time prerequisite.
-  X2D/H2D LAN *print* additionally needs the
-  printer's device cert (`beambam device-cert`) to RSA-encrypt the file
-  location (`url_enc`). See [how beambam compares](docs/COMPARISON.md).
+- **Authorization-control firmware** (X2D/H2D family, refreshed P1/X1) — the
+  printer rejects unsigned `print.*` and wants a signing cert whose CN matches
+  its *own* serial, so the shared leaked cert no longer works. **You pick how to
+  authorize writes — beambam supports either:**
+
+  | | How | Trade-off |
+  |---|---|---|
+  | **A. Extract the key** | `beambam key --adb <ip:port>` reads the per-installation key out of a signed-in Bambu Handy (one time, over adb). X2D/H2D LAN print also wants `beambam device-cert` for the `url_enc` file location. | More setup, but **cloud + remote access keep working** — no Developer Mode. |
+  | **B. Developer Mode** | Turn on the printer's Developer LAN Mode; beambam then drives it over the unsigned LAN path (no key, no cert). | One toggle, but it **disconnects Bambu Cloud** + remote access while on. |
+
+  Both run entirely over your LAN. Option A's key is Bambu-issued, so it only
+  exists in a Handy that's been signed in — a prior cloud login is a one-time
+  setup prerequisite, not a runtime dependency. See
+  [how beambam compares](docs/COMPARISON.md).
 
 | Model       | Bambu code | Signed MQTT | Status | Upload | Print | AMS | Camera | Notes |
 |-------------|:----------:|:-----------:|:------:|:------:|:-----:|:---:|:------:|-------|

@@ -45,14 +45,21 @@ it out of the app's Dart heap — no Frida, no manual capture; see
 **(2)** sends signed `pause / resume / stop / skip / gcode` (validated live), and
 **(3)** actually **starts a print over pure LAN** — FTP the `.gcode.3mf`, then a
 signed `print.project_file` whose file location is `url_enc` (RSA-encrypted to
-the printer's own device cert) — with **no Developer Mode and no live cloud
-connection at print time**. That last combination is the one every other tool
-either can't do or only does by dropping into Developer Mode (which severs cloud
-entirely). The honest cost: the signing key beambam uses is Bambu-issued, so it
-only exists in Handy because of a prior cloud login — recovering it is a one-time
-`adb` extraction, not a cloud-free bootstrap. So beambam trades a heavier *setup*
-(adb + a signed-in Handy) for a lighter *runtime* (no DevMode, cloud/remote
-stays intact), where the others trade the reverse.
+the printer's own device cert).
+
+beambam gives you both ways to authorize writes on locked firmware, and you pick:
+
+- **Extract the key** — `beambam key` recovers the per-installation key; control
+  + print then run over LAN with **no Developer Mode**, and Bambu Cloud + remote
+  access keep working. This is the path no other tool has.
+- **Developer Mode** — flip the printer's toggle and beambam drives it over the
+  unsigned LAN path (no key, no cert), exactly like the other clients do — at the
+  cost of Developer Mode disconnecting Bambu Cloud while it's on.
+
+The only thing the "key" path needs that isn't pure-LAN is a *one-time* setup: the
+key is Bambu-issued, so it only exists in a Handy that's been signed in, and
+beambam reads it out once over `adb`. After that it's a LAN-only runtime — beambam
+never stores cloud credentials either way.
 
 It also adds X2D / H2D / H2S / H2C / P2S / X1E support, bundled slicing, and runs
 on aarch64 / Termux / Android — none of which the one other signing-capable
@@ -80,14 +87,11 @@ LAN Mode, which disables cloud + auth verification.
 ## Honest caveats
 
 - **beambam's "no cloud" is a *runtime* claim, not "no cloud account ever."** The
-  per-installation signing key is Bambu-CA-issued (a self-signed substitute is
-  rejected with `84033545`), so it only exists in Handy because someone signed in
-  with a Bambu account and bound the printer. beambam reads that key out of Handy
-  (one-time, over `adb`) — after which control + print run over LAN with no
-  Developer Mode and no live cloud connection. So a cloud account is a one-time
-  *setup* prerequisite; it just isn't a *runtime* dependency. (This is a heavier
-  setup than the DevMode toggle other tools use, but it doesn't sever cloud/remote
-  access the way DevMode does.)
+  key path's signing key is Bambu-CA-issued (a self-signed substitute is rejected
+  with `84033545`), so it only exists in a Handy that's been signed in. So a cloud
+  account is a one-time *setup* prerequisite for that path — it isn't a *runtime*
+  dependency, and the Developer-Mode path needs no key at all. The matrix's
+  "LAN-only" column reflects runtime.
 - **`bambu-mcp`'s "defeats signed firmware" framing is overstated, not wholly
   false.** Its README implies the bundled public Bambu Connect cert auto-signs
   every command; its actual code (`src/mqtt-client.ts`) signs only with a

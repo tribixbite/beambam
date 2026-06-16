@@ -24,7 +24,7 @@ from __future__ import annotations
 # Pinned fallback — bump together with pyproject.toml's version field.
 # The `+source` local-segment makes it obvious this is a checkout, not
 # a pinned release.
-_SOURCE_FALLBACK = "1.5.0+source"
+_SOURCE_FALLBACK = "1.5.1+source"
 
 
 def _package_version() -> str:

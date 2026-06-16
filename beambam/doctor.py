@@ -338,11 +338,14 @@ def check_environment() -> list[Check]:
                          "`beambam key --adb <ip:port>` to (re)write cert_id"))
     else:
         out.append(Check("Environment", "Printer control key", "info",
-                         "no RSA signing key — printer CONTROL (pause/resume/"
-                         "stop/start/skip) is gated on X-series firmware. "
-                         "Optional: `beambam key --adb <ip:port>` recovers it "
-                         "from a captured Bambu Handy (see "
-                         "runtime/handy_extract/SIGNER_HANDOFF.md)."))
+                         "no RSA signing key — on Jan-2025+ firmware, CONTROL "
+                         "(pause/resume/stop/start/skip) + LAN print need ONE of: "
+                         "(a) `beambam key --adb <ip:port>` to recover the per-"
+                         "install key from a signed-in Bambu Handy — keeps cloud + "
+                         "remote access intact (see runtime/handy_extract/"
+                         "SIGNER_HANDOFF.md); or (b) the printer's Developer Mode "
+                         "enabled — no key needed, but it disconnects Bambu Cloud. "
+                         "Pre-2025 firmware works with neither."))
 
     # Device cert (X2D/H2D LAN print only). The signed `project_file` carries the
     # FTP file location as `url_enc` = RSA-encrypted to the printer's own device

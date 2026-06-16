@@ -2,6 +2,27 @@
 
 All notable changes to this project.
 
+## v1.5.1 — Developer-Mode option documented + accuracy fixes (2026-06-16)
+
+**Clarified — two ways to authorize writes on authorization-control firmware, your choice:**
+- **(a) `beambam key`** — extract the per-installation key from a signed-in Bambu
+  Handy (over adb). Control + print then run over LAN with no Developer Mode, and
+  Bambu Cloud + remote access keep working.
+- **(b) Developer Mode** — enable it on the printer and beambam drives it over the
+  unsigned LAN path with no key/cert, like the other open clients (Developer Mode
+  disconnects Bambu Cloud while on).
+
+beambam already supported both via its key-present / key-absent fallback; this
+release surfaces the choice in `beambam doctor` and documents it.
+
+**Docs**
+- Corrected the "no cloud account" overclaim (README, `docs/COMPARISON.md`,
+  website, release notes). The no-cloud / no-Developer-Mode property is about
+  *runtime*: the key path's signing key is Bambu-CA-issued, so a prior Handy cloud
+  login provisions it — a one-time setup step (read out once over adb), not a
+  runtime dependency. Reframed everywhere as the explicit key-vs-Developer-Mode
+  choice; comparison matrix "LAN-only" cell for beambam is now ◐ (runtime).
+
 ## v1.5.0 — signed LAN control + Developer-Mode-free X2D/H2D print (2026-06-16)
 
 Two headline capabilities land in this release, plus the final bridge-split

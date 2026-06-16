@@ -46,7 +46,7 @@ try:
     __version__ = _metadata.version("beambam")
 except _metadata.PackageNotFoundError:
     # Editable / source checkout without `pip install -e .`
-    __version__ = "1.5.0+source"
+    __version__ = "1.5.1+source"
 
 
 # Repo / install root. Drives things like the web/ dir + bs-bionic
