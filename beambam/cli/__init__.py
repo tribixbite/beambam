@@ -346,8 +346,13 @@ def main() -> int:
 
     ky = sub.add_parser("key", aliases=["token"],
                         help="Recover the printer-control RSA signing key from a running Handy (Dart heap)")
-    ky.add_argument("--adb", help="phone adb serial ip:port (or env X2D_ADB)")
+    ky.add_argument("--adb", help="phone adb serial ip:port (or env X2D_ADB); "
+                                  "the sole connected device is used if omitted")
     ky.add_argument("--cert", help="app cert PEM (default ~/.x2d/printer_app_cert.pem)")
+    ky.add_argument("--wait", type=int, default=0, metavar="SECONDS",
+                    help="keep polling the heap for this many seconds — open "
+                         "Handy's Devices tab + connect to the printer while it "
+                         "runs so the key loads (default: ~30s)")
     ky.set_defaults(fn=cmd_key)
 
     dvc = sub.add_parser("device-cert",

@@ -57,7 +57,7 @@ def anon_rw_regions(serial: str, pid: str):
             continue
         a, b = p[0].split("-")
         lo, hi = int(a, 16), int(b, 16)
-        if hi - lo < 1 << 20:                     # skip < 1 MB
+        if hi - lo < 1 << 18:                     # skip < 256 KB
             continue
         out.append((hi - lo, lo, hi, name))
     out.sort(reverse=True)
@@ -73,14 +73,14 @@ def scan_region(serial: str, pid: str, lo: int, size: int, N: int):
               f"skip={lo} count={size} conv=noerror,sync 2>/dev/null")
     data = np.frombuffer(raw, dtype=np.uint8)
     if len(data) < 128:
-        return None
+        return None, 0
     idx = np.arange(0, len(data) - 128, 4)
     cand = idx[((data[idx] & 1) == 1) & ((data[idx + 127] & 0x80) != 0)]
     for off in cand:
         v = int.from_bytes(data[int(off):int(off) + 128].tobytes(), "little")
         if 1 < v < N and N % v == 0:
-            return v
-    return None
+            return v, len(cand)
+    return None, len(cand)
 
 
 def main():
@@ -91,6 +91,11 @@ def main():
     ap.add_argument("--package", default="bbl.intl.bambulab.com")
     ap.add_argument("--out", default=str(Path.home() / ".x2d" / "printer_sign_key.pem"))
     ap.add_argument("--e", type=int, default=65537)
+    ap.add_argument("--retries", type=int, default=1,
+                    help="re-scan the heap this many times (lets you open the "
+                         "Devices tab mid-run so the key loads)")
+    ap.add_argument("--retry-delay", type=int, default=10,
+                    help="seconds between retries")
     args = ap.parse_args()
 
     if args.cert:
@@ -102,21 +107,44 @@ def main():
     else:
         sys.exit("provide --modulus-hex or --cert")
 
-    pid = adb(args.serial, "shell", "pidof", "-s", args.package).decode().strip()
-    if not pid:
-        sys.exit(f"{args.package} not running — launch it (key must be in the heap)")
-    print(f"[+] {args.package} pid={pid}; modulus {N.bit_length()}-bit")
+    print(f"[+] modulus {N.bit_length()}-bit "
+          f"(from {'cert' if args.cert else '--modulus-hex'})")
 
+    import time
     p = None
-    for size, lo, hi, name in anon_rw_regions(args.serial, pid):
-        print(f"[..] scanning {size/1048576:6.0f} MB {hex(lo)} {name}")
-        p = scan_region(args.serial, pid, lo, size, N)
+    for attempt in range(1, args.retries + 1):
+        pid = adb(args.serial, "shell", "pidof", "-s", args.package).decode().strip()
+        if not pid:
+            sys.exit(f"{args.package} not running — launch Handy (the key must be "
+                     f"in the heap)")
+        regions = anon_rw_regions(args.serial, pid)
+        total_mb = sum(s for s, *_ in regions) / 1048576
+        if attempt == 1:
+            print(f"[+] {args.package} pid={pid}; {len(regions)} heap regions, "
+                  f"{total_mb:.0f} MB")
+        cand_total = 0
+        for size, lo, hi, name in regions:
+            print(f"[..] scan {size/1048576:6.0f} MB {hex(lo)} {name}")
+            p, nc = scan_region(args.serial, pid, lo, size, N)
+            cand_total += nc
+            if p:
+                print(f"[+] FACTOR found in {name} @ {hex(lo)}")
+                break
         if p:
-            print(f"[+] FACTOR found in {name} @ {hex(lo)}")
             break
+        print(f"[--] no factor (attempt {attempt}/{args.retries}; checked "
+              f"{cand_total} 1024-bit windows across {total_mb:.0f} MB)",
+              file=sys.stderr)
+        if attempt < args.retries:
+            print(f"[..] open Handy's Devices tab + connect to the printer now; "
+                  f"re-scanning in {args.retry_delay}s …", file=sys.stderr)
+            time.sleep(args.retry_delay)
     if not p:
-        sys.exit("no factor found — is the key loaded? (open the Devices tab so "
-                 "Handy connects + signs at least once)")
+        sys.exit("no factor found — the key isn't in the heap. Open Handy's "
+                 "Devices tab and let it CONNECT to the printer (that triggers a "
+                 "signed command which loads the key); the 3D model preview does "
+                 "NOT load it. Also confirm the app cert matches the current Handy "
+                 "login (a stale cert → wrong modulus → no factor).")
 
     q = N // p
     from cryptography.hazmat.primitives.asymmetric import rsa

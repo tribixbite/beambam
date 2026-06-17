@@ -114,3 +114,31 @@ def test_cmd_skip_routes_to_cloud_signed(monkeypatch, tmp_path):
     assert rc == 0
     assert captured["call"] == ("print", {"command": "skip_objects",
                                           "obj_list": [3, 7]})
+
+
+# ----- `beambam key` auto-resolves the sole connected adb device --------------
+
+def test_auto_adb_serial_uses_sole_device(monkeypatch):
+    import subprocess, types
+    from beambam.cli import control
+    def fake(out):
+        return lambda *a, **k: types.SimpleNamespace(stdout=out)
+    monkeypatch.setattr(subprocess, "run",
+                        fake("List of devices attached\n192.168.0.83:5555\tdevice\n"))
+    assert control._auto_adb_serial() == ("192.168.0.83:5555", ["192.168.0.83:5555"])
+
+
+def test_auto_adb_serial_none_when_zero_or_many(monkeypatch):
+    import subprocess, types
+    from beambam.cli import control
+    def fake(out):
+        return lambda *a, **k: types.SimpleNamespace(stdout=out)
+    monkeypatch.setattr(subprocess, "run", fake("List of devices attached\n\n"))
+    assert control._auto_adb_serial() == (None, [])
+    monkeypatch.setattr(subprocess, "run",
+                        fake("List of devices attached\nA\tdevice\nB\tdevice\n"))
+    assert control._auto_adb_serial() == (None, ["A", "B"])
+    # non-online states are ignored
+    monkeypatch.setattr(subprocess, "run",
+                        fake("List of devices attached\nA\toffline\nB\tdevice\n"))
+    assert control._auto_adb_serial() == ("B", ["B"])

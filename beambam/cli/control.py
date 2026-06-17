@@ -484,13 +484,29 @@ def cmd_start(args: argparse.Namespace) -> int:
     return _publish(args, {"print": body})
 
 
+def _auto_adb_serial() -> "tuple[str | None, list[str]]":
+    """Resolve the adb serial when --adb / X2D_ADB isn't given: if exactly one
+    device is connected, use it. Returns (serial_or_None, all_online_serials)."""
+    import subprocess
+    try:
+        out = subprocess.run(["adb", "devices"], capture_output=True,
+                             text=True, timeout=10).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None, []
+    devs = [ln.split()[0] for ln in out.splitlines()[1:]
+            if ln.strip() and ln.split()[-1] == "device"]
+    return (devs[0] if len(devs) == 1 else None), devs
+
+
 def cmd_key(args: argparse.Namespace) -> int:
     """Recover the printer-control RSA signing key from the RUNNING Handy app's
     Dart heap (no Frida / no hooking) and save it to ~/.x2d/ for signed cloud
-    control. Needs: adb access to the phone (`--adb ip:port`), Handy running with
-    the Devices tab opened once (so the key is loaded), and the app cert
-    (`--cert`, default ~/.x2d/printer_app_cert.pem) for the modulus. Also writes
-    cert_id. This is the optional setup step that unlocks `pause/resume/stop/…`."""
+    control. Needs: adb access to the phone (`--adb ip:port`, or the sole
+    connected device is used automatically), Handy running **with the printer
+    connected in the Devices tab** (so the key is loaded — the 3D model preview
+    does NOT load it), and the app cert (`--cert`, default
+    ~/.x2d/printer_app_cert.pem) for the modulus. Also writes cert_id. Optional
+    setup step that unlocks `pause/resume/stop/…`."""
     import os
     from pathlib import Path
     sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "runtime" / "handy_extract"))
@@ -501,21 +517,39 @@ def cmd_key(args: argparse.Namespace) -> int:
         return 1
     adb = getattr(args, "adb", None) or os.environ.get("X2D_ADB")
     if not adb:
-        print("[key] --adb <ip:port> (or X2D_ADB) required: the phone's adb "
-              "serial", file=sys.stderr)
-        return 1
+        adb, devs = _auto_adb_serial()
+        if not adb:
+            if not devs:
+                print("[key] no adb device connected — plug the phone in (or "
+                      "`adb connect <ip:port>`) then re-run; or pass --adb / set "
+                      "X2D_ADB.", file=sys.stderr)
+            else:
+                print(f"[key] {len(devs)} adb devices connected "
+                      f"({', '.join(devs)}) — pick one with `--adb <serial>`.",
+                      file=sys.stderr)
+            return 1
+        print(f"[key] using the only connected adb device: {adb}", file=sys.stderr)
     cert = getattr(args, "cert", None) or str(Path.home() / ".x2d" / "printer_app_cert.pem")
     if not Path(cert).is_file():
         print(f"[key] app cert not found at {cert} (capture security."
               f"app_cert_install, or pass --cert)", file=sys.stderr)
         return 1
     out = str(Path.home() / ".x2d" / "printer_sign_key.pem")
+    # Poll a short window: the key only appears after Handy connects+signs, so a
+    # few retries let the user open the Devices tab while this runs. Override with
+    # `--wait <seconds>`.
+    wait = int(getattr(args, "wait", 0) or 0)
+    retries, delay = (max(2, wait // 10), 10) if wait else (3, 10)
     rc = os.system(
         f"cd {Path.home()} && python3 {esk.__file__} --serial {adb} "
-        f"--cert {cert} --out {out}")
+        f"--cert {cert} --out {out} --retries {retries} --retry-delay {delay}")
     if rc != 0 or not Path(out).is_file():
-        print("[key] extraction failed (is Handy running + Devices tab opened so "
-              "the key is in the heap?)", file=sys.stderr)
+        print("[key] extraction failed. The signing key is only in the heap "
+              "after Handy CONNECTS TO THE PRINTER and signs — open Handy's "
+              "Devices tab and let it connect to the printer (the 3D model "
+              "preview does NOT load the key). If you re-logged-in to Handy "
+              "since capturing the app cert, the cert is stale — re-capture it. "
+              "Then re-run (optionally `beambam key --wait 60`).", file=sys.stderr)
         return 1
     # write cert_id = <app-cert serial hex> + CN=GLOF<printerSerial>.bambulab.com
     try:
