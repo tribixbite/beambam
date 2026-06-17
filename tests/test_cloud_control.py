@@ -119,7 +119,8 @@ def test_cmd_skip_routes_to_cloud_signed(monkeypatch, tmp_path):
 # ----- `beambam key` auto-resolves the sole connected adb device --------------
 
 def test_auto_adb_serial_uses_sole_device(monkeypatch):
-    import subprocess, types
+    import subprocess
+    import types
     from beambam.cli import control
     def fake(out):
         return lambda *a, **k: types.SimpleNamespace(stdout=out)
@@ -129,7 +130,8 @@ def test_auto_adb_serial_uses_sole_device(monkeypatch):
 
 
 def test_auto_adb_serial_none_when_zero_or_many(monkeypatch):
-    import subprocess, types
+    import subprocess
+    import types
     from beambam.cli import control
     def fake(out):
         return lambda *a, **k: types.SimpleNamespace(stdout=out)
