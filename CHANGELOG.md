@@ -18,6 +18,14 @@ All notable changes to this project.
   nozzle cycle when nozzles aren't specified.
 
 ### Fixed
+- **`list_files` on a busy printer (`[SSL: INVALID_ALERT]`)**: subdir listings
+  (e.g. `/cache`) failed with an invalid-alert during the data-channel handshake
+  while a print was active — `list_files` used a bare `SSLContext(PROTOCOL_TLS_
+  CLIENT)`, the exact pattern the module's own notes flag as alert-prone mid-print.
+  It now routes through the same resilient `_manual_ftp_tls` transport (TLSv1.2-
+  forced, PASV session reuse) that `download_file`/`upload_file` already use, with
+  unwrap-before-close and a short retry for the flaky mid-print data channel. The
+  now-unused `_ImplicitFTPTLS` subclass was removed.
 - **Multi-colour `filament_map` bug**: expanding the colour palette copied
   nozzle 1 for every filament (`['1','1']`), so the second-nozzle colour never
   printed (BS emitted invalid tool commands). It now maps each filament to a

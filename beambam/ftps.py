@@ -32,11 +32,12 @@ Wire-level notes (Bambu vsFTPd 3.0.5 quirks)
   `ssl.create_default_context()` + force TLSv1.2 + manual
   socket.create_connection() + wrap_socket-once pattern instead.
 
-All three patterns are encoded below. download_file uses the
-TLSv1.2-forced create_default_context path (it's the one that survives
-mid-print); list_files uses the legacy `_ImplicitFTPTLS` subclass
-(its lighter-weight, list-only flow doesn't trip the alert); upload_file
-uses the manual-socket path.
+All three public functions route through the same resilient transport —
+`_manual_ftp_tls` (TLSv1.2-forced `create_default_context` + manual socket +
+PASV session reuse), the one that survives mid-print. list_files used to use a
+bare-`PROTOCOL_TLS_CLIENT` subclass; that tripped INVALID_ALERT on subdir
+listings during an active print (the exact trap above), so it now shares the
+resilient path + a short retry for the flaky mid-print data channel.
 """
 from __future__ import annotations
 
@@ -44,6 +45,7 @@ import ftplib
 import socket
 import ssl
 import sys
+import time
 from ftplib import FTP, FTP_TLS
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -53,111 +55,6 @@ if TYPE_CHECKING:
 
 
 __all__ = ["download_file", "list_files", "upload_file"]
-
-
-# ----- subclass for the LIST path -----------------------------------------
-
-
-class _ImplicitFTPTLS(FTP_TLS):
-    """FTPS implicit TLS over port 990 — Bambu's protocol of choice.
-
-    Implicit TLS on the control channel, plus a `ntransfercmd` override
-    that re-uses the control session on PASV data channels (Bambu's
-    recent firmware rejects fresh sessions with `522 SSL connection
-    failed: session reuse required`), plus storbinary/retrbinary/
-    retrlines that unwrap before close to avoid the post-transfer hang
-    seen on the X2D / H2D.
-    """
-
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self._sock = None
-
-    @property
-    def sock(self):
-        return self._sock
-
-    @sock.setter
-    def sock(self, value):
-        if value is not None and not isinstance(value, ssl.SSLSocket):
-            value = self.context.wrap_socket(value, server_hostname=self.host)
-        self._sock = value
-
-    def ntransfercmd(self, cmd, rest=None):
-        conn, size = FTP_TLS.ntransfercmd(self, cmd, rest)
-        if self._prot_p:
-            conn = self.context.wrap_socket(
-                conn,
-                server_hostname=self.host,
-                session=self.sock.session,
-            )
-        return conn, size
-
-    def storbinary(self, cmd, fp, blocksize=32768, callback=None, rest=None):
-        self.voidcmd("TYPE I")
-        conn = self.transfercmd(cmd, rest)
-        try:
-            while True:
-                buf = fp.read(blocksize)
-                if not buf:
-                    break
-                conn.sendall(buf)
-                if callback:
-                    callback(buf)
-            if isinstance(conn, ssl.SSLSocket):
-                try:
-                    conn.unwrap()
-                except (OSError, ssl.SSLError):
-                    pass
-        finally:
-            conn.close()
-        return self.voidresp()
-
-    def retrbinary(self, cmd, callback, blocksize=8192, rest=None):
-        self.voidcmd("TYPE I")
-        conn = self.transfercmd(cmd, rest)
-        try:
-            while True:
-                data = conn.recv(blocksize)
-                if not data:
-                    break
-                callback(data)
-            if isinstance(conn, ssl.SSLSocket):
-                try:
-                    conn.unwrap()
-                except (OSError, ssl.SSLError):
-                    pass
-        finally:
-            conn.close()
-        return self.voidresp()
-
-    def retrlines(self, cmd, callback=None):
-        self.voidcmd("TYPE A")
-        conn = self.transfercmd(cmd)
-        try:
-            buf = b""
-            while True:
-                chunk = conn.recv(8192)
-                if not chunk:
-                    if buf:
-                        line = buf.decode("utf-8", errors="replace").rstrip("\r")
-                        if callback:
-                            callback(line)
-                    break
-                buf += chunk
-                while b"\n" in buf:
-                    line, buf = buf.split(b"\n", 1)
-                    line_str = line.decode("utf-8", errors="replace").rstrip("\r")
-                    if callback:
-                        callback(line_str)
-            if isinstance(conn, ssl.SSLSocket):
-                try:
-                    conn.unwrap()
-                except (OSError, ssl.SSLError):
-                    pass
-        finally:
-            conn.close()
-        return self.voidresp()
 
 
 # ----- internal: manual-socket FTP_TLS with PASV session reuse ------------
@@ -244,26 +141,51 @@ def download_file(creds: "Creds", remote_name: str, local_path: Path) -> int:
     return written
 
 
-def list_files(creds: "Creds", path: str = "") -> list[str]:
+def list_files(creds: "Creds", path: str = "", *, retries: int = 3) -> list[str]:
     """Return raw LIST entries from the printer's SD card. Empty path
     lists the FTP root (where uploaded files land for X1C-style
-    profiles); pass `"sdcard"` to list the X2D's actual SD mount."""
-    ssl_ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-    ssl_ctx.check_hostname = False
-    ssl_ctx.verify_mode = ssl.CERT_NONE
-    ftp = _ImplicitFTPTLS(context=ssl_ctx)
-    ftp.connect(creds.ip, 990, timeout=15)
-    ftp.login(user="bblp", passwd=creds.code)
-    ftp.prot_p()
-    lines: list[str] = []
-    cmd = f"LIST {path}".rstrip()
-    ftp.retrlines(cmd, lambda line: lines.append(line))
-    try:
-        ftp.quit()
-    except (OSError, ssl.SSLError, ftplib.error_perm):
-        try: ftp.close()
-        except Exception: pass
-    return lines
+    profiles); pass a subdir (e.g. ``"cache"``) to list that directory.
+
+    Routes through the resilient `_manual_ftp_tls` transport (TLSv1.2-forced)
+    and retries the data channel: a bare TLS context tripped `[SSL:
+    INVALID_ALERT]` on subdir listings while a print was active, and even the
+    resilient path can drop the data connection mid-print, so we retry a few
+    times before giving up."""
+    last_exc: Exception | None = None
+    for attempt in range(max(1, retries)):
+        ftp = _manual_ftp_tls(creds, timeout=20.0)
+        try:
+            ftp.voidcmd("TYPE A")
+            conn = ftp.transfercmd(f"LIST {path}".rstrip())
+            buf = b""
+            try:
+                while True:
+                    chunk = conn.recv(8192)
+                    if not chunk:
+                        break
+                    buf += chunk
+                if isinstance(conn, ssl.SSLSocket):
+                    try:
+                        conn.unwrap()
+                    except (OSError, ssl.SSLError):
+                        pass
+            finally:
+                conn.close()
+            ftp.voidresp()
+            return [ln.rstrip("\r")
+                    for ln in buf.decode("utf-8", errors="replace").splitlines()
+                    if ln.strip()]
+        except (ssl.SSLError, OSError, ftplib.error_temp, EOFError) as e:
+            last_exc = e
+        finally:
+            try:
+                ftp.quit()
+            except (OSError, ssl.SSLError, ftplib.error_perm, EOFError):
+                try: ftp.close()
+                except Exception: pass
+        if attempt < retries - 1:
+            time.sleep(1.0)
+    raise last_exc if last_exc else RuntimeError("LIST failed with no exception")
 
 
 def upload_file(creds: "Creds", local_path: Path,
