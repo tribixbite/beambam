@@ -84,10 +84,11 @@ absent, bed params must be supplied or derivation is skipped.
 - CHANGELOG entry.
 - PyPI publish (OIDC trusted publishing via `.github/workflows/release.yml`,
   triggered by a GitHub release). beambam is **already on PyPI** (1.5.0, 1.5.1),
-  so this is not a first-time publish: prepare the release, then get **explicit
-  go-ahead** before creating the release tag (outward-facing; per repo policy).
-  The native integration's `manifest.json` requires `beambam>=1.6.0`, so the
-  HACS install path is gated on this publish.
+  so this is not a first-time publish. **Authorized**: bump → CHANGELOG →
+  commit → create the GitHub release/tag, which triggers
+  `.github/workflows/release.yml` (OIDC) to publish 1.6.0 to PyPI. Done after
+  the integration is built + tested so the `manifest.json` `beambam>=1.6.0`
+  requirement resolves. Verify with `gh run watch` post-release.
 
 ## Layer A — Native HACS integration `custom_components/beambam/`
 
@@ -125,8 +126,20 @@ absent, bed params must be supplied or derivation is skipped.
   - `button.py` — pause, resume, stop, home, level, buzzer-silence, per-AMS-slot
     load, **start last/selected print**.
   - `number.py` — bed/nozzle/chamber setpoints.
-  - `camera.py` — pulls JPEG from a reachable camera daemon URL (optional
-    option) or printer RTSPS via beambam; `image.py` snapshot fallback.
+  - `camera.py` — **live stream is a hard requirement.** A `BeambamCamera`
+    entity with `CameraEntityFeature.STREAM`:
+    - **RTSPS models (X1/X2D/H2D)**: `stream_source()` returns
+      `rtsps://bblp:<code>@<ip>:322/streaming/live/1`; HA's bundled
+      stream/go2rtc/ffmpeg renders live HLS/WebRTC on the dashboard.
+      `async_camera_image()` grabs a single frame via ffmpeg (cached) for the
+      still/thumbnail. ffmpeg ships with HA.
+    - **Proprietary models (P1/A1)**: run beambam's
+      `runtime/network_shim/lvl_local.stream_frames(ip, code, on_frame=…)` in an
+      executor thread into a latest-frame buffer; serve live via
+      `handle_async_mjpeg_stream` and stills via `async_camera_image()`.
+    - Optional override: an explicit external camera-daemon URL
+      (`/cam.mjpeg` + `/cam.jpg`) when the user already runs `beambam camera`.
+    `image.py` provides a retained-snapshot fallback entity.
 - `services.yaml` + handlers — `beambam.start_print` (file on printer or
   upload+print), `beambam.send_gcode`, `beambam.set_filament`,
   `beambam.refresh`. Field schemas in `services.yaml`.
@@ -189,12 +202,14 @@ absent, bed params must be supplied or derivation is skipped.
 
 ## Risks / non-goals
 
-- **PyPI publish** of 1.6.0 is the gating step for HACS install; requires
-  explicit go-ahead (not first-time).
+- **PyPI publish** of 1.6.0 is the gating step for HACS install; **authorized**
+  via the GH Actions release flow (done after build + test).
 - **Brand icons** live in the separate `home-assistant/brands` repo — tracked as
   a follow-up PR, not a blocker for HACS (custom repos work without brands).
 - **Cloud-login in HA** adds a cloud-auth path + stores cloud creds in
   `.storage`; kept optional and isolated.
+- **Camera** is a required live-stream feature (see A1); RTSPS models lean on
+  HA's bundled stream stack, proprietary models on beambam's `lvl_local` pump.
 - **Slicing** is out of scope for in-core HA (needs BambuStudio); the
   integration starts already-sliced jobs (LAN signed or upload+print) and can
   delegate slicing to cloud-slice (cloud mode) or an external host.
