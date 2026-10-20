@@ -54,10 +54,13 @@ def cmd_print(args: argparse.Namespace) -> int:
         PrintRefusal,
         _derive_print_params_from_3mf,
         _validate_ams_slot,
+        parse_slots,
         start_print,
     )
 
     local = Path(args.file)
+    # One AMS slot per filament of the file, in order (`--slot 4,0,12`); a plain int still works.
+    slots = parse_slots(args.slot) if not isinstance(args.slot, list) else list(args.slot)
     use_ams = not args.no_ams
     force = bool(getattr(args, "force", False))
 
@@ -130,6 +133,17 @@ def cmd_print(args: argparse.Namespace) -> int:
         f"filament_type={derived['expected_filament_type']!r} "
         f"filament_id={derived['expected_filament_id']!r} "
         f"colour={derived['expected_filament_colour']!r}\n")
+    # What each mapped filament must be, from the same 3MF (filament i -> slots[i]).
+    try:
+        expected = [derived] + [_derive_print_params_from_3mf(local, filament_index=i)
+                                for i in range(1, len(slots))]
+    except PrintRefusal as e:
+        raise SystemExit(f"--slot lists {len(slots)} slots but the file does not have that many "
+                         f"filaments: {e}")
+    if len(slots) > 1:
+        sys.stderr.write("[print] filament -> AMS slot: " + ", ".join(
+            f"{i + 1} ({want['expected_filament_type']} {want['expected_filament_colour']}) -> {slot}"
+            for i, (slot, want) in enumerate(zip(slots, expected))) + "\n")
 
     # Step 3: upload (if requested) BEFORE we open the MQTT client so a
     # transient FTPS failure doesn't leave a stale subscription.
@@ -153,8 +167,8 @@ def cmd_print(args: argparse.Namespace) -> int:
                     "the bridge can reach the printer (status command "
                     "works first).")
             try:
-                _validate_ams_slot(live, args.slot, derived,
-                                    force=force)
+                for slot, want in zip(slots, expected):
+                    _validate_ams_slot(live, slot, want, force=force)
             except PrintRefusal as e:
                 raise SystemExit(str(e))
             # Per code-review #4 (race window): warn the user not to
@@ -166,7 +180,8 @@ def cmd_print(args: argparse.Namespace) -> int:
 
         try:
             start_print(cli, name,
-                        use_ams=use_ams, ams_slot=args.slot,
+                        use_ams=use_ams,
+                        ams_slot=slots if len(slots) > 1 else slots[0],
                         bed_levelling=not args.no_bed_level,
                         flow_cali=args.flow_cali,
                         timelapse=args.timelapse,
@@ -177,7 +192,7 @@ def cmd_print(args: argparse.Namespace) -> int:
         except PrintRefusal as e:
             raise SystemExit(str(e))
         print(f"start_print queued: {name} "
-              f"(slot={args.slot}, ams={use_ams}, "
+              f"(slot={','.join(map(str, slots))}, ams={use_ams}, "
               f"bed={bed_type}@{bed_temp}°C)")
     finally:
         cli.disconnect()

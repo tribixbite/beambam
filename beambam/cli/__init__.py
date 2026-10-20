@@ -140,6 +140,16 @@ _COMMAND_GROUPS: list[tuple[str, list[tuple[str, str]]]] = [
 ]
 
 
+def _print_slots(text: str) -> list[int]:
+    """argparse type for `print --slot`: beambam.print_job.parse_slots, with its message kept."""
+    import argparse as _ap
+    from beambam.print_job import parse_slots
+    try:
+        return parse_slots(text)
+    except ValueError as e:
+        raise _ap.ArgumentTypeError(str(e))
+
+
 def _build_epilog() -> str:
     """Format _COMMAND_GROUPS into a `beambam --help` epilog.
 
@@ -243,8 +253,9 @@ def main() -> int:
     pr = sub.add_parser("print", help="Upload + start_print")
     pr.add_argument("file")
     pr.add_argument("--remote")
-    pr.add_argument("--slot", type=int, default=0,
-                    help="AMS global slot (AMS_index*4 + tray_in_ams), 0..15")
+    pr.add_argument("--slot", type=_print_slots, default="0",
+                    help="AMS global slot (AMS_index*4 + tray_in_ams), 0..15; for a multi-colour "
+                         "file one per filament in order, comma-separated (e.g. 4,0,12)")
     pr.add_argument("--no-upload", action="store_true",
                     help="Skip upload — file is already on the printer")
     pr.add_argument("--no-ams", action="store_true")

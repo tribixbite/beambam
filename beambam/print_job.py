@@ -300,6 +300,20 @@ def _derive_print_params_from_3mf(local_path: Path,
     }
 
 
+def parse_slots(text: str | int) -> list[int]:
+    """`--slot` value -> AMS global slots, one per filament of the file in order: "4" -> [4],
+    "4,0,12" -> filament 1 from slot 4 (AMS B tray 1), filament 2 from 0, filament 3 from 12."""
+    if isinstance(text, int):
+        return [text]
+    try:
+        slots = [int(t) for t in str(text).replace(" ", "").split(",") if t != ""]
+    except ValueError:
+        raise ValueError(f"--slot {text!r}: expected AMS slots 0..15, comma-separated (e.g. 4 or 4,0,12)")
+    if not slots or any(s < 0 or s > 15 for s in slots):
+        raise ValueError(f"--slot {text!r}: AMS slots are 0..15 (AMS_index*4 + tray)")
+    return slots
+
+
 def _validate_ams_slot(state: dict, ams_global_slot: int,
                        expected: dict, *, force: bool) -> None:
     """Refuse to send a use_ams=True print when the named AMS slot is empty
