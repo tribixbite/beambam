@@ -423,39 +423,33 @@ def cmd_camera(args: argparse.Namespace) -> int:
             assert proc.stderr is not None
             try:
                 jpeg_buf = b""
-                # stdout.read() blocks indefinitely; we add a tiny
-                # poll loop on local_stop via select-with-timeout so
-                # the idle reaper can stop ffmpeg promptly without
-                # waiting for the next chunk arrival.
-                import select as _select
+                # stdout is read in a thread (PipeReader) and polled with
+                # a timeout, so the idle reaper can stop ffmpeg promptly
+                # without waiting for the next chunk. Not select() on the
+                # pipe: Windows' select takes sockets only (WinError
+                # 10038). stderr is drained too, or a full pipe would
+                # block ffmpeg.
+                from beambam.pipe_reader import (
+                    PipeReader, TailReader, split_jpeg_frames)
+                out = PipeReader(proc.stdout, name="camera-ffmpeg-out")
+                err = TailReader(proc.stderr, name="camera-ffmpeg-err")
                 while (not local_stop.is_set()
                         and not global_stop.is_set()):
-                    rlist, _, _ = _select.select(
-                        [proc.stdout], [], [], 0.5)
-                    if not rlist:
+                    chunk = out.get(timeout=0.5)
+                    if chunk is None:
                         continue
-                    chunk = proc.stdout.read(65536)
                     if not chunk:
-                        err = proc.stderr.read().decode(
-                            errors="replace")[-400:]
                         print(f"[camera] ffmpeg eof; stderr tail: "
-                              f"{err}", file=sys.stderr)
+                              f"{err.tail(400, wait=2.0)}",
+                              file=sys.stderr)
                         break
-                    jpeg_buf += chunk
                     # MJPEG single-image output writes back-to-back
-                    # JPEGs. Split on SOI marker (0xFFD8) — keep the
-                    # most-recent complete frame.
-                    while True:
-                        idx = jpeg_buf.find(b"\xff\xd8", 1)
-                        if idx == -1:
-                            break
-                        frame, jpeg_buf = (jpeg_buf[:idx],
-                                            jpeg_buf[idx:])
-                        if (frame.startswith(b"\xff\xd8")
-                                and frame.endswith(b"\xff\xd9")):
-                            with state_lock:
-                                latest_frame["data"] = frame
-                                latest_frame["ts"]   = time.time()
+                    # JPEGs: keep the most recent complete frame.
+                    frame, jpeg_buf = split_jpeg_frames(jpeg_buf + chunk)
+                    if frame is not None:
+                        with state_lock:
+                            latest_frame["data"] = frame
+                            latest_frame["ts"]   = time.time()
             finally:
                 # Reap the subprocess cleanly — terminate, wait,
                 # escalate to kill if necessary, then wait again.
