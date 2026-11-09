@@ -97,3 +97,15 @@ def test_request_state_skips_a_delta_that_arrives_first(tmp_path, monkeypatch) -
     monkeypatch.setattr(c, "publish", fake_publish)
     state = c.request_state(timeout=2.0)
     assert "ams" in state["print"] and state["print"]["gcode_state"] == "RUNNING"
+
+
+def test_on_disconnect_clears_connected_flag(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(X2DClient, "_TS_DIR", tmp_path)
+    c = _client()
+    c._connected.set()
+    c._on_disconnect(None, None, 1)          # lost connection (rc != 0)
+    assert not c._connected.is_set()
+    # A paho ReasonCode-like object with .value is handled too.
+    c._connected.set()
+    c._on_disconnect(None, None, type("RC", (), {"value": 7})())
+    assert not c._connected.is_set()
