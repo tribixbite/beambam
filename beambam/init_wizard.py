@@ -166,8 +166,8 @@ def _maybe_setup_control_key(serial: str, non_interactive: bool) -> None:
     from pathlib import Path
     import shutil
 
-    home = Path.home()
-    sign_key = home / ".x2d" / "printer_sign_key.pem"
+    from beambam.paths import config_path
+    sign_key = config_path("printer_sign_key.pem")
     if sign_key.is_file():
         print("\n✓ printer control key present — "
               "pause/resume/stop/start/skip enabled")
@@ -179,7 +179,7 @@ def _maybe_setup_control_key(serial: str, non_interactive: bool) -> None:
     print("  Bambu Handy:  beambam key --adb <ip:port>")
     print("  (reading — status / camera / ams — works without it.)")
 
-    app_cert = home / ".x2d" / "printer_app_cert.pem"
+    app_cert = config_path("printer_app_cert.pem")
     if non_interactive or not (app_cert.is_file() and shutil.which("adb")):
         return  # prerequisites absent / non-interactive → leave the note only
 

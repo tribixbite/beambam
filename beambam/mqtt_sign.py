@@ -13,7 +13,7 @@ reverse-engineered offline from captured Bambu Handy traffic (see
     app cert's public key with this exact pre-image).
   * A `header` sibling is then appended to those exact bytes:
     `{sign_ver:"v1.0", sign_alg:"RSA_SHA256", sign_string:<b64 sig>,
-      cert_id:"<appCertSerialHex>CN=GLOF<printerSerial>.bambulab.com",
+      cert_id:"<appCertSerialHex>CN=<app cert issuer CN, GLOF<id>.bambulab.com>",
       payload_len:<len(pre-image)>}`.
 
 The full scheme is known; the ONLY missing input is the app's private key, which
@@ -46,12 +46,27 @@ def preimage(family: str, command: dict, user_id: str) -> bytes:
     return body.encode("utf-8")
 
 
-def make_cert_id(app_cert_serial_hex: str, printer_serial: str) -> str:
-    """`cert_id = <app cert X.509 serial number, hex><CN=GLOF<printerSerial>.bambulab.com>`
-    (verified: the leading hex blob is exactly the app cert's serial number, not a
-    digest). For a given install it is constant, so it can also be copied verbatim
-    from a capture."""
-    return f"{app_cert_serial_hex}CN=GLOF{printer_serial}.bambulab.com"
+def make_cert_id(app_cert_serial_hex: str, glof_id: str) -> str:
+    """`cert_id = <app cert X.509 serial number, hex>CN=GLOF<id>.bambulab.com`.
+
+    `glof_id` is the numeric id in the app cert's ISSUER common name
+    (`CN=GLOF<id>.bambulab.com`) — NOT the printer serial (verified 2026-11-09:
+    a working cert_id's CN equals its app cert's issuer CN, a 10-digit number,
+    and shares nothing with the 15-character printer serial). Prefer
+    `cert_id_from_app_cert`, which reads both parts from the cert itself."""
+    return f"{app_cert_serial_hex}CN=GLOF{glof_id}.bambulab.com"
+
+
+def cert_id_from_app_cert(cert) -> str:
+    """The signed header's `cert_id` for a loaded `cryptography` x509 app cert:
+    its serial number in lowercase hex followed by `CN=<issuer common name>`.
+    The cert_id therefore belongs to the Handy install's app cert, not to a
+    printer — one key + cert_id signs for every printer that install controls."""
+    from cryptography.x509.oid import NameOID
+    cns = cert.issuer.get_attributes_for_oid(NameOID.COMMON_NAME)
+    if not cns:
+        raise ValueError("app cert issuer has no common name; cannot build cert_id")
+    return f"{cert.serial_number:x}CN={cns[0].value}"
 
 
 def signed_message(family: str, command: dict, user_id: str, *,

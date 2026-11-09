@@ -271,9 +271,10 @@ def check_environment() -> list[Check]:
     from pathlib import Path
 
     out: list[Check] = []
-    home = Path.home()
+    # Honour $BEAMBAM_HOME / $X2D_HOME / $X2D_CREDS like the rest of beambam.
+    from beambam.paths import config_dir, config_path, credentials_path
 
-    creds = home / ".x2d" / "credentials"
+    creds = credentials_path()
     if creds.is_file():
         out.append(Check("Environment", "LAN credentials", "pass",
                          f"{creds} present"))
@@ -282,7 +283,7 @@ def check_environment() -> list[Check]:
                          f"{creds} missing — run `beambam init` for the "
                          "first-run wizard (LAN discovery + access-code prompt)"))
 
-    session = home / ".x2d" / "cloud_session.json"
+    session = config_path("cloud_session.json")
     if session.is_file():
         try:
             import json as _json
@@ -342,8 +343,8 @@ def check_environment() -> list[Check]:
     # RSA-SHA256 signature on print.* control commands; without the recovered
     # key, pause/resume/stop/start/skip are rejected (`mqtt message verify
     # failed`). Reading (status / camera / pushall) works without it.
-    sign_key = home / ".x2d" / "printer_sign_key.pem"
-    cert_id = home / ".x2d" / "printer_cert_id.txt"
+    sign_key = config_path("printer_sign_key.pem")
+    cert_id = config_path("printer_cert_id.txt")
     if sign_key.is_file() and cert_id.is_file():
         out.append(Check("Environment", "Printer control key", "pass",
                          "RSA signing key + cert_id present — signed control "
@@ -367,8 +368,10 @@ def check_environment() -> list[Check]:
     # FTP file location as `url_enc` = RSA-encrypted to the printer's own device
     # cert; without it, X2D/H2D LAN print can't build a body the firmware accepts.
     # P1/A1/X1 use a plaintext `url` and don't need this.
-    device_cert = home / ".x2d" / "printer_device_cert.pem"
-    if device_cert.is_file():
+    # The device cert is per printer (<config dir>/<serial>/) or the legacy global file.
+    device_certs = [config_path("printer_device_cert.pem"),
+                    *config_dir().glob("*/printer_device_cert.pem")]
+    if any(p.is_file() for p in device_certs):
         out.append(Check("Environment", "Printer device cert", "pass",
                          "device cert present — X2D/H2D LAN print (url_enc) enabled"))
     else:

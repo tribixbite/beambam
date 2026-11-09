@@ -60,23 +60,35 @@ def test_ready_with_session_user_id(home: Path) -> None:
     assert st.ready and st.user_id_source == "cloud_session.json"
 
 
-def test_signing_status_is_per_serial(home: Path) -> None:
-    """With a serial, signing_status reads the per-serial key/cert id and falls
-    back to the global files (F-03)."""
-    # Global files present: a serial with no per-serial dir still sees them.
+def test_signing_status_device_cert_is_per_serial(home: Path) -> None:
+    """The key + cert id are global (they belong to the Handy install); only the
+    device cert is per printer, with a fallback to the global file (F-03)."""
     (home / "printer_sign_key.pem").write_text("k")
     (home / "printer_cert_id.txt").write_text("c")
-    st = signing_status(NOW, serial="SN-A")
-    assert st.key and st.cert_id
-    # A per-serial dir that is EMPTY does not hide the global fallback.
-    (home / "SN-B").mkdir()
-    st_b = signing_status(NOW, serial="SN-B")
-    assert st_b.key and st_b.cert_id
-    # A serial whose own dir has its own key uses it even if globals are absent.
-    for g in ("printer_sign_key.pem", "printer_cert_id.txt"):
-        (home / g).unlink()
-    (home / "SN-C").mkdir()
-    (home / "SN-C" / "printer_sign_key.pem").write_text("k")
-    (home / "SN-C" / "printer_cert_id.txt").write_text("c")
-    assert signing_status(NOW, serial="SN-C").key
-    assert not signing_status(NOW, serial="SN-A").key    # A has nothing now
+    # Key + cert id are found whatever the serial.
+    assert signing_status(NOW, serial="SN-A").key and signing_status(NOW, serial="SN-A").cert_id
+    # No device cert anywhere -> missing.
+    assert not signing_status(NOW, serial="SN-A").device_cert
+    # A per-serial device cert counts only for its own printer.
+    (home / "SN-A").mkdir()
+    (home / "SN-A" / "printer_device_cert.pem").write_text("d")
+    assert signing_status(NOW, serial="SN-A").device_cert
+    assert not signing_status(NOW, serial="SN-B").device_cert
+    # A legacy global device cert is the fallback for any printer.
+    (home / "printer_device_cert.pem").write_text("d")
+    assert signing_status(NOW, serial="SN-B").device_cert
+
+
+def test_cert_id_is_app_cert_serial_plus_issuer_cn() -> None:
+    """cert_id = app cert serial (hex) + CN=<issuer CN>, not the printer serial."""
+    from beambam import mqtt_sign
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    issuer = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "GLOF1234567890.bambulab.com")])
+    subject = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "GLOF-app-user")])
+    cert = (x509.CertificateBuilder().subject_name(subject).issuer_name(issuer)
+            .public_key(key.public_key()).serial_number(0x77BCFB01)
+            .not_valid_before(NOW - dt.timedelta(days=1))
+            .not_valid_after(NOW + dt.timedelta(days=1))
+            .sign(key, hashes.SHA256()))
+    assert mqtt_sign.cert_id_from_app_cert(cert) == "77bcfb01CN=GLOF1234567890.bambulab.com"
+    assert mqtt_sign.make_cert_id("77bcfb01", "1234567890") == "77bcfb01CN=GLOF1234567890.bambulab.com"

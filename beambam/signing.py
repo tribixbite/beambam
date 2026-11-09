@@ -65,22 +65,22 @@ def _user_id_source() -> str:
 
 def signing_status(now: _dt.datetime | None = None,
                    serial: str | None = None) -> SigningStatus:
-    """Inspect the local signing inputs (no network). With a `serial`, the
-    key / cert id / device cert / app cert are looked up per printer
-    (`<config dir>/<serial>/…`) with a fallback to the global files, matching
-    what the signing path actually uses (F-03)."""
+    """Inspect the local signing inputs (no network). The key, cert id and app
+    cert belong to the Handy install and are global; the device cert is per
+    printer, so with a `serial` it is looked up under `<config dir>/<serial>/`
+    first, falling back to the global file (what the print path uses)."""
     from beambam.paths import signing_path
     now = now or _dt.datetime.now(_dt.timezone.utc)
     st = SigningStatus(
-        key=signing_path("printer_sign_key.pem", serial).is_file(),
-        cert_id=signing_path("printer_cert_id.txt", serial).is_file(),
+        key=config_path("printer_sign_key.pem").is_file(),
+        cert_id=config_path("printer_cert_id.txt").is_file(),
         device_cert=signing_path("printer_device_cert.pem", serial).is_file(),
         user_id_source=_user_id_source(),
     )
     if not st.key or not st.cert_id:
         st.problems.append("no recovered signing key / cert id — run `beambam key` "
                            "(Bambu Handy on an adb-connected phone)")
-    app_cert = signing_path("printer_app_cert.pem", serial)
+    app_cert = config_path("printer_app_cert.pem")
     if app_cert.is_file():
         try:
             from cryptography import x509

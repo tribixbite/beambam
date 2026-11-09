@@ -550,19 +550,16 @@ def cmd_key(args: argparse.Namespace) -> int:
                       file=sys.stderr)
             return 1
         print(f"[key] using the only connected adb device: {adb}", file=sys.stderr)
-    # Key the recovered signing material by printer serial so a second printer
-    # never overwrites the first one's key/cert_id (F-03). The read path
-    # (beambam.paths.signing_path) prefers the per-serial file and falls back to
-    # the legacy global one, so existing single-printer installs are unaffected.
-    from beambam.paths import signing_path, signing_write_path
-    printer_serial = _config.Creds.resolve(args).serial or os.environ.get("X2D_SERIAL", "")
-    cert = (getattr(args, "cert", None)
-            or str(signing_path("printer_app_cert.pem", printer_serial)))
+    # The key and cert_id belong to the Handy install's app cert, not to a
+    # printer (cert_id = app cert serial + app cert ISSUER CN), so one global
+    # pair signs for every printer that install controls. Only the device
+    # cert is per printer (see cmd_device_cert).
+    cert = getattr(args, "cert", None) or str(config_path("printer_app_cert.pem"))
     if not Path(cert).is_file():
         print(f"[key] app cert not found at {cert} (capture security."
               f"app_cert_install, or pass --cert)", file=sys.stderr)
         return 1
-    key_out = signing_write_path("printer_sign_key.pem", printer_serial)
+    key_out = config_path("printer_sign_key.pem")
     key_out.parent.mkdir(parents=True, exist_ok=True)
     out = str(key_out)
     # Poll a short window: the key only appears after Handy connects+signs, so a
@@ -586,15 +583,15 @@ def cmd_key(args: argparse.Namespace) -> int:
               "since capturing the app cert, the cert is stale — re-capture it. "
               "Then re-run (optionally `beambam key --wait 60`).", file=sys.stderr)
         return 1
-    # write cert_id = <app-cert serial hex> + CN=GLOF<printerSerial>.bambulab.com
+    # cert_id = <app cert serial, hex> + CN=<app cert issuer CN>. It used to be
+    # built from the PRINTER serial, which produced a cert_id the printer does
+    # not accept (verified 2026-11-09 against a working cert_id).
     try:
         from cryptography import x509
         from beambam.cloud_control import mqtt_sign
-        serial_hex = format(
-            x509.load_pem_x509_certificate(Path(cert).read_bytes()).serial_number, "x")
-        cid = mqtt_sign.make_cert_id(serial_hex, printer_serial.replace("GLOF", ""))
-        cid_out = signing_write_path("printer_cert_id.txt", printer_serial)
-        cid_out.parent.mkdir(parents=True, exist_ok=True)
+        cid = mqtt_sign.cert_id_from_app_cert(
+            x509.load_pem_x509_certificate(Path(cert).read_bytes()))
+        cid_out = config_path("printer_cert_id.txt")
         cid_out.write_text(cid)
         print(f"[key] OK → {out}\n[key] cert_id → {cid_out}")
     except Exception as e:                                # noqa: BLE001
@@ -609,13 +606,14 @@ def cmd_device_cert(args: argparse.Namespace) -> int:
     `security.app_cert_install` (gated only by the access code), then caches the
     leaf at ~/.x2d/printer_device_cert.pem. One-time setup, like `beambam key`."""
     from beambam.device_cert import fetch_device_cert
-    from beambam.paths import signing_path, signing_write_path
+    from beambam.paths import signing_write_path
     creds = _config.Creds.resolve(args)
-    # Cache the device cert per serial so printer B's url_enc is never
-    # encrypted to printer A's key (F-03); read falls back to the global file.
+    # The device cert IS per printer: cache it under <config dir>/<serial>/ so
+    # printer B's url_enc is never encrypted to printer A's key (F-03). The
+    # reader (print_job._resolve_device_cert) falls back to the legacy global file.
     out_path = signing_write_path("printer_device_cert.pem", creds.serial)
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    cid_read = signing_path("printer_cert_id.txt", creds.serial)
+    cid_read = config_path("printer_cert_id.txt")
     cli = _mqtt.X2DClient(creds)
     cli.connect()
     try:

@@ -29,7 +29,7 @@ import time
 import zipfile as _zf
 from pathlib import Path
 from typing import TYPE_CHECKING
-from beambam.paths import _sanitize_serial, config_path, signing_path
+from beambam.paths import config_path, signing_path
 
 if TYPE_CHECKING:
     from beambam.mqtt import X2DClient
@@ -103,12 +103,11 @@ def _publish_signed_or_legacy(client: "X2DClient", payload: dict) -> None:
     which the firmware rejects for `print.*` (err 84033545). Falls back to it
     only when the recovered key is absent (older firmware).
 
-    The key + cert id are resolved per printer serial (`<config dir>/<serial>/`)
-    with a fallback to the global files, so a second printer never signs with
-    the first one's key (F-03)."""
-    serial = getattr(getattr(client, "creds", None), "serial", None)
-    key_path = signing_path("printer_sign_key.pem", serial)
-    cid_path = signing_path("printer_cert_id.txt", serial)
+    The key + cert id belong to the Handy install's app cert (cert_id = app cert
+    serial + issuer CN), not to a printer, so one global pair signs for every
+    printer; only the device cert is per printer (`_resolve_device_cert`)."""
+    key_path = config_path("printer_sign_key.pem")
+    cid_path = config_path("printer_cert_id.txt")
     # Take the signed-raw path only when the recovered key is present AND the
     # client exposes a real paho `.client` (raw publish). Test/simulate clients
     # capture via their high-level `publish()` and have no `.client`.
@@ -154,9 +153,8 @@ def request_auto_nozzle_mapping(client: "X2DClient", group_info: list[dict], *,
     """
     import json
     import time
-    serial = getattr(getattr(client, "creds", None), "serial", None)
-    key_path = signing_path("printer_sign_key.pem", serial)
-    cid_path = signing_path("printer_cert_id.txt", serial)
+    key_path = config_path("printer_sign_key.pem")
+    cid_path = config_path("printer_cert_id.txt")
     if not (key_path.is_file() and cid_path.is_file()
             and getattr(client, "client", None) is not None):
         return None
@@ -496,11 +494,10 @@ def _resolve_device_cert(serial: str | None) -> Path:
     (`<config dir>/<serial>/printer_device_cert.pem`) so printer B is never
     encrypted to printer A's key; fall back to the global `_DEVICE_CERT_PATH`
     (which is also the test seam) when no per-serial cert is present (F-03)."""
-    if serial:
-        per = config_path(_sanitize_serial(serial), "printer_device_cert.pem")
-        if per.is_file():
-            return per
-    return _DEVICE_CERT_PATH
+    per = signing_path("printer_device_cert.pem", serial)
+    # signing_path returns the global path when there is no per-serial file;
+    # use the module constant then so tests can redirect it.
+    return _DEVICE_CERT_PATH if per == config_path("printer_device_cert.pem") else per
 
 
 def _device_url_enc(url: str, device_cert_path: Path | None = None) -> str:

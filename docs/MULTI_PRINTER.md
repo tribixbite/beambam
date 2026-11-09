@@ -60,30 +60,33 @@ curl -N http://127.0.0.1:8765/state.events?printer=garage
 curl http://127.0.0.1:8765/metrics | grep printer=
 ```
 
-## Print-control signing is per printer
+## Print-control signing with several printers
 
 LAN print control (`pause`/`resume`/`stop`/`gcode`, and the X2D/H2D
-start-print `url_enc`) is signed with a per-install key recovered by
-`beambam key`, plus the printer's device cert from `beambam device-cert`.
-These secrets are **keyed by serial** so a second printer never signs
-with the first one's key or encrypts its file to the wrong device:
+start-print `url_enc`) needs three things:
+
+* **The signing key + cert id** (`beambam key`). These belong to your
+  Bambu Handy install, not to a printer: the cert id is the Handy app
+  cert's serial number plus its issuer name, and names no printer. So
+  one pair is expected to sign for every printer that Handy install
+  controls (verified with one printer, not yet with two). It is stored once:
+  `~/.x2d/printer_sign_key.pem` and `~/.x2d/printer_cert_id.txt`.
+* **Your Bambu user id**, which is part of the signed bytes
+  (`beambam cloud-login`, or `X2D_USER_ID`).
+* **Each printer's device cert** (`beambam device-cert`, X2D/H2D only).
+  This one IS per printer, because the print file's location is encrypted
+  to that printer's key. It is cached per serial:
 
 ```
 ~/.x2d/
-  printer_sign_key.pem          # legacy global (still read as a fallback)
-  <serial-A>/printer_sign_key.pem
-  <serial-A>/printer_cert_id.txt
+  printer_sign_key.pem          # one per Handy install
+  printer_cert_id.txt
   <serial-A>/printer_device_cert.pem
-  <serial-B>/printer_sign_key.pem
-  ...
+  <serial-B>/printer_device_cert.pem
+  printer_device_cert.pem       # legacy single-printer location, still read as a fallback
 ```
 
-`beambam key` / `beambam device-cert` write into `~/.x2d/<serial>/`
-(resolved from the target printer's credentials); the signing path reads
-`~/.x2d/<serial>/<file>` first and falls back to the global file, so an
-existing single-printer install keeps working unchanged. Run each
-setup command once per printer, e.g.
-`beambam device-cert --printer garage` then `beambam key --printer garage`.
+Run `beambam device-cert --printer NAME` once for each printer.
 
 ## SSDP auto-discovery
 
