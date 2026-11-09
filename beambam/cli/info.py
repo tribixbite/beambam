@@ -133,19 +133,22 @@ def cmd_health(args: argparse.Namespace) -> int:
             _ok("SD card", f"state={sdcard}")
 
     # 7. Bridge daemon socket (if running)
+    # The bridge socket is a Unix-domain socket (Linux/macOS/Termux only;
+    # Windows Python has no socket.AF_UNIX).
     sock_path = config_path("bridge.sock")
-    if sock_path.exists():
+    af_unix = getattr(_socket, "AF_UNIX", None)
+    if af_unix is None:
+        _info("bridge daemon", "n/a on this platform (Unix-domain socket)")
+    elif sock_path.exists():
         try:
-            with _socket.socket(_socket.AF_UNIX,
-                                _socket.SOCK_STREAM) as us:
+            with _socket.socket(af_unix, _socket.SOCK_STREAM) as us:
                 us.settimeout(2.0)
                 us.connect(str(sock_path))
-                _ok("bridge daemon",
-                    "socket alive at ~/.x2d/bridge.sock")
+                _ok("bridge daemon", f"socket alive at {sock_path}")
         except OSError as e:
             _fail("bridge daemon", f"socket present but {e}")
     else:
-        _info("bridge daemon", "not running (no ~/.x2d/bridge.sock)")
+        _info("bridge daemon", f"not running (no {sock_path})")
 
     print()
     if fail_count == 0:

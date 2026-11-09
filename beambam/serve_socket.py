@@ -577,7 +577,14 @@ class ServeServer:
             self.sock_path.unlink()
         except FileNotFoundError:
             pass
-        srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        af_unix = getattr(socket, "AF_UNIX", None)
+        if af_unix is None:
+            # The bridge socket feeds the Linux/Termux network-plugin shim
+            # (runtime/network_shim); Windows Python has no AF_UNIX.
+            print("[serve] Unix-domain sockets are not available on this "
+                  "platform; use `beambam daemon --http` instead", file=sys.stderr)
+            return 2
+        srv = socket.socket(af_unix, socket.SOCK_STREAM)
         srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         srv.bind(str(self.sock_path))
         os.chmod(str(self.sock_path), 0o600)
