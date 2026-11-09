@@ -560,8 +560,7 @@ def _serve_http(bind: str,
             tl_match = re.match(
                 r"^/timelapses/([^/]+)/([^/]+)(?:/(.+))?$", path)
             if tl_match and timelapse_rec is not None:
-                printer = urllib.parse.unquote(tl_match.group(1))
-                job_id  = urllib.parse.unquote(tl_match.group(2))
+                printer, job_id = self._timelapse_ids(tl_match)
                 tail    = tl_match.group(3) or ""
                 if tail == "":
                     self._send_json({
@@ -798,6 +797,17 @@ def _serve_http(bind: str,
                 raise BadRequest(f"short body: expected {n} B, got {len(raw)}")
             return raw
 
+        def _timelapse_ids(self, m: "re.Match[str]") -> tuple[str, str]:
+            """Printer + job id from a /timelapses/<p>/<j> match. The
+            regex runs on the raw path, so `%2F` / `%5C` / `..` only
+            appear after decoding: both ids must be plain slugs."""
+            printer = urllib.parse.unquote(m.group(1))
+            job_id = urllib.parse.unquote(m.group(2))
+            if not (is_safe_slug(printer) and is_safe_slug(job_id)):
+                raise BadRequest("timelapse printer/job ids must match "
+                                 "[A-Za-z0-9_][A-Za-z0-9._-]*")
+            return printer, job_id
+
         def _require_printer(self, name: str) -> str:
             """`name` if it is a configured printer, else 400. Job
             records and UI rows carry this string, so arbitrary text
@@ -903,8 +913,7 @@ def _serve_http(bind: str,
             tl_match = re.match(
                 r"^/timelapses/([^/]+)/([^/]+)/stitch$", path)
             if tl_match and timelapse_rec is not None:
-                printer = urllib.parse.unquote(tl_match.group(1))
-                job_id  = urllib.parse.unquote(tl_match.group(2))
+                printer, job_id = self._timelapse_ids(tl_match)
                 body = self._json_body()
                 fps = get_int(body, "fps", 30, lo=1, hi=120)
                 result = timelapse_rec.stitch(printer, job_id, fps=fps)

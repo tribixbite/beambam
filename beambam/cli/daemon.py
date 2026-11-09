@@ -166,7 +166,9 @@ def cmd_daemon(args: argparse.Namespace) -> int:
                      else "127.0.0.1")
         timelapse_rec = TimelapseRecorder(
             snapshot_url=f"http://{snap_host}:{port_part}/snapshot.jpg",
-            interval_s=float(args.timelapse_interval))
+            interval_s=float(args.timelapse_interval),
+            # Our own /snapshot.jpg is Bearer-gated when a token is set.
+            auth_token=args.auth_token or None)
         print(f"[x2d-bridge] timelapse recorder enabled "
               f"(every {args.timelapse_interval}s during prints)",
               file=sys.stderr)
