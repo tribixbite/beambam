@@ -86,14 +86,18 @@ def cmd_list(args: argparse.Namespace) -> int:
 
 
 def cmd_add(args: argparse.Namespace) -> int:
-    path = Path(args.file).expanduser()
-    if not path.is_file():
-        print(f"file not found: {path}", file=sys.stderr)
+    from runtime.queue.manager import JobFileError, validate_job_file
+    # Same rule as the daemon's POST /queue/add: only an existing
+    # .gcode.3mf is queueable (dispatch uploads the file verbatim).
+    try:
+        path = validate_job_file(args.file)
+    except JobFileError as e:
+        print(str(e), file=sys.stderr)
         return 2
     qm = _qm()
     job = qm.add(
         printer=args.printer or "",
-        gcode=str(path.resolve()),
+        gcode=str(path),
         slot=args.slot,
         label=args.label or path.name,
     )
