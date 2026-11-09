@@ -9,14 +9,10 @@ file-mover handlers that don't fit the print/control taxonomy in
                  FileTunnel (vsFTPd on port 990; #92 details the
                  X2D firmware's surface)
 
-The LAN print verbs (cmd_print + cmd_slice_print) still live in
-x2d_bridge.py because they reach deeper into bridge internals (Creds
-resolution + safety derivation from 3mf + signing + MQTT publish). A
-later Phase 5d batch will move them once the dependency surface is
-trimmed.
-
-x2d_bridge.py re-exports each handler so external callers + tests
-keep working unchanged.
+  cmd_print       — upload + signed project_file, then wait for the
+                    printer's verdict (exit 0 started / 1 refused /
+                    3 unconfirmed)
+  cmd_slice_print — slice an STL, then cmd_print
 """
 from __future__ import annotations
 
@@ -56,6 +52,7 @@ def cmd_print(args: argparse.Namespace) -> int:
         _validate_ams_slot,
         parse_slots,
         start_print,
+        used_filament_ids,
     )
 
     local = Path(args.file)
@@ -63,30 +60,6 @@ def cmd_print(args: argparse.Namespace) -> int:
     slots = parse_slots(args.slot) if not isinstance(args.slot, list) else list(args.slot)
     use_ams = not args.no_ams
     force = bool(getattr(args, "force", False))
-
-    # Step 0: --dry-run analyzes the file and refuses on excessive purge
-    # waste BEFORE touching creds / network / FTPS. Lets `uvx beambam`
-    # users sanity-check a print on a workstation that isn't on the
-    # printer's LAN.
-    if getattr(args, "dry_run", False):
-        from beambam.analyze import analyze_3mf, format_report
-        report = analyze_3mf(local)
-        print(format_report(report))
-        flush_g = float(report.totals.get("flush_volume_g", 0.0))
-        max_g = float(getattr(args, "max_flush_g", 10.0))
-        if flush_g > max_g:
-            sys.stderr.write(
-                f"\n[print --dry-run] REFUSED: predicted purge "
-                f"{flush_g:.1f} g exceeds --max-flush-g {max_g:.1f} g. "
-                f"Re-slice with fewer color swaps OR raise the "
-                f"threshold.\n")
-            return 2
-        sys.stderr.write(
-            f"\n[print --dry-run] OK: predicted purge {flush_g:.1f} g "
-            f"<= --max-flush-g {max_g:.1f} g\n")
-        return 0
-
-    creds = Creds.resolve(args)
 
     # Step 1: derive authoritative bed_type / bed_temp / filament
     # expectations from the 3MF before we touch the network. If the
@@ -140,10 +113,28 @@ def cmd_print(args: argparse.Namespace) -> int:
     except PrintRefusal as e:
         raise SystemExit(f"--slot lists {len(slots)} slots but the file does not have that many "
                          f"filaments: {e}")
+    # One slot per filament the plate prints with: ams_mapping is indexed by
+    # the project's filament number, so a short list leaves a used filament
+    # unmapped (the firmware then stalls at the AMS load or uses the wrong spool).
+    if use_ams:
+        used = used_filament_ids(local)
+        if used and len(slots) < max(used):
+            raise SystemExit(
+                f"this plate prints with filament(s) {', '.join(map(str, used))}: give one "
+                f"--slot per filament up to #{max(used)} in order (got {len(slots)}: "
+                f"{','.join(map(str, slots))})")
     if len(slots) > 1:
         sys.stderr.write("[print] filament -> AMS slot: " + ", ".join(
             f"{i + 1} ({want['expected_filament_type']} {want['expected_filament_colour']}) -> {slot}"
             for i, (slot, want) in enumerate(zip(slots, expected))) + "\n")
+
+    # --dry-run stops here: every offline check above has passed; also
+    # report the purge and refuse when it is over --max-flush-g. No
+    # credentials, network or FTPS needed.
+    if getattr(args, "dry_run", False):
+        return _dry_run_report(local, float(getattr(args, "max_flush_g", 10.0)))
+
+    creds = Creds.resolve(args)
 
     # Step 3: upload (if requested) BEFORE we open the MQTT client so a
     # transient FTPS failure doesn't leave a stale subscription.
@@ -151,33 +142,34 @@ def cmd_print(args: argparse.Namespace) -> int:
         # cache/ — the firmware-accepted LAN print URL is ftp:///cache/<file>
         upload_file(creds, local, remote_name=args.remote, remote_dir="cache")
 
-    # Step 4: open the MQTT client and validate live AMS state.
+    # Step 4: open the MQTT client, read the live state, validate AMS slots.
     cli = X2DClient(creds)
     cli.connect()
     name = args.remote or local.name
     try:
+        try:
+            live = cli.request_state(timeout=15.0)
+        except TimeoutError:
+            raise SystemExit(
+                "could not read the printer's state before sending. Either the "
+                "printer dropped, or credentials are wrong. Re-run when "
+                "`beambam status` works.")
+        busy = (live.get("print") or {}).get("gcode_state", "")
+        if busy in BUSY_STATES and not force:
+            raise SystemExit(
+                f"printer is busy (gcode_state={busy}); refusing to start another "
+                f"print. Wait for it to finish, or pass --force.")
         if use_ams:
-            try:
-                live = cli.request_state(timeout=15.0)
-            except TimeoutError:
-                raise SystemExit(
-                    "could not pull live printer state to validate "
-                    "AMS slot before sending. Either the printer "
-                    "dropped, or credentials are wrong. Re-run when "
-                    "the bridge can reach the printer (status command "
-                    "works first).")
             try:
                 for slot, want in zip(slots, expected):
                     _validate_ams_slot(live, slot, want, force=force)
             except PrintRefusal as e:
                 raise SystemExit(str(e))
-            # Per code-review #4 (race window): warn the user not to
-            # change spools between validation and the actual print
-            # start. The window is small (~1s) but real.
             sys.stderr.write(
                 "[print] AMS state validated; do not change AMS slots "
                 "until the printer transitions to PREPARE/RUNNING.\n")
 
+        since = cli.message_seq
         try:
             start_print(cli, name,
                         use_ams=use_ams,
@@ -191,11 +183,81 @@ def cmd_print(args: argparse.Namespace) -> int:
                         local_path=local)
         except PrintRefusal as e:
             raise SystemExit(str(e))
-        print(f"start_print queued: {name} "
-              f"(slot={','.join(map(str, slots))}, ams={use_ams}, "
-              f"bed={bed_type}@{bed_temp}°C)")
+        summary = (f"{name} (slot={','.join(map(str, slots))}, ams={use_ams}, "
+                   f"bed={bed_type}@{bed_temp}°C)")
+        wait_s = float(getattr(args, "confirm_timeout", 45.0))
+        if wait_s <= 0:
+            print(f"start_print sent (not confirmed): {summary}")
+            return 0
+        verdict, detail = await_print_start(cli, since, wait_s)
+        if verdict == "started":
+            print(f"print started: {summary} — {detail}")
+            return 0
+        if verdict == "refused":
+            sys.stderr.write(f"[print] printer REFUSED the job: {detail}\n")
+            return 1
+        sys.stderr.write(
+            f"[print] sent, but the printer did not confirm within {wait_s:g} s "
+            f"({detail}). Check the printer screen before retrying.\n")
+        return 3
     finally:
         cli.disconnect()
+
+
+# gcode_state values that mean a job is in progress (a new start is refused).
+BUSY_STATES = frozenset({"RUNNING", "PAUSE", "PREPARE", "SLICING", "INIT"})
+# gcode_state values a freshly accepted job moves into.
+STARTED_STATES = frozenset({"PREPARE", "RUNNING", "SLICING"})
+
+
+def await_print_start(cli, since: int, timeout: float) -> tuple[str, str]:
+    """Wait for the printer's verdict on a project_file sent after message
+    `since`. Returns ("started" | "refused" | "unconfirmed", detail).
+
+    Evidence, whichever comes first: the printer's `print.project_file`
+    reply (err_code / result), or the print state machine leaving idle
+    (gcode_state PREPARE/RUNNING/SLICING) — the caller checked the printer
+    was idle before sending, so that transition is this job's.
+    """
+    from beambam.state import command_reply
+
+    def verdict(msg: dict) -> tuple[str, str] | None:
+        reply = command_reply(msg, "print", "project_file")
+        if reply is not None:
+            if reply.ok:
+                return "started", "printer acknowledged project_file"
+            return "refused", (f"err_code {reply.err_code}"
+                               + (f" ({reply.reason})" if reply.reason else ""))
+        state = (msg.get("print") or {}).get("gcode_state")
+        if state in STARTED_STATES:
+            return "started", f"gcode_state={state}"
+        return None
+
+    msg = cli.wait_for(lambda m: verdict(m) is not None, timeout, since=since)
+    if msg is None:
+        st = (cli.merged_state().get("print") or {}).get("gcode_state", "?")
+        return "unconfirmed", f"no reply; gcode_state={st}"
+    result = verdict(msg)
+    assert result is not None
+    return result
+
+
+def _dry_run_report(local: Path, max_g: float) -> int:
+    """`print --dry-run` tail: show beambam's analysis, gate on purge grams."""
+    from beambam.analyze import analyze_3mf, format_report
+    report = analyze_3mf(local)
+    print(format_report(report))
+    flush_g = float(report.totals.get("flush_volume_g", 0.0))
+    if flush_g > max_g:
+        sys.stderr.write(
+            f"\n[print --dry-run] REFUSED: predicted purge "
+            f"{flush_g:.1f} g exceeds --max-flush-g {max_g:.1f} g. "
+            f"Re-slice with fewer color swaps OR raise the "
+            f"threshold.\n")
+        return 2
+    sys.stderr.write(
+        f"\n[print --dry-run] OK: offline checks passed; predicted purge "
+        f"{flush_g:.1f} g <= --max-flush-g {max_g:.1f} g\n")
     return 0
 
 

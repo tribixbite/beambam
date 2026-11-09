@@ -120,7 +120,10 @@ def _publish_signed_or_legacy(client: "X2DClient", payload: dict) -> None:
     wire = mqtt_sign.signed_message(family, command, _signing_user_id(),
                                     signer=mqtt_sign.key_signer(key), cert_id=cert_id)
     topic = f"device/{client.creds.serial}/request"
-    client.client.publish(topic, wire, qos=1)
+    if hasattr(client, "publish_raw"):
+        client.publish_raw(topic, wire, qos=1)     # waits for the broker's ack
+    else:
+        client.client.publish(topic, wire, qos=1)
 
 
 def request_auto_nozzle_mapping(client: "X2DClient", group_info: list[dict], *,
@@ -299,6 +302,29 @@ def _derive_print_params_from_3mf(local_path: Path,
                                      if filament_index < len(fila_ids)
                                      else None),
     }
+
+
+def used_filament_ids(path: Path, plate: int = 1) -> list[int]:
+    """1-based project filament ids the plate actually prints with, read
+    from `Metadata/slice_info.config` (empty if the file has none)."""
+    import zipfile
+    from xml.etree import ElementTree as ET
+    try:
+        with zipfile.ZipFile(path) as z:
+            root = ET.fromstring(z.read("Metadata/slice_info.config"))
+    except (KeyError, OSError, zipfile.BadZipFile, ET.ParseError):
+        return []
+    for pl in root.findall("plate"):
+        idx = next((m.get("value") for m in pl.findall("metadata") if m.get("key") == "index"), "1")
+        if str(idx) == str(plate):
+            ids = []
+            for f in pl.findall("filament"):
+                try:
+                    ids.append(int(f.get("id", "")))
+                except ValueError:
+                    continue
+            return sorted(set(ids))
+    return []
 
 
 def parse_slots(text: str | int) -> list[int]:

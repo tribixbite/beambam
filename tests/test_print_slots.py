@@ -64,7 +64,13 @@ def offline(monkeypatch: pytest.MonkeyPatch) -> dict:
         def __init__(self, creds): self.creds = creds
         def connect(self): pass
         def disconnect(self): pass
-        def request_state(self, timeout=15.0): return {"print": {}}
+        def request_state(self, timeout=15.0): return {"print": {"gcode_state": "FINISH"}}
+        message_seq = 0
+        def wait_for(self, predicate, timeout, since=None):
+            # The printer answers the project_file with success.
+            msg = {"print": {"command": "project_file", "result": "success", "err_code": 0}}
+            return msg if predicate(msg) else None
+        def merged_state(self): return {"print": {"gcode_state": "PREPARE"}}
 
     monkeypatch.setattr(mqtt, "X2DClient", _Client)
     monkeypatch.setattr(ftps, "upload_file", lambda *a, **k: None)
@@ -94,4 +100,63 @@ def test_more_slots_than_filaments_is_refused(tmp_path: Path, offline: dict) -> 
     f = _three_mf(tmp_path / "one.gcode.3mf", ["PLA"], ["#FFFFFF"])
     with pytest.raises(SystemExit, match="does not have that many filaments"):
         cmd_print(_ns(f, [1, 2]))
+    assert offline["start"] is None
+
+
+# --- confirmation and pre-flight (the printer's verdict decides the exit code) ---
+
+def _client_class(gcode_state: str, reply: dict | None, later_state: str | None = None):
+    class _Client:
+        message_seq = 0
+        def __init__(self, creds): self.creds = creds
+        def connect(self): pass
+        def disconnect(self): pass
+        def request_state(self, timeout=15.0): return {"print": {"gcode_state": gcode_state}}
+        def wait_for(self, predicate, timeout, since=None):
+            for msg in ([reply] if reply else []) + (
+                    [{"print": {"command": "push_status", "gcode_state": later_state}}] if later_state else []):
+                if predicate(msg):
+                    return msg
+            return None
+        def merged_state(self): return {"print": {"gcode_state": gcode_state}}
+    return _Client
+
+
+@pytest.mark.parametrize("state,reply,later,rc", [
+    ("FINISH", {"print": {"command": "project_file", "result": "success"}}, None, 0),
+    ("IDLE", None, "PREPARE", 0),                       # no reply, but the job is preparing
+    ("FINISH", {"print": {"command": "project_file", "err_code": 84033544,
+                          "reason": "file verify failed", "result": "failed"}}, None, 1),
+    ("FINISH", None, None, 3),                          # silence: unconfirmed, not success
+])
+def test_print_exit_code_follows_the_printer(tmp_path: Path, offline: dict, monkeypatch,
+                                             state, reply, later, rc) -> None:
+    import beambam.mqtt as mqtt
+    from beambam.cli.lan import cmd_print
+    monkeypatch.setattr(mqtt, "X2DClient", _client_class(state, reply, later))
+    f = _three_mf(tmp_path / "one.gcode.3mf", ["PLA"], ["#FFFFFF"])
+    ns = _ns(f, 12)
+    ns.confirm_timeout = 0.1
+    assert cmd_print(ns) == rc
+
+
+def test_busy_printer_is_refused(tmp_path: Path, offline: dict, monkeypatch) -> None:
+    import beambam.mqtt as mqtt
+    from beambam.cli.lan import cmd_print
+    monkeypatch.setattr(mqtt, "X2DClient", _client_class("RUNNING", None))
+    f = _three_mf(tmp_path / "one.gcode.3mf", ["PLA"], ["#FFFFFF"])
+    with pytest.raises(SystemExit, match="printer is busy"):
+        cmd_print(_ns(f, 12))
+    assert offline["start"] is None
+
+
+def test_too_few_slots_for_the_filaments_used(tmp_path: Path, offline: dict) -> None:
+    from beambam.cli.lan import cmd_print
+    f = _three_mf(tmp_path / "three.gcode.3mf", ["PETG", "PETG", "PETG"], ["#111111", "#222222", "#333333"])
+    with zipfile.ZipFile(f, "a") as z:
+        z.writestr("Metadata/slice_info.config",
+                   '<config><plate><metadata key="index" value="1"/>'
+                   '<filament id="1"/><filament id="2"/><filament id="3"/></plate></config>')
+    with pytest.raises(SystemExit, match=r"filament\(s\) 1, 2, 3"):
+        cmd_print(_ns(f, [4]))
     assert offline["start"] is None

@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import base64
 import collections
+import copy
 import json
 import os
 import ssl
@@ -45,17 +46,20 @@ import sys
 import threading
 import time
 from pathlib import Path
-from threading import Event
+from collections import deque
+from threading import Condition, Event
 from typing import Any, Callable
 
 import paho.mqtt.client as mqtt
 
 from beambam.config import Creds
 from beambam.paths import config_dir
+from beambam.state import CommandReply, command_reply, deep_merge, is_full_report
 
 
 __all__ = [
     "BAMBU_CERT_ID",
+    "PublishTimeout",
     "X2DClient",
     "sign_payload",
     # Metrics state (Phase 4): the daemon's Prometheus snapshot pulls
@@ -161,6 +165,10 @@ _metric_global_inc = metric_global_inc
 _metrics_snapshot = metrics_snapshot
 
 
+class PublishTimeout(ConnectionError):
+    """The broker did not acknowledge a QoS-1 publish in time."""
+
+
 class X2DClient:
     PORT = 8883
     # Persistent last-message timestamp (items #19, #37). Lets /healthz
@@ -186,7 +194,16 @@ class X2DClient:
         self.on_state = on_state
         self._connected = Event()
         self._got_state = Event()
+        # Last raw message (kept for callers that want exactly what arrived).
         self._latest_state: dict | None = None
+        # Every report deep-merged into one document (beambam.state): deltas
+        # and command replies no longer masquerade as the whole state.
+        self._merged: dict[str, Any] = {}
+        # Message counter + recent window so a caller can wait for "a reply
+        # that arrived after I published" (wait_for / wait_reply).
+        self._cond = Condition()
+        self._msg_seq = 0
+        self._recent: deque[tuple[int, dict[str, Any]]] = deque(maxlen=512)
         # Per-printer persist file path keyed by serial.
         self._ts_path = self._ts_path_for(creds.serial)
         # Restore last-known ts from disk so /healthz works on first
@@ -243,7 +260,14 @@ class X2DClient:
             payload = json.loads(msg.payload.decode())
         except (ValueError, UnicodeDecodeError):
             return
-        self._latest_state = payload
+        if not isinstance(payload, dict):
+            return
+        with self._cond:
+            self._latest_state = payload
+            deep_merge(self._merged, payload)
+            self._msg_seq += 1
+            self._recent.append((self._msg_seq, payload))
+            self._cond.notify_all()
         now = time.time()
         self._last_message_ts = now
         metric_inc(self.creds.serial, "messages_total")
@@ -304,16 +328,64 @@ class X2DClient:
                 f"MQTT did not connect to {self.creds.ip}:{self.PORT} "
                 f"within {timeout}s")
 
+    @property
+    def message_seq(self) -> int:
+        """Number of messages received so far; pass it as `since=` to
+        wait_for()/wait_reply() to only consider later messages."""
+        with self._cond:
+            return self._msg_seq
+
+    def merged_state(self) -> dict[str, Any]:
+        """Deep copy of every report received so far, merged."""
+        with self._cond:
+            return copy.deepcopy(self._merged)
+
+    def wait_for(self, predicate: Callable[[dict[str, Any]], Any], timeout: float,
+                 since: int | None = None) -> dict[str, Any] | None:
+        """Block until a message received after `since` (default: now)
+        satisfies `predicate`; return it, or None on timeout."""
+        deadline = time.monotonic() + timeout
+        with self._cond:
+            cursor = self._msg_seq if since is None else since
+            while True:
+                for seq, payload in self._recent:
+                    if seq > cursor:
+                        cursor = seq
+                        try:
+                            if predicate(payload):
+                                return payload
+                        except Exception:  # a predicate bug must not kill the wait
+                            continue
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return None
+                self._cond.wait(remaining)
+
+    def wait_reply(self, family: str, command: str, timeout: float,
+                   since: int | None = None) -> CommandReply | None:
+        """Wait for the printer's reply to `family.command` (e.g. "print",
+        "project_file"); None if none arrives within `timeout`."""
+        msg = self.wait_for(lambda m: command_reply(m, family, command) is not None,
+                            timeout, since)
+        return command_reply(msg, family, command) if msg is not None else None
+
     def request_state(self, timeout: float = 8.0) -> dict:
-        """Send signed pushall and return the next state report."""
+        """Send pushall and return the full merged state.
+
+        Waits for a FULL report (one with `print.gcode_state`); a delta or a
+        command reply that happens to arrive first is merged but not
+        returned on its own, so callers always see `ams`, temperatures etc.
+        Raises TimeoutError when no full report arrives in time.
+        """
+        since = self.message_seq
         self._got_state.clear()
         self.publish({"pushing": {"sequence_id": "0", "command": "pushall"}})
-        if not self._got_state.wait(timeout):
-            raise TimeoutError("no state report received from printer")
-        # _got_state being set implies _on_message already populated
-        # _latest_state — narrow the type for mypy.
-        assert self._latest_state is not None
-        return self._latest_state
+        if self.wait_for(is_full_report, timeout, since=since) is None:
+            with self._cond:
+                have_full = is_full_report(self._merged)
+            if not have_full:
+                raise TimeoutError("no full state report received from printer")
+        return self.merged_state()
 
     def publish(self, payload: dict, qos: int = 1, *,
                 max_attempts: int = 3,
@@ -377,11 +449,20 @@ class X2DClient:
                     time.sleep(backoff_base * (2 ** attempt))
                     continue
                 info.wait_for_publish(timeout=5)
+                if qos > 0 and not info.is_published():
+                    # paho's wait_for_publish returns silently on timeout.
+                    # Don't re-send: the message may still be delivered,
+                    # and a duplicated command (a print start) is worse
+                    # than a reported failure.
+                    raise PublishTimeout(
+                        f"printer did not acknowledge the publish within 5 s ({topic})")
                 if attempt > 0:
                     metric_inc(self.creds.serial,
                                 "mqtt_publish_retries_total",
                                 attempt)
                 return
+            except PublishTimeout:
+                raise
             except (RuntimeError, ConnectionError, OSError) as e:
                 # paho raises RuntimeError("The client is not currently connected.")
                 # if the loop thread spotted a disconnect before our publish
@@ -391,6 +472,16 @@ class X2DClient:
         raise ConnectionError(
             f"MQTT publish failed after {max_attempts} attempts: {last_err}"
         )
+
+    def publish_raw(self, topic: str, wire: str | bytes, qos: int = 1,
+                    timeout: float = 5.0) -> None:
+        """Publish an already-signed message and wait for the broker's ack.
+        Raises PublishTimeout if it is not acknowledged within `timeout`."""
+        info = self.client.publish(topic, wire, qos=qos)
+        info.wait_for_publish(timeout=timeout)
+        if qos > 0 and not info.is_published():
+            raise PublishTimeout(
+                f"printer did not acknowledge the publish within {timeout:g} s ({topic})")
 
     def disconnect(self) -> None:
         self.client.loop_stop()

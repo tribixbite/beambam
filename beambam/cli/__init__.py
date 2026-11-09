@@ -281,6 +281,10 @@ def main() -> int:
     pr.add_argument("--flow-cali", action="store_true")
     pr.add_argument("--timelapse", action="store_true")
     pr.add_argument("--vib-cali", action="store_true")
+    pr.add_argument("--confirm-timeout", type=float, default=45.0,
+                    help="Seconds to wait for the printer to accept the job "
+                         "(project_file reply or PREPARE/RUNNING). Exit 0 = "
+                         "started, 1 = refused, 3 = not confirmed. 0 = don't wait.")
     pr.add_argument("--dry-run", action="store_true",
                     help="Run `beambam analyze` on the file FIRST and refuse "
                          "to upload / print if the predicted purge waste "

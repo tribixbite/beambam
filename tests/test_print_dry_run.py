@@ -41,6 +41,20 @@ def _ns(**kw) -> argparse.Namespace:
     return argparse.Namespace(**defaults)
 
 
+def _real_3mf(path: Path) -> Path:
+    """Smallest .gcode.3mf the offline checks accept (one PLA filament,
+    Textured PEI plate). The dry-run now runs every offline check before
+    the purge gate, so the file must parse; analyze itself stays stubbed."""
+    import json
+    import zipfile
+    ps = {"curr_bed_type": "Textured PEI Plate", "textured_plate_temp_initial_layer": ["65"],
+          "filament_type": ["PLA"], "filament_colour": ["#FFFFFF"], "filament_ids": ["GFL99"]}
+    with zipfile.ZipFile(path, "w") as z:
+        z.writestr("Metadata/project_settings.config", json.dumps(ps))
+        z.writestr("Metadata/plate_1.gcode", "G28\n")
+    return path
+
+
 # ----- analyze stub -----------------------------------------------------
 
 
@@ -70,7 +84,7 @@ def test_dry_run_low_flush_returns_0(monkeypatch, capsys, tmp_path):
     from beambam import analyze as analyze_mod
 
     fake_3mf = tmp_path / "tiny.gcode.3mf"
-    fake_3mf.write_text("")  # doesn't matter — analyze is stubbed
+    _real_3mf(fake_3mf)
 
     analyze, fmt = _stub_analyze(flush_g=0.2)
     monkeypatch.setattr(analyze_mod, "analyze_3mf", analyze)
@@ -98,7 +112,7 @@ def test_dry_run_refuses_when_flush_exceeds_threshold(monkeypatch, capsys,
     from beambam import analyze as analyze_mod
 
     fake_3mf = tmp_path / "huge.gcode.3mf"
-    fake_3mf.write_text("")
+    _real_3mf(fake_3mf)
 
     analyze, fmt = _stub_analyze(flush_g=15.0)
     monkeypatch.setattr(analyze_mod, "analyze_3mf", analyze)
@@ -119,7 +133,7 @@ def test_dry_run_custom_threshold(monkeypatch, capsys, tmp_path):
     from beambam import analyze as analyze_mod
 
     fake_3mf = tmp_path / "f.gcode.3mf"
-    fake_3mf.write_text("")
+    _real_3mf(fake_3mf)
 
     # Case 1: 7g vs threshold 5g → refuse
     analyze, fmt = _stub_analyze(flush_g=7.0)
@@ -144,7 +158,7 @@ def test_dry_run_does_not_resolve_creds(monkeypatch, tmp_path):
     from beambam import analyze as analyze_mod
 
     fake_3mf = tmp_path / "x.gcode.3mf"
-    fake_3mf.write_text("")
+    _real_3mf(fake_3mf)
     analyze, fmt = _stub_analyze(flush_g=0.0)
     monkeypatch.setattr(analyze_mod, "analyze_3mf", analyze)
     monkeypatch.setattr(analyze_mod, "format_report", fmt)
