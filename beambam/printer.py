@@ -162,8 +162,14 @@ class Printer(AbstractContextManager):
             ams_slot: int | list[int] = 0
         else:
             ams_slot = ams
-        from beambam.print_job import await_print_start
+        from beambam.print_job import BUSY_STATES, await_print_start
         since = self.mqtt.message_seq if hasattr(self.mqtt, "message_seq") else 0
+        # If the printer was already busy, a RUNNING report is the previous
+        # job's, not proof this one started: then only the reply counts.
+        was_busy = False
+        if hasattr(self.mqtt, "merged_state"):
+            was_busy = ((self.mqtt.merged_state().get("print") or {})
+                        .get("gcode_state") in BUSY_STATES)
         start_print(
             self.mqtt, gcode_filename,
             use_ams=use_ams, ams_slot=ams_slot,
@@ -174,7 +180,8 @@ class Printer(AbstractContextManager):
         )
         if not hasattr(self.mqtt, "wait_for"):           # test / simulate clients
             return {"verdict": "sent", "detail": ""}
-        verdict, detail = await_print_start(self.mqtt, since, confirm_timeout)
+        verdict, detail = await_print_start(self.mqtt, since, confirm_timeout,
+                                            trust_state=not was_busy)
         return {"verdict": verdict, "detail": detail}
 
     def pause(self) -> Any:

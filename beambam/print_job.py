@@ -783,14 +783,17 @@ BUSY_STATES = frozenset({"RUNNING", "PAUSE", "PREPARE", "SLICING", "INIT"})
 STARTED_STATES = frozenset({"PREPARE", "RUNNING", "SLICING"})
 
 
-def await_print_start(cli: "X2DClient", since: int, timeout: float) -> tuple[str, str]:
+def await_print_start(cli: "X2DClient", since: int, timeout: float, *,
+                      trust_state: bool = True) -> tuple[str, str]:
     """Wait for the printer's verdict on a project_file sent after message
     `since`. Returns ("started" | "refused" | "unconfirmed", detail).
 
     Evidence, whichever comes first: the printer's `print.project_file`
-    reply (err_code / result), or the print state machine leaving idle
-    (gcode_state PREPARE/RUNNING/SLICING) — the caller checked the printer
-    was idle before sending, so that transition is this job's.
+    reply (err_code / result), or — only when `trust_state` — the print state
+    machine leaving idle (gcode_state PREPARE/RUNNING/SLICING). That state is
+    evidence only if the printer was idle before sending; when it was already
+    busy (e.g. `--force`), pass trust_state=False so a report of the PREVIOUS
+    job's RUNNING state is not mistaken for this job starting.
     """
     from beambam.state import command_reply
 
@@ -802,7 +805,7 @@ def await_print_start(cli: "X2DClient", since: int, timeout: float) -> tuple[str
             return "refused", (f"err_code {reply.err_code}"
                                + (f" ({reply.reason})" if reply.reason else ""))
         state = (msg.get("print") or {}).get("gcode_state")
-        if state in STARTED_STATES:
+        if trust_state and state in STARTED_STATES:
             return "started", f"gcode_state={state}"
         return None
 

@@ -190,6 +190,13 @@ def cmd_print(args: argparse.Namespace) -> int:
                 "until the printer transitions to PREPARE/RUNNING.\n")
 
         since = cli.message_seq
+        # A publish whose broker ack timed out (PublishTimeout is a
+        # ConnectionError) may still have reached the printer, so it is NOT a
+        # refusal: keep listening for the printer's verdict and report
+        # "unconfirmed" (exit 3) if none comes. Exit 1 would tell callers such
+        # as pokefit the job was refused, inviting a retry that could start
+        # the same print twice.
+        send_error = ""
         try:
             start_print(cli, name,
                         use_ams=use_ams,
@@ -204,13 +211,25 @@ def cmd_print(args: argparse.Namespace) -> int:
                         local_path=local)
         except PrintRefusal as e:
             raise SystemExit(str(e))
+        except (ConnectionError, OSError, RuntimeError) as e:
+            send_error = f"{type(e).__name__}: {e}"
+            sys.stderr.write(f"[print] publish not acknowledged ({send_error}); "
+                             f"waiting for the printer's verdict anyway\n")
         summary = (f"{name} (slot={','.join(map(str, slots))}, ams={use_ams}, "
                    f"bed={bed_type}@{bed_temp}°C)")
         wait_s = float(getattr(args, "confirm_timeout", 45.0))
         if wait_s <= 0:
+            if send_error:
+                sys.stderr.write("[print] not confirmed; check the printer before retrying\n")
+                return 3
             print(f"start_print sent (not confirmed): {summary}")
             return 0
-        verdict, detail = await_print_start(cli, since, wait_s)
+        # State changes prove this job started only if the printer was idle
+        # before; under --force on a busy printer, require the printer's reply.
+        verdict, detail = await_print_start(cli, since, wait_s,
+                                            trust_state=busy not in BUSY_STATES)
+        if send_error and verdict == "unconfirmed":
+            detail = f"{detail}; send error: {send_error}"
         if verdict == "started":
             print(f"print started: {summary} — {detail}")
             return 0

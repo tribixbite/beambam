@@ -160,3 +160,42 @@ def test_too_few_slots_for_the_filaments_used(tmp_path: Path, offline: dict) -> 
     with pytest.raises(SystemExit, match=r"filament\(s\) 1, 2, 3"):
         cmd_print(_ns(f, [4]))
     assert offline["start"] is None
+
+
+def test_force_on_busy_printer_needs_the_printers_reply(tmp_path: Path, offline: dict,
+                                                       monkeypatch) -> None:
+    """--force on a RUNNING printer: a RUNNING report is the previous job's,
+    so without a project_file reply the result is unconfirmed (3), not 0."""
+    import beambam.mqtt as mqtt
+    from beambam.cli.lan import cmd_print
+    monkeypatch.setattr(mqtt, "X2DClient", _client_class("RUNNING", None, "RUNNING"))
+    f = _three_mf(tmp_path / "one.gcode.3mf", ["PLA"], ["#FFFFFF"])
+    ns = _ns(f, 12)
+    ns.force = True
+    ns.confirm_timeout = 0.1
+    assert cmd_print(ns) == 3
+    # ...but the printer's own acceptance still counts.
+    monkeypatch.setattr(mqtt, "X2DClient", _client_class(
+        "RUNNING", {"print": {"command": "project_file", "result": "success"}}))
+    assert cmd_print(ns) == 0
+
+
+def test_publish_timeout_is_unconfirmed_not_refused(tmp_path: Path, offline: dict,
+                                                    monkeypatch) -> None:
+    """A broker-ack timeout may still have delivered the job: exit 3, never 1."""
+    import beambam.mqtt as mqtt
+    import beambam.print_job as pj
+    from beambam.cli.lan import cmd_print
+
+    def _timeout(*a, **k):
+        raise mqtt.PublishTimeout("printer did not acknowledge the publish within 5 s")
+    monkeypatch.setattr(pj, "start_print", _timeout)
+    monkeypatch.setattr(mqtt, "X2DClient", _client_class("FINISH", None))
+    f = _three_mf(tmp_path / "one.gcode.3mf", ["PLA"], ["#FFFFFF"])
+    ns = _ns(f, 12)
+    ns.confirm_timeout = 0.1
+    assert cmd_print(ns) == 3
+    # If the printer answers anyway, its verdict wins.
+    monkeypatch.setattr(mqtt, "X2DClient", _client_class(
+        "FINISH", {"print": {"command": "project_file", "err_code": 84033544, "result": "failed"}}))
+    assert cmd_print(ns) == 1
