@@ -121,9 +121,20 @@ def format_status(ams_block: dict[str, Any], *, color: bool = True) -> str:
         temp = unit.get("temp", "?")
         lines.append(f"AMS {uid}  humidity {humidity}  temp {temp}°C  "
                      f"version {unit.get('info', '?')}")
+        # AMS HT units and external/virtual slots can carry a non-numeric
+        # id; show the tray id alone there instead of crashing the whole
+        # `beambam ams` output on int("?").
+        try:
+            unit_base = int(uid) * 4
+        except (TypeError, ValueError):
+            unit_base = None
         trays = unit.get("tray") or []
         for t in trays:
-            slot_global = int(uid) * 4 + int(t.get("id", 0))
+            try:
+                tray_id = int(t.get("id", 0))
+            except (TypeError, ValueError):
+                tray_id = 0
+            slot_global = unit_base + tray_id if unit_base is not None else tray_id
             color_str = _swatch(t.get("tray_color", "808080"), color=color)
             remain = t.get("remain", -1)
             remain_str = "—" if remain < 0 else f"{remain}%"

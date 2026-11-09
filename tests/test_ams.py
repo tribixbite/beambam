@@ -591,3 +591,11 @@ def test_generic_info_idx_covers_common_types():
     assert _generic_info_idx("ABS-GF Pro") == "GFB99"
     # A genuinely unknown type returns "" (never a wrong PLA claim).
     assert _generic_info_idx("Unobtanium") == ""
+
+
+def test_format_status_survives_non_numeric_unit_id():
+    """An external/HT unit with a non-numeric id must not crash `beambam ams`."""
+    from beambam.ams import format_status
+    out = format_status({"ams": [{"id": "?", "humidity": "2", "temp": "25",
+                                  "tray": [{"id": 0, "tray_type": "PLA"}]}]}, color=False)
+    assert "slot" in out and "PLA" in out
