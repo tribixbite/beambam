@@ -240,6 +240,13 @@ def filter_3mf(src: Path, dst: Path, *, keep: set[int] | None = None,
     """
     if (keep is None) == (drop is None):
         raise ValueError("pass exactly one of keep= / drop=")
+    try:
+        same = src.resolve() == dst.resolve()
+    except OSError:
+        same = str(src) == str(dst)
+    if same:
+        raise ValueError(f"filter_3mf: src and dst are the same file ({src}); "
+                         f"write to a different path")
 
     with zipfile.ZipFile(src) as zin:
         with zipfile.ZipFile(dst, "w",

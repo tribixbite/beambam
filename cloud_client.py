@@ -533,7 +533,12 @@ class CloudClient:
             raise CloudError("no refresh_token; need to login first")
         url = REGIONS[self.session.region]["api"] + "/v1/user-service/user/refreshtoken"
         r = _request("POST", url, body={"refreshToken": self.session.refresh_token})
-        self.session.access_token  = r.get("accessToken")  or r.get("access_token")  or self.session.access_token
+        new_access = r.get("accessToken") or r.get("access_token")
+        if not new_access:
+            # No new token: do NOT advance expiry (that hid an expired session
+            # behind a fresh-looking one). Force an interactive re-login.
+            raise CloudError("token refresh returned no accessToken; re-login required")
+        self.session.access_token = new_access
         self.session.refresh_token = r.get("refreshToken") or r.get("refresh_token") or self.session.refresh_token
         expires_in = r.get("expiresIn") or r.get("expires_in")
         if isinstance(expires_in, (int, float)) and expires_in > 0:

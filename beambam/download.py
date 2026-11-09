@@ -66,8 +66,9 @@ def cmd_download(args: argparse.Namespace) -> int:
     if args.local is None:
         local = Path.cwd() / basename
     else:
+        wants_dir = args.local.endswith(("/", "\\"))     # raw arg: Path() strips it
         local = Path(args.local).expanduser()
-        if local.is_dir() or str(local).endswith("/"):
+        if local.is_dir() or wants_dir:
             local = local / basename
 
     local.parent.mkdir(parents=True, exist_ok=True)
