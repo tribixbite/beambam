@@ -46,6 +46,7 @@ from beambam.mqtt import X2DClient, metric_global_inc as _metric_global_inc
 # `_next_seq` lives in beambam/cli/_helpers.py (Phase 5a). Used by the
 # `pushall` publishes inside `_PrinterSession.acquire()` + `_op_subscribe_local`.
 from beambam.cli._helpers import _next_seq
+from beambam.paths import config_path, credentials_path
 
 # Lazy-imported inside handlers to dodge the
 # x2d_bridge → beambam.serve_socket → beambam.print_job → ... cycle on
@@ -210,7 +211,7 @@ class ServeServer:
         ~/.x2d/credentials and return {serial: (code, name)}. Quietly
         returns {} if the file is missing or malformed — the bridge stays
         usable for unrecognised printers via the lazy shim path."""
-        path = Path.home() / ".x2d" / "credentials"
+        path = credentials_path()
         if not path.exists():
             return {}
         cp = configparser.ConfigParser()
@@ -270,7 +271,7 @@ class ServeServer:
         re-patching across bridge restarts. Atomic write so a crash
         mid-write doesn't corrupt the user's AppConfig."""
         import os as _os
-        marker = Path.home() / ".x2d" / ".ssdp_seeded"
+        marker = config_path(".ssdp_seeded")
         if marker.exists():
             return
         appconf = Path.home() / ".config" / "BambuStudioInternal" / "BambuStudio.conf"

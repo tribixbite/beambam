@@ -51,6 +51,7 @@ from typing import Any, Callable
 import paho.mqtt.client as mqtt
 
 from beambam.config import Creds
+from beambam.paths import config_dir
 
 
 __all__ = [
@@ -166,7 +167,7 @@ class X2DClient:
     # report a meaningful age immediately after a daemon restart instead
     # of always-stale until the first new push arrives. Per-printer file
     # so multi-printer setups don't smash each other's timestamps.
-    _TS_DIR = Path.home() / ".x2d"
+    _TS_DIR = config_dir()
 
     @classmethod
     def _ts_path_for(cls, serial: str) -> Path:

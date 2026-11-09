@@ -8,7 +8,10 @@ Canonical home of the `Creds` dataclass as of v1.2.0. The bridge
 Credentials sources, in priority order:
   1. argparse args (--ip --code --serial --printer)
   2. env vars  X2D_IP / X2D_CODE / X2D_SERIAL  (+ X2D_PRINTER)
-  3. ~/.x2d/credentials INI file:
+  3. the credentials INI file — `beambam.paths.credentials_path()`:
+     $BEAMBAM_CREDS / $X2D_CREDS, else <config dir>/credentials where the
+     config dir is $BEAMBAM_HOME / $X2D_HOME, else ~/.x2d. Env vars may
+     also come from a `.env` file (see `beambam.paths.load_env_files`).
         [printer]                 default section
         ip = 192.168.x.y
         code = 12345678
@@ -25,6 +28,8 @@ import os
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+
+from beambam.paths import credentials_path
 
 
 __all__ = ["Creds"]
@@ -64,7 +69,7 @@ class Creds:
         """Return all `[printer:NAME]` section names in the creds file,
         in declaration order. The plain `[printer]` is reported as ''."""
         if ini_path is None:
-            ini_path = Path.home() / ".x2d" / "credentials"
+            ini_path = credentials_path()
         if not ini_path.exists():
             return []
         cp = configparser.ConfigParser()
@@ -92,7 +97,7 @@ class Creds:
 
         ini_ip = ini_code = ini_serial = ""
         chosen_name = ""
-        ini_path = Path.home() / ".x2d" / "credentials"
+        ini_path = credentials_path()
         if ini_path.exists():
             cp = configparser.ConfigParser()
             cp.read(ini_path)

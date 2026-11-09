@@ -35,10 +35,11 @@ import time
 import uuid
 from pathlib import Path
 from typing import Callable, Iterable
+from beambam.paths import config_path
 
 LOG = logging.getLogger("x2d.queue")
 
-_DEFAULT_PATH = Path.home() / ".x2d" / "queue.json"
+_DEFAULT_PATH = config_path("queue.json")
 
 
 @dataclasses.dataclass

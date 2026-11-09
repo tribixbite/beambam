@@ -36,6 +36,7 @@ import sys
 # which would freeze the binding at module load and dodge the patch.
 from beambam import config as _config
 from beambam import mqtt as _mqtt
+from beambam.paths import config_path
 
 
 def _publish_one(args: argparse.Namespace, payload: dict) -> int:
@@ -64,7 +65,7 @@ def _publish_one(args: argparse.Namespace, payload: dict) -> int:
 def _signing_key_path():
     """Path to the recovered printer-control RSA key (overridable for tests)."""
     from pathlib import Path
-    return Path.home() / ".x2d" / "printer_sign_key.pem"
+    return config_path("printer_sign_key.pem")
 
 
 def _try_cloud_signed(args: argparse.Namespace, payload: dict):
@@ -459,9 +460,9 @@ def cmd_start(args: argparse.Namespace) -> int:
         return rc
     # (3) print again (re-run the last task)
     from pathlib import Path
-    pf = Path.home() / ".x2d" / "printer_project_file.json"
+    pf = config_path("printer_project_file.json")
     if not pf.is_file():
-        last = Path.home() / ".x2d" / "printer_last_task.json"
+        last = config_path("printer_last_task.json")
         hint = (f"        Last print's params are recorded at {last} "
                 f"(run `beambam capture-params`).\n" if last.is_file()
                 else f"        Run `beambam capture-params` to record the last "
@@ -529,12 +530,12 @@ def cmd_key(args: argparse.Namespace) -> int:
                       file=sys.stderr)
             return 1
         print(f"[key] using the only connected adb device: {adb}", file=sys.stderr)
-    cert = getattr(args, "cert", None) or str(Path.home() / ".x2d" / "printer_app_cert.pem")
+    cert = getattr(args, "cert", None) or str(config_path("printer_app_cert.pem"))
     if not Path(cert).is_file():
         print(f"[key] app cert not found at {cert} (capture security."
               f"app_cert_install, or pass --cert)", file=sys.stderr)
         return 1
-    out = str(Path.home() / ".x2d" / "printer_sign_key.pem")
+    out = str(config_path("printer_sign_key.pem"))
     # Poll a short window: the key only appears after Handy connects+signs, so a
     # few retries let the user open the Devices tab while this runs. Override with
     # `--wait <seconds>`.
@@ -559,7 +560,7 @@ def cmd_key(args: argparse.Namespace) -> int:
             x509.load_pem_x509_certificate(Path(cert).read_bytes()).serial_number, "x")
         printer_serial = _config.Creds.resolve(args).serial or os.environ.get("X2D_SERIAL", "")
         cid = mqtt_sign.make_cert_id(serial_hex, printer_serial.replace("GLOF", ""))
-        (Path.home() / ".x2d" / "printer_cert_id.txt").write_text(cid)
+        config_path("printer_cert_id.txt").write_text(cid)
         print(f"[key] OK → {out}\n[key] cert_id → ~/.x2d/printer_cert_id.txt")
     except Exception as e:                                # noqa: BLE001
         print(f"[key] key saved, but cert_id write failed: {e}", file=sys.stderr)

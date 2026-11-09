@@ -36,6 +36,7 @@ import sys
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
+from beambam.paths import credentials_path
 
 
 SSDP_GROUP = "239.255.255.250"
@@ -161,7 +162,7 @@ def discover(timeout: float = 3.0, *,
 
 def write_credentials_section(name: str, printer: FoundPrinter, *,
                               access_code: str,
-                              path: Path = Path.home() / ".x2d" / "credentials") -> bool:
+                              path: Path = credentials_path()) -> bool:
     """Write/update a [printer:NAME] section in ~/.x2d/credentials.
     Returns True on success, False if a section with that NAME already
     exists with different ip/serial (use --force to override — not

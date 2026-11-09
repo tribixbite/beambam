@@ -28,9 +28,10 @@ from pathlib import Path
 from typing import Any, Optional
 
 from beambam import mqtt_sign
+from beambam.paths import config_path
 
-DEFAULT_KEY_PATH = Path.home() / ".x2d" / "printer_sign_key.pem"
-DEFAULT_CERTID_PATH = Path.home() / ".x2d" / "printer_cert_id.txt"
+DEFAULT_KEY_PATH = config_path("printer_sign_key.pem")
+DEFAULT_CERTID_PATH = config_path("printer_cert_id.txt")
 
 
 class CloudPrinter:

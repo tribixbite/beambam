@@ -20,6 +20,7 @@ import argparse
 import configparser
 import json
 from pathlib import Path
+from beambam.paths import config_path, credentials_path
 
 
 def cmd_status(args: argparse.Namespace) -> int:
@@ -132,7 +133,7 @@ def cmd_health(args: argparse.Namespace) -> int:
             _ok("SD card", f"state={sdcard}")
 
     # 7. Bridge daemon socket (if running)
-    sock_path = Path.home() / ".x2d" / "bridge.sock"
+    sock_path = config_path("bridge.sock")
     if sock_path.exists():
         try:
             with _socket.socket(_socket.AF_UNIX,
@@ -869,7 +870,7 @@ def cmd_printers(_args: argparse.Namespace) -> int:
 
     Output is JSON `{"printers": [{"name", "ip", "serial"}, ...]}` so
     MCP / scripts can consume it without re-parsing INI."""
-    ini_path = Path.home() / ".x2d" / "credentials"
+    ini_path = credentials_path()
     out: list[dict] = []
     if ini_path.exists():
         cp = configparser.ConfigParser()

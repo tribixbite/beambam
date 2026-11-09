@@ -39,6 +39,7 @@ import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
+from beambam.paths import config_path
 
 # Bambu has two regional clouds. The login endpoint disambiguates from
 # the email's TLD; users can also force one via X2D_REGION=us|cn.
@@ -65,7 +66,7 @@ REGIONS: dict[str, dict[str, str]] = {
 }
 MQTT_PORT = 8883
 
-SESSION_PATH = Path.home() / ".x2d" / "cloud_session.json"
+SESSION_PATH = config_path("cloud_session.json")
 DEFAULT_TIMEOUT = 15
 
 # Mimic OrcaSlicer's headers — Bambu's API sometimes 403s on bare requests

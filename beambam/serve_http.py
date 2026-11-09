@@ -33,6 +33,7 @@ from dataclasses import asdict
 from pathlib import Path
 from threading import Event, Thread
 from typing import TYPE_CHECKING, Any, Callable
+from beambam.paths import config_path
 
 if TYPE_CHECKING:                       # forward-ref types only, no runtime import
     from beambam.state_hub import StateHub
@@ -497,7 +498,7 @@ def _serve_http(bind: str,
                 # List every print-history snapshot harvested into
                 # ~/.x2d/snapshots/ (populated by `beambam fcm-harvest`).
                 # Each entry has print_id + jpg_size + sidecar metadata.
-                snap_dir = Path.home() / ".x2d" / "snapshots"
+                snap_dir = config_path("snapshots")
                 hits = []
                 if snap_dir.is_dir():
                     for js in sorted(snap_dir.glob("*.json"),
@@ -524,7 +525,7 @@ def _serve_http(bind: str,
                 pid = path[len("/history/"):-len(".jpg")]
                 if not pid.isdigit():
                     self.send_response(400); self.end_headers(); return
-                snap_dir = Path.home() / ".x2d" / "snapshots"
+                snap_dir = config_path("snapshots")
                 jpg = snap_dir / f"{pid}.jpg"
                 if not jpg.is_file():
                     self.send_response(404); self.end_headers(); return
@@ -848,7 +849,7 @@ def _serve_http(bind: str,
                     self._send_json({"error":
                         "short read; expected %d, got %d" % (cl, len(body))},
                                       status=400); return
-                upload_dir = Path.home() / ".x2d" / "uploads"
+                upload_dir = config_path("uploads")
                 upload_dir.mkdir(parents=True, exist_ok=True)
                 stamped = f"{int(time.time())}_{fname}"
                 stl_path = upload_dir / stamped

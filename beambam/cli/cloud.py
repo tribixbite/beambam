@@ -16,6 +16,7 @@ import argparse
 import json
 import sys
 from typing import TYPE_CHECKING
+from beambam.paths import credentials_path
 
 if TYPE_CHECKING:
     import paho.mqtt.client as mqtt
@@ -1166,7 +1167,7 @@ def cmd_cloud_get_access_code(args: argparse.Namespace) -> int:
     print(code)
 
     if args.persist:
-        ini_path = Path.home() / ".x2d" / "credentials"
+        ini_path = credentials_path()
         ini_path.parent.mkdir(parents=True, exist_ok=True)
         cp = configparser.ConfigParser()
         if ini_path.exists():

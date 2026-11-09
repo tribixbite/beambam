@@ -211,6 +211,7 @@ from beambam.cli.daemon import (
 from beambam.cli.lan import (
     cmd_upload, cmd_print, cmd_slice_print, cmd_files,
 )
+from beambam.paths import config_path
 
 def main() -> int:
     # On Windows the default console codepage (cp1252) can't encode the
@@ -1256,7 +1257,7 @@ def main() -> int:
     sv.add_argument(
         "--sock",
         default=os.environ.get("X2D_BRIDGE_SOCK",
-                               str(Path.home() / ".x2d" / "bridge.sock")),
+                               str(config_path("bridge.sock"))),
         help="Unix socket path (default $X2D_BRIDGE_SOCK or "
              "~/.x2d/bridge.sock)",
     )

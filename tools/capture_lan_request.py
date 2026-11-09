@@ -23,13 +23,14 @@ import ssl
 import sys
 import time
 from pathlib import Path
+from beambam.paths import config_path
 
 
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--timeout", type=float, default=900.0,
                     help="seconds to listen (default 900 = 15 min)")
-    ap.add_argument("--out", default=str(Path.home() / ".x2d" / "captured_project_file.json"))
+    ap.add_argument("--out", default=str(config_path("captured_project_file.json")))
     ap.add_argument("--all-forever", action="store_true",
                     help="keep listening after a project_file (capture every command)")
     args = ap.parse_args()

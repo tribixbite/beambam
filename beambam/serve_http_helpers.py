@@ -31,6 +31,7 @@ import threading
 import time
 from pathlib import Path
 from typing import Any
+from beambam.paths import config_path
 
 
 def _is_loopback(host: str) -> bool:
@@ -209,7 +210,7 @@ def _format_prometheus_metrics(
     return body.encode("utf-8")
 
 
-_ACCESS_LOG_PATH = Path.home() / ".x2d" / "access.log"
+_ACCESS_LOG_PATH = config_path("access.log")
 _ACCESS_LOG_MAX_BYTES = 1 * 1024 * 1024  # 1 MiB
 _access_log_lock = threading.Lock()
 

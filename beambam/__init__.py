@@ -10,8 +10,9 @@ Quickstart
 
     pip install beambam
 
-    # Configure once in ~/.x2d/credentials (or env vars X2D_IP, X2D_CODE,
-    # X2D_SERIAL).
+    # Configure once: `beambam init`, or ~/.x2d/credentials, or X2D_IP /
+    # X2D_CODE / X2D_SERIAL as env vars or in a .env file (./.env or
+    # ~/.x2d/.env). See beambam.paths.
     beambam status
     beambam print mymodel.gcode.3mf
 
@@ -39,8 +40,14 @@ from importlib import metadata as _metadata
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from beambam.config import Creds
-from beambam.printer import Printer
+from beambam.paths import load_env_files
+
+# Pull X2D_* / BEAMBAM_* settings from ./.env and <config dir>/.env before
+# any module reads the environment (real env vars always win).
+load_env_files()
+
+from beambam.config import Creds  # noqa: E402  (must follow load_env_files)
+from beambam.printer import Printer  # noqa: E402
 
 try:
     __version__ = _metadata.version("beambam")

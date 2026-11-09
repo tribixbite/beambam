@@ -35,10 +35,11 @@ import uuid
 from dataclasses import dataclass, asdict, field
 from pathlib import Path
 from typing import Callable, Iterable
+from beambam.paths import config_path
 
 LOG = logging.getLogger("x2d.timelapse")
 
-_DEFAULT_DIR = Path.home() / ".x2d" / "timelapses"
+_DEFAULT_DIR = config_path("timelapses")
 
 
 @dataclass

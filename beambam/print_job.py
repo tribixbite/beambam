@@ -29,6 +29,7 @@ import time
 import zipfile as _zf
 from pathlib import Path
 from typing import TYPE_CHECKING
+from beambam.paths import config_path
 
 if TYPE_CHECKING:
     from beambam.mqtt import X2DClient
@@ -83,7 +84,7 @@ def _signing_user_id() -> str:
     import json
     import os
     try:
-        j = json.loads((Path.home() / ".x2d" / "cloud_session.json").read_text())
+        j = json.loads(config_path("cloud_session.json").read_text())
         if j.get("user_id"):
             return str(j["user_id"])
     except Exception:                                       # noqa: BLE001
@@ -101,8 +102,8 @@ def _publish_signed_or_legacy(client: "X2DClient", payload: dict) -> None:
     legacy `X2DClient.publish` path signs with the leaked Bambu Connect cert,
     which the firmware rejects for `print.*` (err 84033545). Falls back to it
     only when the recovered key is absent (older firmware)."""
-    key_path = Path.home() / ".x2d" / "printer_sign_key.pem"
-    cid_path = Path.home() / ".x2d" / "printer_cert_id.txt"
+    key_path = config_path("printer_sign_key.pem")
+    cid_path = config_path("printer_cert_id.txt")
     # Take the signed-raw path only when the recovered key is present AND the
     # client exposes a real paho `.client` (raw publish). Test/simulate clients
     # capture via their high-level `publish()` and have no `.client`.
@@ -145,8 +146,8 @@ def request_auto_nozzle_mapping(client: "X2DClient", group_info: list[dict], *,
     """
     import json
     import time
-    key_path = Path.home() / ".x2d" / "printer_sign_key.pem"
-    cid_path = Path.home() / ".x2d" / "printer_cert_id.txt"
+    key_path = config_path("printer_sign_key.pem")
+    cid_path = config_path("printer_cert_id.txt")
     if not (key_path.is_file() and cid_path.is_file()
             and getattr(client, "client", None) is not None):
         return None
@@ -417,7 +418,7 @@ def _validate_ams_slot(state: dict, ams_global_slot: int,
                 f"swap spool).")
 
 
-_DEVICE_CERT_PATH = Path.home() / ".x2d" / "printer_device_cert.pem"
+_DEVICE_CERT_PATH = config_path("printer_device_cert.pem")
 
 
 def _device_url_enc(url: str, device_cert_path: Path | None = None) -> str:

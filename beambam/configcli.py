@@ -29,12 +29,12 @@ import os
 import sys
 from pathlib import Path
 
+from beambam.paths import credentials_path
 
-CREDS_PATH = Path(
-    os.environ.get("X2D_CREDS")
-    or os.environ.get("BEAMBAM_CREDS")
-    or (Path.home() / ".x2d" / "credentials")
-)
+
+# Same resolution as beambam.config.Creds (they used to disagree: this
+# module honoured $X2D_CREDS while Creds always read ~/.x2d/credentials).
+CREDS_PATH = credentials_path()
 
 
 # ----- core helpers -------------------------------------------------------

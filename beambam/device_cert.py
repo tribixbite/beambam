@@ -24,12 +24,13 @@ import re
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional
+from beambam.paths import config_path
 
 if TYPE_CHECKING:
     from beambam.mqtt import X2DClient
 
-DEFAULT_DEVICE_CERT_PATH = Path.home() / ".x2d" / "printer_device_cert.pem"
-DEFAULT_CERTID_PATH = Path.home() / ".x2d" / "printer_cert_id.txt"
+DEFAULT_DEVICE_CERT_PATH = config_path("printer_device_cert.pem")
+DEFAULT_CERTID_PATH = config_path("printer_cert_id.txt")
 
 
 def _glof_cn(cert_id_path: Path | str = DEFAULT_CERTID_PATH,

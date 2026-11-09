@@ -21,9 +21,10 @@ from __future__ import annotations
 import base64
 from pathlib import Path
 from typing import Any, Optional
+from beambam.paths import config_path
 
-DEFAULT_KEY_PATH = Path.home() / ".x2d" / "printer_sign_key.pem"
-DEFAULT_CERTID_PATH = Path.home() / ".x2d" / "printer_cert_id.txt"
+DEFAULT_KEY_PATH = config_path("printer_sign_key.pem")
+DEFAULT_CERTID_PATH = config_path("printer_cert_id.txt")
 
 
 def device_security_sign(private_key, ts_ms: int | str) -> str:

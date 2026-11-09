@@ -34,6 +34,7 @@ import urllib.request
 from io import BytesIO
 from pathlib import Path
 from typing import Literal
+from beambam.paths import config_path
 
 
 # ----- backend detection --------------------------------------------------
@@ -282,8 +283,8 @@ def add_subparser(sub: "argparse._SubParsersAction") -> argparse.ArgumentParser:
     return p
 
 
-_CAM_PID_FILE = Path.home() / ".x2d" / "cam.pid"
-_CAM_LOG_FILE = Path.home() / ".x2d" / "cam.log"
+_CAM_PID_FILE = config_path("cam.pid")
+_CAM_LOG_FILE = config_path("cam.log")
 
 
 def _do_snap(url: str, out_path: str | None) -> int:
