@@ -51,46 +51,52 @@ def test_disconnect_idempotent_when_never_connected():
     p.disconnect()                                       # again, still no error
 
 
+# The print-control verbs (pause/resume/stop/gcode/set_temp/home) route
+# through beambam.commands.send_command — print.* signed with the recovered
+# key — NOT the leaked-cert X2DClient.publish. These tests patch send_command
+# and read the payload it was handed (send_command(mqtt, payload, ...)).
+
+
+def _sent_payloads(send_mock):
+    return [c.args[1] for c in send_mock.call_args_list]
+
+
 def test_pause_resume_stop_call_publish():
-    """The three print-control verbs publish to the same MQTT client."""
+    """The three print-control verbs go through send_command in order."""
     p = Printer(creds=FAKE)
-    fake_client = MagicMock()
-    p._client = fake_client                              # bypass lazy connect
-    p.pause();  p.resume();  p.stop()
-    assert fake_client.publish.call_count == 3
-    payloads = [c.args[0]["print"]["command"] for c in fake_client.publish.call_args_list]
+    p._client = MagicMock()                              # bypass lazy connect
+    with patch("beambam.commands.send_command", return_value=None) as send:
+        p.pause();  p.resume();  p.stop()
+    assert send.call_count == 3
+    payloads = [pl["print"]["command"] for pl in _sent_payloads(send)]
     assert payloads == ["pause", "resume", "stop"]
 
 
 def test_gcode_appends_newline():
     p = Printer(creds=FAKE)
-    fake_client = MagicMock()
-    p._client = fake_client
-    p.gcode("G28 Z")
-    payload = fake_client.publish.call_args.args[0]
-    assert payload["print"]["param"] == "G28 Z\n"
-    p.gcode("M104 S210\n")                               # already terminated
-    payload = fake_client.publish.call_args.args[0]
-    assert payload["print"]["param"] == "M104 S210\n"   # not doubled
+    p._client = MagicMock()
+    with patch("beambam.commands.send_command", return_value=None) as send:
+        p.gcode("G28 Z")
+        assert _sent_payloads(send)[-1]["print"]["param"] == "G28 Z\n"
+        p.gcode("M104 S210\n")                           # already terminated
+        assert _sent_payloads(send)[-1]["print"]["param"] == "M104 S210\n"
 
 
 def test_set_temp_emits_one_gcode_per_axis_set():
     p = Printer(creds=FAKE)
-    fake_client = MagicMock()
-    p._client = fake_client
-    p.set_temp(nozzle=215, bed=60, chamber=45)
-    cmds = [c.args[0]["print"]["param"].strip()
-            for c in fake_client.publish.call_args_list]
+    p._client = MagicMock()
+    with patch("beambam.commands.send_command", return_value=None) as send:
+        p.set_temp(nozzle=215, bed=60, chamber=45)
+    cmds = [pl["print"]["param"].strip() for pl in _sent_payloads(send)]
     assert cmds == ["M104 S215", "M140 S60", "M141 S45"]
 
 
 def test_set_temp_skips_unset_axes():
     p = Printer(creds=FAKE)
-    fake_client = MagicMock()
-    p._client = fake_client
-    p.set_temp(bed=60)
-    cmds = [c.args[0]["print"]["param"].strip()
-            for c in fake_client.publish.call_args_list]
+    p._client = MagicMock()
+    with patch("beambam.commands.send_command", return_value=None) as send:
+        p.set_temp(bed=60)
+    cmds = [pl["print"]["param"].strip() for pl in _sent_payloads(send)]
     assert cmds == ["M140 S60"]
 
 
@@ -106,12 +112,12 @@ def test_chamber_light_on_off():
 
 def test_home_default_xyz():
     p = Printer(creds=FAKE)
-    fake_client = MagicMock()
-    p._client = fake_client
-    p.home()
-    assert fake_client.publish.call_args.args[0]["print"]["param"].strip() == "G28 X Y Z"
-    p.home(axes="Z")
-    assert fake_client.publish.call_args.args[0]["print"]["param"].strip() == "G28 Z"
+    p._client = MagicMock()
+    with patch("beambam.commands.send_command", return_value=None) as send:
+        p.home()
+        assert _sent_payloads(send)[-1]["print"]["param"].strip() == "G28 X Y Z"
+        p.home(axes="Z")
+        assert _sent_payloads(send)[-1]["print"]["param"].strip() == "G28 Z"
 
 
 def test_upload_delegates_to_ftps_helper(tmp_path):
