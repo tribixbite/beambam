@@ -99,14 +99,27 @@ def _execute_tool(name: str, arguments: dict) -> str:
 # no negation: a bare `\bstop\b` used to abort the print on "don't stop
 # the print" or "why did it stop?". The verb must open the sentence,
 # optionally after politeness / "can you" / an interjection.
-_CONTROL_VERBS: list[tuple[str, str]] = [
-    # (verb regex, MCP tool name)
-    (r"pause",                                   "pause"),
-    (r"resume|continue|unpause",                 "resume"),
-    (r"stop|abort|cancel|kill",                  "stop"),
-    (r"home(?:\s+(?:all\s+)?(?:the\s+)?axes)?|g28", "home"),
-    (r"(?:auto[- ]?)?level|g29|run\s+(?:a\s+)?bed\s+level(?:ing)?", "level"),
+# The whole first sentence must be the command: verb, then optionally (or,
+# for ambiguous verbs, mandatorily) an object that fits it, then nothing but
+# "please"/"now". A verb merely opening the sentence fired the tool on chat:
+# "Home Assistant integration help" -> home, "cancel that" / "kill the
+# lights" / "stop worrying about the temp" -> stop (irreversible),
+# "continue explaining" -> resume, "level of the filament?" -> level.
+_PRINT_OBJ = (r"(?:it|everything|(?:the\s+|this\s+|my\s+|current\s+)*"
+              r"(?:print(?:ing)?(?:\s+job)?|job|printer))")
+_HOME_OBJ = (r"(?:it|(?:all\s+)?(?:the\s+)?axes|x\s*y\s*z|(?:the\s+)?printer"
+             r"|(?:the\s+)?(?:print\s*)?head)")
+# (verb regex, object regex or None, object required?, MCP tool name)
+_CONTROL_VERBS: list[tuple[str, str | None, bool, str]] = [
+    (r"pause",                   _PRINT_OBJ, False, "pause"),
+    (r"resume|unpause",          _PRINT_OBJ, False, "resume"),
+    (r"continue",                _PRINT_OBJ, True,  "resume"),   # "continue explaining"
+    (r"stop|abort|cancel|kill",  _PRINT_OBJ, False, "stop"),
+    (r"home|g28",                _HOME_OBJ,  False, "home"),
+    (r"g29|auto[- ]?level(?:\s+the\s+bed)?|level\s+(?:the\s+)?bed"
+     r"|run\s+(?:a\s+)?bed\s+level(?:ing)?", None, False, "level"),
 ]
+_COMMAND_TAIL = r"(?:\s+(?:please|now|for\s+me))?\s*$"
 _IMPERATIVE_PREFIX = (
     r"^\s*(?:(?:ok(?:ay)?|hey|yes|yeah|now|right)[\s,!.]+)*"
     r"(?:please\s+|pls\s+|(?:can|could|would|will)\s+you\s+(?:please\s+)?"
@@ -138,8 +151,14 @@ def _control_intent(msg: str) -> str | None:
     if _NEGATION_RE.search(msg):
         return None
     first = re.split(r"[.!?;\n]", msg, maxsplit=1)[0]
-    for verb, tool in _CONTROL_VERBS:
-        if re.match(_IMPERATIVE_PREFIX + rf"(?:{verb})\b", first):
+    for verb, obj, required, tool in _CONTROL_VERBS:
+        if obj is None:
+            tail = ""
+        elif required:
+            tail = rf"\s+{obj}"
+        else:
+            tail = rf"(?:\s+{obj})?"
+        if re.match(_IMPERATIVE_PREFIX + rf"(?:{verb})\b{tail}{_COMMAND_TAIL}", first):
             return tool
     return None
 

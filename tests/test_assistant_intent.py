@@ -30,6 +30,10 @@ from runtime.assistant.router import _local_route  # noqa: E402
     ("G28", "home"),
     ("level the bed", "level"),
     ("go ahead and run a bed leveling", "level"),
+    ("continue the print", "resume"),
+    ("cancel the print please", "stop"),
+    ("home", "home"),
+    ("auto-level the bed", "level"),
 ])
 def test_imperative_control_routes(message, tool):
     assert _local_route(message) == (tool, {})
@@ -51,6 +55,15 @@ def test_imperative_control_routes(message, tool):
     "I paused it earlier",
     "no, don't resume",
     "stop. no wait, don't",
+    # chat that merely starts with a control verb (review finding)
+    "Home Assistant integration help",
+    "cancel that",
+    "kill the lights",
+    "stop worrying about the temp",
+    "continue explaining",
+    "level of the filament?",
+    "stop the music",
+    "pause for a second and tell me the temp",
 ])
 def test_negated_or_descriptive_control_does_not_act(message):
     routed = _local_route(message)
