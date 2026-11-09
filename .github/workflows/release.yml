@@ -25,7 +25,11 @@ on:
       dry_run:
         description: "Skip the upload step (test the build only)"
         type: boolean
-        default: false
+        # Default TRUE: a careless manual run builds but does NOT publish.
+        # Real publishing happens on `release: published` (which runs the
+        # tag/version check below). To publish from a manual run, untick
+        # this deliberately.
+        default: true
 
 permissions:
   contents: read
@@ -45,8 +49,15 @@ jobs:
           pip install dist/beambam-*.whl
           installed=$(beambam --version)
           echo "$installed"
-          # Compare against the release tag (strip leading 'v').
+          # Compare against the release tag (strip leading 'v'). A real
+          # publish (release event, or a manual run with dry_run unticked)
+          # MUST carry a tag that matches the built version.
           tag="${{ github.event.release.tag_name }}"
+          publishing="${{ github.event_name == 'release' || inputs.dry_run == false }}"
+          if [ -z "$tag" ] && [ "$publishing" = "true" ]; then
+            echo "::error::refusing to publish without a release tag to verify the version against"
+            exit 1
+          fi
           if [ -n "$tag" ]; then
             expected="beambam ${tag#v}"
             [ "$installed" = "$expected" ] || {
