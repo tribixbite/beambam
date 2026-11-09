@@ -42,8 +42,11 @@
       <h2>Camera</h2>
       <div class="camera-tabs">
         <button class="tab active" data-mode="snapshot">snapshot</button>
-        <button class="tab" data-mode="hls">HLS</button>
-        <button class="tab" data-mode="webrtc">WebRTC</button>
+        <!-- HLS / WebRTC are served by the camera and webrtc daemons, not
+             this one (they answered 404 here); hidden until the daemon
+             proxies them. See the TODO(camera) in index.js. -->
+        <button class="tab" data-mode="hls" hidden>HLS</button>
+        <button class="tab" data-mode="webrtc" hidden>WebRTC</button>
       </div>
       <div class="camera-frame">
         <img id="cam-img" alt="chamber camera">

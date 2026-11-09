@@ -468,8 +468,10 @@
     camVideo.removeAttribute("src");
     camVideo.srcObject = null;
     if (mode === "snapshot") {
+      // The daemon serves the latest frame at /snapshot.jpg (a proxy
+      // of the camera daemon's /cam.jpg); it has no /cam.jpg itself.
       const tick = () => {
-        camImg.src = "/cam.jpg?t=" + Date.now();
+        camImg.src = "/snapshot.jpg?t=" + Date.now();
       };
       tick();
       snapTimer = setInterval(tick, 1000);
@@ -484,8 +486,16 @@
       startWebrtc().catch((e) => log("webrtc: " + e.message));
     }
   }
-  document.querySelectorAll(".tab").forEach((t) =>
-    t.addEventListener("click", () => setCameraMode(t.dataset.mode)));
+  // Only modes the page's own daemon serves get a working tab. The HLS
+  // (/cam.m3u8) and WebRTC (/cam.webrtc/offer) tabs are hidden in
+  // index.html: those routes live on the camera / webrtc daemons, and
+  // the HTTP daemon answered them 404.
+  // TODO(camera): re-enable once the daemon proxies /cam.m3u8 + segments
+  // and /cam.webrtc/offer (or advertises the camera daemon's URL).
+  document.querySelectorAll(".tab").forEach((t) => {
+    if (t.hidden) return;
+    t.addEventListener("click", () => setCameraMode(t.dataset.mode));
+  });
 
   async function startWebrtc() {
     webrtcPC = new RTCPeerConnection({
@@ -558,11 +568,13 @@
     li.className = job.status;
     li.draggable = (job.status === "pending");
     li.dataset.id = job.id;
+    // Every interpolated field is escaped: job records come from the
+    // queue file / HTTP and must never be parsed as markup.
     li.innerHTML =
-      `<span class="pill">${job.printer || "default"}</span>` +
+      `<span class="pill">${escapeText(job.printer || "default")}</span>` +
       `<span class="label" title="${escapeAttr(job.gcode)}">${escapeText(job.label || job.gcode)}</span>` +
-      `<span class="pill">slot ${job.slot}</span>` +
-      `<span class="pill">${job.status}</span>` +
+      `<span class="pill">slot ${escapeText(job.slot)}</span>` +
+      `<span class="pill">${escapeText(job.status)}</span>` +
       `<button class="cancel" type="button" title="cancel">×</button>`;
     li.querySelector("button.cancel").addEventListener("click", () => queueCancel(job.id));
     li.addEventListener("dragstart", (e) => {
@@ -616,12 +628,14 @@
     pollQueue();
   }
 
+  // HTML-escape for text content (handles null/undefined/numbers).
   function escapeText(s) {
     const d = document.createElement("div");
-    d.textContent = s; return d.innerHTML;
+    d.textContent = s == null ? "" : String(s); return d.innerHTML;
   }
+  // HTML-escape for a double- or single-quoted attribute value.
   function escapeAttr(s) {
-    return String(s).replace(/[&<>"']/g, c => ({
+    return String(s == null ? "" : s).replace(/[&<>"']/g, c => ({
       "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"
     }[c]));
   }
@@ -655,7 +669,9 @@
       _tlJobs.forEach(j => {
         const o = document.createElement("option");
         o.value = `${j.printer}/${j.job_id}`;
-        o.textContent = `${j.printer}: ${j.subtask_name || j.job_id} ` +
+        // "_default" is the recorder's slug for the unnamed printer.
+        const who = j.printer === "_default" ? "(default)" : j.printer;
+        o.textContent = `${who}: ${j.subtask_name || j.job_id} ` +
           `(${j.frame_count} frames` +
           (j.mp4_ready ? ", MP4" : "") + ")";
         $tlSelect.appendChild(o);
@@ -770,7 +786,7 @@
     const div = document.createElement("div");
     div.className = "ass-msg " + role;
     div.innerHTML =
-      `<span class="who">${role}</span>` +
+      `<span class="who">${escapeText(role)}</span>` +
       `<span class="body"></span>`;
     div.querySelector(".body").textContent = text;
     if (opts && opts.toolCalls && opts.toolCalls.length) {
@@ -839,7 +855,7 @@
         if (!r.ok) {
           $worst.textContent = "—";
           $worst.className = "pill muted";
-          $list.innerHTML = `<div class="muted small">/doctor → ${r.status}</div>`;
+          $list.innerHTML = `<div class="muted small">/doctor → ${escapeText(r.status)}</div>`;
           return;
         }
         const data = await r.json();
@@ -868,7 +884,7 @@
           $list.innerHTML = '<div class="muted small">no checks reported</div>';
         }
       } catch (e) {
-        $list.innerHTML = `<div class="muted small">/doctor unreachable (${e.message})</div>`;
+        $list.innerHTML = `<div class="muted small">/doctor unreachable (${escapeText(e.message)})</div>`;
       }
     }
 
@@ -911,7 +927,7 @@
       $drop.classList.remove("error");
       $rep.hidden = true;
       $rep.innerHTML = "";
-      $drop.innerHTML = `<span>analyzing <b>${file.name}</b> (${fmtBytes(file.size)})…</span>`;
+      $drop.innerHTML = `<span>analyzing <b>${escapeText(file.name)}</b> (${fmtBytes(file.size)})…</span>`;
       try {
         const body = await file.arrayBuffer();
         const r = await fetch("/analyze", {
@@ -922,18 +938,18 @@
         const data = await r.json();
         if (!r.ok) {
           $drop.classList.add("error");
-          $drop.innerHTML = `<span>analyze failed (${r.status}): ${data.error || "unknown"}</span>`;
+          $drop.innerHTML = `<span>analyze failed (${escapeText(r.status)}): ${escapeText(data.error || "unknown")}</span>`;
           return;
         }
         renderReport(data, file.name);
       } catch (e) {
         $drop.classList.add("error");
-        $drop.innerHTML = `<span>request failed: ${e.message}</span>`;
+        $drop.innerHTML = `<span>request failed: ${escapeText(e.message)}</span>`;
       }
     }
 
     function renderReport(rep, filename) {
-      $drop.innerHTML = `<span>analyzed <b>${filename}</b> — drop another to replace</span>`;
+      $drop.innerHTML = `<span>analyzed <b>${escapeText(filename)}</b> — drop another to replace</span>`;
       $rep.innerHTML = "";
       $rep.hidden = false;
       const rows = [];
