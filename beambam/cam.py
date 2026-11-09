@@ -284,6 +284,42 @@ def add_subparser(sub: "argparse._SubParsersAction") -> argparse.ArgumentParser:
 
 
 _CAM_PID_FILE = config_path("cam.pid")
+
+
+def _pid_alive(pid: int) -> bool:
+    """Whether a process exists, WITHOUT signalling it.
+
+    On Windows `os.kill(pid, 0)` is TerminateProcess (any signal value
+    kills), so the old liveness probe killed the running proxy and then
+    reported it "already running". Use OpenProcess + GetExitCodeProcess
+    there; `os.kill(pid, 0)` is a true probe on POSIX.
+    """
+    if pid <= 0:
+        return False
+    if os.name == "nt":
+        import ctypes
+        from ctypes import wintypes
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.OpenProcess.restype = wintypes.HANDLE
+        handle = kernel32.OpenProcess(0x1000, False, pid)   # QUERY_LIMITED_INFORMATION
+        if not handle:
+            return False
+        try:
+            code = wintypes.DWORD()
+            if not kernel32.GetExitCodeProcess(handle, ctypes.byref(code)):
+                return False
+            return code.value == 259                       # STILL_ACTIVE
+        finally:
+            kernel32.CloseHandle(handle)
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True                                         # exists, not ours
+    except OSError:
+        return False
+    return True
 _CAM_LOG_FILE = config_path("cam.log")
 
 
@@ -309,15 +345,7 @@ def _cmd_cam_start(args: argparse.Namespace) -> int:
     if _CAM_PID_FILE.exists():
         try:
             old_pid = int(_CAM_PID_FILE.read_text().strip())
-            # /proc/<pid> check works on Linux/Android. On macOS we
-            # fall back to os.kill(pid, 0) which raises ESRCH if dead.
-            alive = False
-            try:
-                os.kill(old_pid, 0)
-                alive = True
-            except OSError:
-                alive = False
-            if alive:
+            if _pid_alive(old_pid):
                 print(f"cam proxy already running (pid {old_pid}); "
                       f"use `beambam cam stop` first", file=sys.stderr)
                 return 1
@@ -345,11 +373,17 @@ def _cmd_cam_start(args: argparse.Namespace) -> int:
     _CAM_PID_FILE.parent.mkdir(parents=True, exist_ok=True)
     log_fh = _CAM_LOG_FILE.open("ab")
     try:
+        # Detach from this console: a new session on POSIX, a new
+        # process group without a window on Windows (where
+        # start_new_session is ignored).
+        detach: dict = ({"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP
+                                          | subprocess.CREATE_NO_WINDOW}
+                        if os.name == "nt" else {"start_new_session": True})
         proc = subprocess.Popen(
             [sys.executable, "-m", "beambam.cli", *argv],
             stdout=log_fh, stderr=subprocess.STDOUT,
             stdin=subprocess.DEVNULL,
-            start_new_session=True,
+            **detach,
         )
     finally:
         log_fh.close()
@@ -371,11 +405,33 @@ def _cmd_cam_stop(args: argparse.Namespace) -> int:
         pid = int(_CAM_PID_FILE.read_text().strip())
     except (OSError, ValueError) as e:
         print(f"bad PID file: {e}", file=sys.stderr); return 1
-    sig_name = args.signal.upper().lstrip("SIG")
+    # removeprefix, not lstrip: lstrip("SIG") strips characters, so
+    # "INT" became "NT" and `--signal INT` was rejected.
+    sig_name = args.signal.upper().removeprefix("SIG")
     try:
         sig = getattr(signal, "SIG" + sig_name)
     except AttributeError:
         print(f"unknown signal: {args.signal!r}", file=sys.stderr); return 2
+    if os.name == "nt":
+        # No POSIX signals on Windows: end the proxy AND its ffmpeg child
+        # (os.kill would orphan ffmpeg, which keeps pulling the stream).
+        import subprocess
+        if not _pid_alive(pid):
+            print(f"pid {pid} not running (stale PID file); cleaning up",
+                  file=sys.stderr)
+        else:
+            r = subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"],
+                               capture_output=True, text=True)
+            if r.returncode != 0:
+                print(f"can't stop pid {pid}: {r.stderr.strip() or r.stdout.strip()}",
+                      file=sys.stderr)
+                return 1
+            print(f"stopped pid {pid} (and its children)")
+        try:
+            _CAM_PID_FILE.unlink()
+        except OSError:
+            pass
+        return 0
     try:
         os.kill(pid, sig)
     except ProcessLookupError:

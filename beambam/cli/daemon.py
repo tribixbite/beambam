@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+from typing import TypedDict
 
 
 def cmd_daemon(args: argparse.Namespace) -> int:
@@ -306,6 +307,7 @@ def cmd_camera(args: argparse.Namespace) -> int:
     import subprocess as _sp
     import sys
     import tempfile as _tempfile
+    from urllib.parse import urlsplit
     import time
     from pathlib import Path
     from threading import Event, Lock, Thread
@@ -319,6 +321,10 @@ def cmd_camera(args: argparse.Namespace) -> int:
     from beambam.presets import _x2d_search_roots
 
     creds = Creds.resolve(args)
+    # Never block on stderr (see NonBlockingLog): a parent holding our
+    # stderr pipe without reading it used to hang every request.
+    from beambam.pipe_reader import NonBlockingLog
+    _log = NonBlockingLog(sys.stderr)
 
     # Pre-flight: poke the printer's state to confirm RTSP is enabled.
     if not args.skip_check:
@@ -330,7 +336,7 @@ def cmd_camera(args: argparse.Namespace) -> int:
             ipcam = state.get("print", {}).get("ipcam", {})
             rtsp_url = ipcam.get("rtsp_url", "disable")
             if rtsp_url == "disable":
-                print(
+                _log(
                     "[camera] printer reports "
                     "ipcam.rtsp_url=\"disable\".\n"
                     "         Enable LAN-mode liveview on the "
@@ -344,17 +350,17 @@ def cmd_camera(args: argparse.Namespace) -> int:
                 return 2
             elif (rtsp_url and not rtsp_url.startswith(
                     ("rtsp://", "rtsps://"))):
-                print(f"[camera] unexpected ipcam.rtsp_url: "
+                _log(f"[camera] unexpected ipcam.rtsp_url: "
                       f"{rtsp_url}", file=sys.stderr)
                 return 2
-            print(f"[camera] printer rtsp_url=ok "
+            _log(f"[camera] printer rtsp_url=ok "
                   f"({rtsp_url[:40]}...)", file=sys.stderr)
         except Exception as e:
-            print(f"[camera] state-pre-flight failed: {e} — "
+            _log(f"[camera] state-pre-flight failed: {e} — "
                   f"continuing anyway", file=sys.stderr)
 
     if shutil.which("ffmpeg") is None:
-        print("[camera] ffmpeg not installed. "
+        _log("[camera] ffmpeg not installed. "
               "`pkg install ffmpeg` first.", file=sys.stderr)
         return 2
 
@@ -367,7 +373,10 @@ def cmd_camera(args: argparse.Namespace) -> int:
     # every HTTP client reads the latest. We never queue history — old
     # frames are dropped, viewers see live.
     state_lock = Lock()
-    latest_frame = {"data": b"", "ts": 0.0}
+    class _Frame(TypedDict):
+        data: bytes
+        ts: float
+    latest_frame: _Frame = {"data": b"", "ts": 0.0}
     # Two events:
     #   global_stop  — SIGINT/SIGTERM only; tears down the whole daemon
     #   local_stop   — per-pump-instance; the supervisor sets this when
@@ -378,7 +387,13 @@ def cmd_camera(args: argparse.Namespace) -> int:
     # HLS output dir (item #20). Each segment is ~2s of mpegts; we keep
     # a sliding window of 6 (12s of buffer) and let ffmpeg auto-delete
     # older ones via -hls_flags delete_segments. Cleaned up at exit.
-    hls_dir = Path(_tempfile.mkdtemp(prefix="x2d-hls-"))
+    hls_dir = Path(_tempfile.gettempdir()) / f"beambam-hls-{args.bind.rpartition(':')[2]}"
+    hls_dir.mkdir(parents=True, exist_ok=True)
+    for stale in [*hls_dir.glob("cam*.ts"), *hls_dir.glob("cam.m3u8*")]:
+        try:
+            stale.unlink()
+        except OSError:
+            pass
     hls_playlist = hls_dir / "cam.m3u8"
     hls_segment_pattern = hls_dir / "cam%04d.ts"
 
@@ -389,6 +404,10 @@ def cmd_camera(args: argparse.Namespace) -> int:
                 "ffmpeg",
                 "-loglevel", "error",
                 "-rtsp_transport", "tcp",
+                # Socket I/O timeout (µs): without it a stalled RTSPS
+                # stream never EOFs, so the pump never reconnects and
+                # viewers freeze on the last frame.
+                "-timeout", "10000000",
                 "-i", rtsp_url_full,
                 # Output 1: MJPEG-on-stdout, consumed by the JPEG
                 # buffer below for /cam.mjpeg + /cam.jpg.
@@ -413,7 +432,7 @@ def cmd_camera(args: argparse.Namespace) -> int:
                 "-hls_segment_filename", str(hls_segment_pattern),
                 str(hls_playlist),
             ]
-            print(f"[camera] spawning ffmpeg (port {args.port})",
+            _log(f"[camera] spawning ffmpeg (port {args.port})",
                   file=sys.stderr)
             proc = _sp.Popen(cmd, stdout=_sp.PIPE, stderr=_sp.PIPE,
                              close_fds=True)
@@ -439,7 +458,7 @@ def cmd_camera(args: argparse.Namespace) -> int:
                     if chunk is None:
                         continue
                     if not chunk:
-                        print(f"[camera] ffmpeg eof; stderr tail: "
+                        _log(f"[camera] ffmpeg eof; stderr tail: "
                               f"{err.tail(400, wait=2.0)}",
                               file=sys.stderr)
                         break
@@ -469,7 +488,7 @@ def cmd_camera(args: argparse.Namespace) -> int:
                     pass
             if local_stop.is_set() or global_stop.is_set():
                 break
-            print(f"[camera] reconnecting in {backoff:.1f}s",
+            _log(f"[camera] reconnecting in {backoff:.1f}s",
                   file=sys.stderr)
             local_stop.wait(backoff)
             backoff = min(backoff * 2, 30.0)
@@ -492,7 +511,7 @@ def cmd_camera(args: argparse.Namespace) -> int:
         try:
             import lvl_local
         except ImportError as e:
-            print(f"[camera] lvl_local module unavailable: {e}",
+            _log(f"[camera] lvl_local module unavailable: {e}",
                   file=sys.stderr)
             return
 
@@ -512,7 +531,7 @@ def cmd_camera(args: argparse.Namespace) -> int:
             # Fatal vs transient is hard to know — surface and let
             # the outer reconnect logic in stream_frames handle the
             # retry (which it does until it gets a non-LVLLocalError).
-            print(f"[camera] LVL_Local fatal: {e}",
+            _log(f"[camera] LVL_Local fatal: {e}",
                   file=sys.stderr)
         # On pump exit, invalidate the cached frame (see ffmpeg_pump
         # for rationale).
@@ -521,7 +540,7 @@ def cmd_camera(args: argparse.Namespace) -> int:
             latest_frame["ts"] = 0.0
 
     if args.proto == "local":
-        print("[camera] proto=local — using TLS:6000 LVL_Local stream",
+        _log("[camera] proto=local — using TLS:6000 LVL_Local stream",
               file=sys.stderr)
         pump_factory = lvl_local_pump
         pump_label = "lvl_local"
@@ -565,7 +584,7 @@ def cmd_camera(args: argparse.Namespace) -> int:
                 target=lambda: pump_factory(local),
                 name=f"camera-pump-{pump_label}",
                 daemon=True)
-            print(f"[camera] starting {pump_label} pump "
+            _log(f"[camera] starting {pump_label} pump "
                   f"(refs={self._refs}, "
                   f"idle_timeout={self.IDLE_TIMEOUT}s)",
                   file=sys.stderr)
@@ -616,7 +635,7 @@ def cmd_camera(args: argparse.Namespace) -> int:
                     idle = time.time() - self._last_touch
                     if idle <= self.IDLE_TIMEOUT:
                         continue
-                    print(f"[camera] idle {idle:.0f}s ≥ "
+                    _log(f"[camera] idle {idle:.0f}s ≥ "
                           f"{self.IDLE_TIMEOUT}s with no viewers; "
                           f"stopping {pump_label} pump",
                           file=sys.stderr)
@@ -642,7 +661,18 @@ def cmd_camera(args: argparse.Namespace) -> int:
         def do_GET(self):  # noqa: N802
             if not _check_bearer(self, args.auth_token or None, host):
                 return
-            if self.path in ("/cam.mjpeg", "/"):
+            # Route on the path alone: browsers add ?t=<ms> cache
+            # busters to /cam.jpg, which used to 404.
+            path = urlsplit(self.path).path
+            try:
+                self._route(path)
+            except ConnectionError:
+                # Viewer went away (BrokenPipe / ConnectionReset, and
+                # ConnectionAborted on Windows): nothing to answer.
+                return
+
+        def _route(self, path: str) -> None:
+            if path in ("/cam.mjpeg", "/"):
                 # Long-poll viewer — refcount the supervisor so the
                 # pump stays alive while this client is connected,
                 # even if no touch endpoints are being hit.
@@ -678,11 +708,11 @@ def cmd_camera(args: argparse.Namespace) -> int:
                                 self.wfile.flush()
                             else:
                                 time.sleep(0.05)
-                    except (BrokenPipeError, ConnectionResetError):
+                    except ConnectionError:
                         return
                 finally:
                     supervisor.release()
-            elif self.path == "/cam.jpg":
+            elif path == "/cam.jpg":
                 supervisor.touch()
                 with state_lock:
                     frame = latest_frame["data"]
@@ -703,7 +733,7 @@ def cmd_camera(args: argparse.Namespace) -> int:
                 self.send_header("Content-Length", str(len(frame)))
                 self.end_headers()
                 self.wfile.write(frame)
-            elif self.path == "/cam.m3u8":
+            elif path == "/cam.m3u8":
                 # HLS playlist (item #20). 503 until ffmpeg has
                 # emitted at least one segment and the playlist file
                 # exists.
@@ -736,12 +766,11 @@ def cmd_camera(args: argparse.Namespace) -> int:
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
                 self.wfile.write(body)
-            elif (self.path.startswith("/cam")
-                    and self.path.endswith(".ts")):
+            elif path.startswith("/cam") and path.endswith(".ts"):
                 # HLS segment. Validate the filename to prevent path
                 # traversal (only `cam<digits>.ts` shape allowed).
                 supervisor.touch()
-                seg_name = self.path[1:]  # strip leading slash
+                seg_name = path[1:]  # strip leading slash
                 if not _re.fullmatch(r"cam\d+\.ts", seg_name):
                     self.send_response(404)
                     self.end_headers()
@@ -784,11 +813,11 @@ def cmd_camera(args: argparse.Namespace) -> int:
     _signal.signal(_signal.SIGINT,  _stop)
     _signal.signal(_signal.SIGTERM, _stop)
 
-    print(f"[camera] HTTP at http://{host}:{port}/cam.mjpeg "
+    _log(f"[camera] HTTP at http://{host}:{port}/cam.mjpeg "
           f"(JPEG snapshot /cam.jpg, HLS /cam.m3u8). On-demand pump "
           f"(idles after {CameraStreamSupervisor.IDLE_TIMEOUT}s of "
           f"no viewers).", file=sys.stderr)
-    print(f"[camera] HLS segments → {hls_dir}", file=sys.stderr)
+    _log(f"[camera] HLS segments → {hls_dir}", file=sys.stderr)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
@@ -797,11 +826,13 @@ def cmd_camera(args: argparse.Namespace) -> int:
         global_stop.set()
         supervisor.shutdown()
         server.server_close()
-        # HLS cleanup — best-effort, don't propagate errors.
-        try:
-            shutil.rmtree(hls_dir, ignore_errors=True)
-        except Exception:
-            pass
+        # HLS cleanup — best-effort: only the files ffmpeg wrote; the
+        # per-port directory is reused by the next run.
+        for seg in [*hls_dir.glob("cam*.ts"), *hls_dir.glob("cam.m3u8*")]:
+            try:
+                seg.unlink()
+            except OSError:
+                pass
     return 0
 
 
