@@ -122,6 +122,49 @@ def test_x2d_start_refuses_without_local_file(device_cert, monkeypatch, tmp_path
                        bed_temp=35, local_path=tmp_path / "missing.gcode.3mf")
 
 
+def test_x2d_body_param_tracks_plate_idx(device_cert):
+    """F-10: the project_file `param` points at the chosen plate, not always 1."""
+    p, _ = device_cert
+    b1 = pj.build_x2d_project_file("a.gcode.3mf", "0" * 32, ams_slots=[0],
+                                   bed_type="cool_plate", device_cert_path=p)
+    assert b1["param"] == "Metadata/plate_1.gcode"
+    b3 = pj.build_x2d_project_file("a.gcode.3mf", "0" * 32, ams_slots=[0],
+                                   bed_type="cool_plate", device_cert_path=p,
+                                   plate_idx=3)
+    assert b3["param"] == "Metadata/plate_3.gcode"
+
+
+def _multi_plate_3mf(path, indices):
+    import zipfile
+    with zipfile.ZipFile(path, "w") as z:
+        for i in indices:
+            z.writestr(f"Metadata/plate_{i}.gcode", f"; plate {i}\nG28\n")
+    return path
+
+
+def test_plate_indices_and_resolver(tmp_path):
+    f = _multi_plate_3mf(tmp_path / "multi.gcode.3mf", [1, 2, 3])
+    assert pj.plate_indices(f) == [1, 2, 3]
+    assert pj.resolve_plate_idx(f, None) == 1          # prefers plate 1
+    assert pj.resolve_plate_idx(f, 2) == 2             # honours an explicit pick
+    import pytest as _pytest
+    with _pytest.raises(pj.PrintRefusal, match="plate_9"):
+        pj.resolve_plate_idx(f, 9)                     # absent plate refused
+
+
+def test_resolver_picks_sole_plate_when_not_one(tmp_path):
+    """A `plate select N` output keeps only plate_N.gcode; auto picks it."""
+    f = _multi_plate_3mf(tmp_path / "sel.gcode.3mf", [3])
+    assert pj.resolve_plate_idx(f, None) == 3
+
+
+def test_resolver_refuses_ambiguous_without_plate_one(tmp_path):
+    f = _multi_plate_3mf(tmp_path / "amb.gcode.3mf", [2, 4])
+    import pytest as _pytest
+    with _pytest.raises(pj.PrintRefusal, match="multiple plates"):
+        pj.resolve_plate_idx(f, None)
+
+
 def test_x2d_body_keeps_captured_defaults_and_maps_flags(device_cert):
     p, key = device_cert
     default = pj.build_x2d_project_file("a.gcode.3mf", "0" * 32, ams_slots=[0],

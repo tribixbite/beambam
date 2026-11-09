@@ -198,14 +198,6 @@ def test_subparser_info_requires_slot():
         p.parse_args(["ams", "info"])
 
 
-def test_subparser_dry_requires_temp_and_hours():
-    p = argparse.ArgumentParser()
-    sub = p.add_subparsers()
-    add_subparser(sub)
-    with pytest.raises(SystemExit):
-        p.parse_args(["ams", "dry", "0"])           # missing --temp --hours
-
-
 def test_subparser_dry_full():
     p = argparse.ArgumentParser()
     sub = p.add_subparsers()
@@ -213,6 +205,15 @@ def test_subparser_dry_full():
     args = p.parse_args(["ams", "dry", "1", "--temp", "55", "--hours", "8"])
     assert args.ams_cmd == "dry"
     assert args.unit == 1 and args.temp == 55 and args.hours == 8
+    assert args.cooling_temp is None and args.rotate_tray is False and args.off is False
+
+
+def test_subparser_dry_off():
+    p = argparse.ArgumentParser()
+    sub = p.add_subparsers()
+    add_subparser(sub)
+    args = p.parse_args(["ams", "dry", "131", "--off"])
+    assert args.unit == 131 and args.off is True
 
 
 # ----- cmd_ams dispatch ---------------------------------------------------
@@ -263,18 +264,42 @@ def test_cmd_ams_unload_publishes(capsys):
     assert "ams_unload published" in capsys.readouterr().out
 
 
-def test_cmd_ams_dry_publishes_payload(capsys):
-    args = argparse.Namespace(ams_cmd="dry", unit=2, temp=55, hours=6)
-    with patch("beambam.Printer") as Printer:
-        fake = MagicMock()
-        Printer.return_value.__enter__.return_value = fake
-        cmd_ams(args)
-        call = fake.mqtt.publish.call_args
-        payload = call.args[0]
-        assert payload["print"]["ams_id"] == 2
-        assert payload["print"]["drying_temp"] == 55
-        assert payload["print"]["drying_time"] == 6
-    assert "drying cycle requested" in capsys.readouterr().out
+def test_cmd_ams_dry_sends_signed_drying_command(capsys):
+    """`ams dry` sends the print-class ams_filament_drying command through
+    send_command (signed), with hours as duration and mode=1 (F-17)."""
+    args = argparse.Namespace(ams_cmd="dry", unit=2, temp=55, hours=6,
+                              cooling_temp=None, rotate_tray=False, off=False)
+    with patch("beambam.Printer") as Printer, \
+         patch("beambam.commands.send_command", return_value=None) as send:
+        Printer.return_value.__enter__.return_value = MagicMock()
+        assert cmd_ams(args) == 0
+    payload = send.call_args.args[1]
+    assert payload["print"]["command"] == "ams_filament_drying"
+    assert payload["print"]["ams_id"] == 2
+    assert payload["print"]["temp"] == 55 and payload["print"]["cooling_temp"] == 55
+    assert payload["print"]["duration"] == 6 and payload["print"]["mode"] == 1
+    assert "drying started" in capsys.readouterr().out
+
+
+def test_cmd_ams_dry_off_sends_stop(capsys):
+    args = argparse.Namespace(ams_cmd="dry", unit=131, temp=None, hours=None,
+                              cooling_temp=None, rotate_tray=False, off=True)
+    with patch("beambam.Printer") as Printer, \
+         patch("beambam.commands.send_command", return_value=None) as send:
+        Printer.return_value.__enter__.return_value = MagicMock()
+        assert cmd_ams(args) == 0
+    payload = send.call_args.args[1]
+    assert payload["print"]["mode"] == 0 and payload["print"]["duration"] == 0
+    assert "drying stopped" in capsys.readouterr().out
+
+
+def test_cmd_ams_dry_rejects_low_temp(capsys):
+    args = argparse.Namespace(ams_cmd="dry", unit=0, temp=40, hours=6,
+                              cooling_temp=None, rotate_tray=False, off=False)
+    with patch("beambam.Printer"), patch("beambam.commands.send_command") as send:
+        assert cmd_ams(args) == 2
+    send.assert_not_called()
+    assert ">=45" in capsys.readouterr().err
 
 
 # ----- ams set / sync ------------------------------------------------------

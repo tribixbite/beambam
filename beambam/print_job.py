@@ -304,6 +304,44 @@ def _derive_print_params_from_3mf(local_path: Path,
     }
 
 
+def plate_indices(path: Path) -> list[int]:
+    """Sorted plate indices N for which `Metadata/plate_<N>.gcode` exists in
+    the .gcode.3mf (empty if the file is unreadable / unsliced)."""
+    import re
+    import zipfile
+    try:
+        with zipfile.ZipFile(path) as z:
+            names = z.namelist()
+    except (OSError, zipfile.BadZipFile):
+        return []
+    found = set()
+    for n in names:
+        m = re.fullmatch(r"Metadata/plate_(\d+)\.gcode", n)
+        if m:
+            found.add(int(m.group(1)))
+    return sorted(found)
+
+
+def resolve_plate_idx(path: Path, requested: int | None) -> int:
+    """Pick the plate to print. If `requested` is given, verify it is present.
+    If not, prefer plate 1, else the sole plate; refuse an ambiguous
+    multi-plate file so we never silently print the wrong one (F-10)."""
+    present = plate_indices(path)
+    if requested is not None:
+        if present and requested not in present:
+            raise PrintRefusal(
+                f"--plate {requested}: {path.name} has no plate_{requested}.gcode "
+                f"(present: {present or 'none'}). Re-slice or pick one of them.")
+        return int(requested)
+    if not present or 1 in present:
+        return 1
+    if len(present) == 1:
+        return present[0]
+    raise PrintRefusal(
+        f"{path.name} has multiple plates {present} and no plate_1; pass "
+        f"--plate N to choose one.")
+
+
 def used_filament_ids(path: Path, plate: int = 1) -> list[int]:
     """1-based project filament ids the plate actually prints with, read
     from `Metadata/slice_info.config` (empty if the file has none)."""
@@ -473,6 +511,7 @@ def build_x2d_project_file(gcode_filename: str, md5_hex: str, *,
                            bed_levelling: bool = True,
                            flow_cali: bool = False,
                            vibration_cali: bool = False,
+                           plate_idx: int = 1,
                            device_cert_path: Path | None = None) -> dict:
     """Build the X2D/H2D `print.project_file` body — the exact field shape
     captured from a real Bambu Studio desktop LAN print (verified live: the
@@ -518,7 +557,7 @@ def build_x2d_project_file(gcode_filename: str, md5_hex: str, *,
         "layer_inspect": True,
         "md5": md5_hex,
         "nozzle_offset_cali": 0,
-        "param": "Metadata/plate_1.gcode",
+        "param": f"Metadata/plate_{int(plate_idx)}.gcode",
         "profile_id": "0",
         "project_id": "0",
         "sequence_id": str(int(time.time() * 1000)),
@@ -541,6 +580,7 @@ def start_print(client: "X2DClient", gcode_filename: str, *,
                 timelapse: bool = False, vibration_cali: bool = False,
                 bed_type: str | None = None,
                 bed_temp: int | None = None,
+                plate_idx: int = 1,
                 local_path: Path | None = None) -> None:
     """Submit a project_file print command to the printer.
 
@@ -572,7 +612,8 @@ def start_print(client: "X2DClient", gcode_filename: str, *,
     is NOT found by the firmware (file-verify stage → err 84033544)."""
     if local_path is None:
         local_path = Path.cwd() / gcode_filename
-    md5_hex = _inner_gcode_md5(local_path) if local_path.is_file() else ""
+    plate_idx = int(plate_idx)
+    md5_hex = _inner_gcode_md5(local_path, plate_idx) if local_path.is_file() else ""
 
     # Safety: derive bed_type / bed_temp from the .gcode.3mf when callers
     # don't pass them. The pre-2026-05 defaults ("textured_plate" / 65 °C)
@@ -647,7 +688,7 @@ def start_print(client: "X2DClient", gcode_filename: str, *,
             gcode_filename, md5_hex, ams_slots=ams_mapping_legacy,
             bed_type=bed_type, use_ams=use_ams, timelapse=timelapse,
             bed_levelling=bed_levelling, flow_cali=flow_cali,
-            vibration_cali=vibration_cali)
+            vibration_cali=vibration_cali, plate_idx=plate_idx)
         _publish_signed_or_legacy(client, {"print": x2d_body})
         return
 
@@ -672,7 +713,7 @@ def start_print(client: "X2DClient", gcode_filename: str, *,
         "print": {
             "sequence_id":              str(int(time.time())),
             "command":                  "project_file",
-            "param":                    "Metadata/plate_1.gcode",
+            "param":                    f"Metadata/plate_{plate_idx}.gcode",
             "file":                     gcode_filename,
             "url":                      f"ftp:///cache/{gcode_filename}",
             "md5":                      md5_hex,
@@ -687,7 +728,7 @@ def start_print(client: "X2DClient", gcode_filename: str, *,
             "profile_id":               "0",
             "design_id":                "0",
             "model_id":                 "0",
-            "plate_idx":                1,         # int, NOT string
+            "plate_idx":                plate_idx,  # int, NOT string
             "dev_id":                   client.creds.serial,
             # 0 = LAN local, 1 = cloud
             "job_type":                 0,

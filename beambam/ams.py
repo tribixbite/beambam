@@ -6,7 +6,8 @@ Sub-CLI tree under `beambam ams`:
     beambam ams info SLOT               # one tray (slot = global 0..15)
     beambam ams load SLOT               # alias of top-level ams-load
     beambam ams unload                  # alias of top-level ams-unload
-    beambam ams dry UNIT --temp N --hours M   # start drying cycle
+    beambam ams dry UNIT --temp N --hours M   # start drying (AMS 2 Pro/HT)
+    beambam ams dry UNIT --off          # stop the drying cycle
     beambam ams set SLOT PROFILE        # push tray_info_idx + temps + color
     beambam ams sync [MAP]              # batch-push from JSON map
 
@@ -356,12 +357,25 @@ def add_subparser(sub: "argparse._SubParsersAction") -> argparse.ArgumentParser:
 
     ams_sub.add_parser("unload", help="Unload the currently-loaded filament")
 
-    d = ams_sub.add_parser("dry", help="Start a drying cycle on an AMS unit")
-    d.add_argument("unit", type=int, help="AMS unit id (0..3)")
-    d.add_argument("--temp", type=int, required=True,
-                   help="Drying temperature °C (typically 40..70)")
-    d.add_argument("--hours", type=int, required=True,
-                   help="Cycle duration in hours (1..24)")
+    d = ams_sub.add_parser(
+        "dry", help="Start/stop a drying cycle on a heated AMS (2 Pro / HT)")
+    d.add_argument("unit", type=int,
+                   help="AMS unit id as the printer reports it (0..3 for "
+                        "standard AMS; 128+ for AMS HT)")
+    d.add_argument("--temp", type=int,
+                   help="Drying temperature °C (must be >=45; AMS 2 Pro max "
+                        "65, AMS HT max 85). Required unless --off.")
+    d.add_argument("--hours", type=int,
+                   help="Cycle duration in whole hours (>=1). Required unless "
+                        "--off.")
+    d.add_argument("--cooling-temp", type=int, default=None,
+                   help="Cooling temperature °C (must be >=45; defaults to "
+                        "--temp when omitted).")
+    d.add_argument("--rotate-tray", action="store_true",
+                   help="AMS HT rotating-dry mode (rotate the spool for even "
+                        "drying). Ignored by AMS 2 Pro.")
+    d.add_argument("--off", action="store_true",
+                   help="Stop the current drying cycle on this unit.")
 
     st = ams_sub.add_parser("set",
         help="Push filament metadata (type/brand/temps/color) to one slot")
@@ -594,25 +608,58 @@ def cmd_ams(args: argparse.Namespace) -> int:
         return 0
 
     if args.ams_cmd == "dry":
-        # Drying control payload. NOTE: this sends `print.ams_filament_setting`
-        # with drying_temp/drying_time against the whole unit (tray_id 255).
-        # TODO: unverified against a real AMS dryer (AMS 2 Pro / HT) — the
-        # exact start-drying command/fields are not confirmed, and sending it
-        # changes printer state, so test with the owner before relying on it.
+        # AMS drying control. The command is `print.ams_filament_drying`
+        # (reverse-engineered + field-verified on AMS 2 Pro / AMS HT, see
+        # greghesp/ha-bambulab#1448). It is a print-class command, so it must
+        # be SIGNED with the recovered key — hence send_command, which also
+        # reads the printer's success/fail reply instead of assuming success.
+        #
+        # Firmware-enforced constraints learned from that work:
+        #   * temp and cooling_temp must be >= 45 or the command is ignored.
+        #   * duration is whole HOURS, >= 1 — duration 0 is the STOP form and
+        #     otherwise drives the UI to a bogus ~infinite time.
+        #   * mode 1 = start, 0 = stop.
+        #   * drying while a print runs is refused by firmware (err 402702444).
         from beambam import Printer
-        payload = {
-            "print": {
-                "sequence_id": "0",
-                "command": "ams_filament_setting",
-                "ams_id": int(args.unit),
-                "tray_id": 255,                              # whole unit
-                "drying_temp": int(args.temp),
-                "drying_time": int(args.hours),
-            }
-        }
+        from beambam.commands import send_command, refusal_message
+        ams_id = int(args.unit)
+        if args.off:
+            payload = {"print": {"sequence_id": "0", "command": "ams_filament_drying",
+                                 "ams_id": ams_id, "temp": 0, "cooling_temp": 40,
+                                 "duration": 0, "humidity": 0, "mode": 0,
+                                 "rotate_tray": False}}
+        else:
+            if args.temp is None or args.hours is None:
+                print("ams dry: --temp and --hours are required to start a cycle "
+                      "(or pass --off to stop one)", file=sys.stderr)
+                return 2
+            temp = int(args.temp)
+            cooling = int(args.cooling_temp) if args.cooling_temp is not None else temp
+            if temp < 45 or cooling < 45:
+                print(f"ams dry: temp/cooling-temp must be >=45 °C (the firmware "
+                      f"ignores lower values); got temp={temp} cooling={cooling}",
+                      file=sys.stderr)
+                return 2
+            if int(args.hours) < 1:
+                print("ams dry: --hours must be >=1 (0 is the stop form; use --off)",
+                      file=sys.stderr)
+                return 2
+            payload = {"print": {"sequence_id": "0", "command": "ams_filament_drying",
+                                 "ams_id": ams_id, "temp": temp, "cooling_temp": cooling,
+                                 "duration": int(args.hours), "humidity": 0, "mode": 1,
+                                 "rotate_tray": bool(args.rotate_tray)}}
         with Printer() as printer:
-            printer.mqtt.publish(payload)
-        print(f"drying cycle requested: AMS {args.unit} {args.temp}°C × {args.hours}h")
+            reply = send_command(printer.mqtt, payload, timeout=8.0)
+        if reply is not None and not reply.ok:
+            print(f"ams dry: printer refused — {refusal_message(reply)}", file=sys.stderr)
+            return 1
+        if args.off:
+            print(f"drying stopped: AMS {ams_id}"
+                  + ("" if reply is not None else " (sent; no reply seen)"))
+        else:
+            print(f"drying started: AMS {ams_id} {args.temp}°C × {args.hours}h"
+                  + (" (rotating)" if args.rotate_tray else "")
+                  + ("" if reply is not None else " (sent; no reply seen)"))
         return 0
 
     print(f"unknown ams subcommand: {args.ams_cmd}", file=sys.stderr)

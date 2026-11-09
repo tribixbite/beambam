@@ -244,6 +244,11 @@ def main() -> int:
     pr.add_argument("--no-upload", action="store_true",
                     help="Skip upload — file is already on the printer")
     pr.add_argument("--no-ams", action="store_true")
+    pr.add_argument("--plate", type=int, default=None,
+                    help="Plate index to print (default: auto — plate 1, or "
+                         "the sole plate if the file was reduced with "
+                         "`plate select`). The project_file param + md5 track "
+                         "this plate.")
     pr.add_argument("--no-bed-level", action="store_true")
     pr.add_argument("--bed-type", default=None,
                     help="MQTT bed_type enum string. By default this is "

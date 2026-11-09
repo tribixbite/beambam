@@ -62,8 +62,9 @@ __all__ = ["download_file", "list_files", "upload_file"]
 
 class _FTP_TLS_Reuse(FTP_TLS):
     """The upload/download path uses a manually-constructed FTP_TLS that
-    bypasses _ImplicitFTPTLS' sock-setter chain (which double-wraps on
-    Python 3.12+ → INVALID_ALERT). PASV data channel inherits the
+    bypasses the usual implicit-FTPS `sock` property setter (the common
+    "override sock to wrap on connect" recipe), which double-wraps on
+    Python 3.12+ → INVALID_ALERT. The PASV data channel inherits the
     control TLS session per Bambu's `ssl_session_reuse=YES` requirement."""
     def ntransfercmd(self, cmd, rest=None):
         conn, size = FTP.ntransfercmd(self, cmd, rest)
@@ -199,11 +200,17 @@ def upload_file(creds: "Creds", local_path: Path,
     needed. The LAN print flow uploads the .gcode.3mf to ``cache/`` because the
     firmware-accepted `print.project_file` URL is ``ftp:///cache/<file>`` — what
     Bambu Studio's desktop LAN flow does. With no `remote_dir` the file lands at
-    the FTP root (back-compat)."""
+    the FTP root (back-compat).
+
+    After STOR the remote SIZE is read back and compared with the local size, so
+    a silently-truncated upload (which would later fail the firmware's file-
+    verify with an opaque err 84033544) is caught here instead. A server that
+    doesn't answer SIZE is tolerated — the check is skipped, not failed."""
     if not local_path.is_file():
         raise FileNotFoundError(f"file not found: {local_path}")
     if remote_name is None:
         remote_name = local_path.name
+    local_size = local_path.stat().st_size
     ftp = _manual_ftp_tls(creds, timeout=15.0)
     try:
         if remote_dir:
@@ -214,6 +221,17 @@ def upload_file(creds: "Creds", local_path: Path,
                 ftp.cwd(remote_dir)
         with local_path.open("rb") as f:
             ftp.storbinary(f"STOR {remote_name}", f, blocksize=32768)
+        # Verify the bytes landed. SIZE needs binary mode (already set by
+        # storbinary's TYPE I). error_perm = server has no SIZE -> skip.
+        try:
+            remote_size = ftp.size(remote_name)
+        except (ftplib.error_perm, ValueError):
+            remote_size = None
+        if remote_size is not None and remote_size != local_size:
+            raise OSError(
+                f"upload size mismatch for {remote_name}: sent {local_size} "
+                f"bytes, printer reports {remote_size}; the transfer was "
+                f"truncated — retry.")
     finally:
         try:
             ftp.quit()

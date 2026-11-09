@@ -61,6 +61,7 @@ def cmd_print(args: argparse.Namespace) -> int:
         _derive_print_params_from_3mf,
         _validate_ams_slot,
         parse_slots,
+        resolve_plate_idx,
         start_print,
         used_filament_ids,
     )
@@ -70,6 +71,10 @@ def cmd_print(args: argparse.Namespace) -> int:
     slots = parse_slots(args.slot) if not isinstance(args.slot, list) else list(args.slot)
     use_ams = not args.no_ams
     force = bool(getattr(args, "force", False))
+    try:
+        plate_idx = resolve_plate_idx(local, getattr(args, "plate", None))
+    except PrintRefusal as e:
+        raise SystemExit(str(e))
 
     # Step 1: derive authoritative bed_type / bed_temp / filament
     # expectations from the 3MF before we touch the network. If the
@@ -127,7 +132,7 @@ def cmd_print(args: argparse.Namespace) -> int:
     # the project's filament number, so a short list leaves a used filament
     # unmapped (the firmware then stalls at the AMS load or uses the wrong spool).
     if use_ams:
-        used = used_filament_ids(local)
+        used = used_filament_ids(local, plate_idx)
         if used and len(slots) < max(used):
             raise SystemExit(
                 f"this plate prints with filament(s) {', '.join(map(str, used))}: give one "
@@ -195,6 +200,7 @@ def cmd_print(args: argparse.Namespace) -> int:
                         vibration_cali=args.vib_cali,
                         bed_type=bed_type,
                         bed_temp=bed_temp,
+                        plate_idx=plate_idx,
                         local_path=local)
         except PrintRefusal as e:
             raise SystemExit(str(e))
