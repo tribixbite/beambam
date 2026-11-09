@@ -533,7 +533,12 @@ class CloudClient:
             raise CloudError("no refresh_token; need to login first")
         url = REGIONS[self.session.region]["api"] + "/v1/user-service/user/refreshtoken"
         r = _request("POST", url, body={"refreshToken": self.session.refresh_token})
-        self.session.access_token  = r.get("accessToken")  or r.get("access_token")  or self.session.access_token
+        new_access = r.get("accessToken") or r.get("access_token")
+        if not new_access:
+            # No new token: do NOT advance expiry (that hid an expired session
+            # behind a fresh-looking one). Force an interactive re-login.
+            raise CloudError("token refresh returned no accessToken; re-login required")
+        self.session.access_token = new_access
         self.session.refresh_token = r.get("refreshToken") or r.get("refresh_token") or self.session.refresh_token
         expires_in = r.get("expiresIn") or r.get("expires_in")
         if isinstance(expires_in, (int, float)) and expires_in > 0:
@@ -1110,8 +1115,19 @@ class CloudClient:
         if token is None:
             token = self.cloud_get_upload_token(count=1)
 
-        # Shape A — presigned URL. Just PUT to it.
-        if isinstance(token, dict) and token.get("url") and "Signature" in token.get("url", ""):
+        # Shape A — presigned URL. Just PUT to it. A presigned URL carries its
+        # signature in the query string; the parameter name differs by signing
+        # version (OSS V1 "Signature", V4 "x-oss-signature"), so match either
+        # case-insensitively rather than only V1. The decisive test, though, is
+        # that shape A has a `url` and *no* STS credentials — shape B always
+        # carries accessKeyId/accessKeySecret.
+        _is_presigned = (
+            isinstance(token, dict)
+            and token.get("url")
+            and not token.get("accessKeyId")
+            and not token.get("accessKeySecret")
+        )
+        if _is_presigned:
             put_url = token["url"]
             file_save_path = token.get("fileName") or token.get("fileSavePath") or path.name
             req = urllib.request.Request(
@@ -1149,7 +1165,9 @@ class CloudClient:
         #   Date + "\n" + CanonicalizedOSSHeaders + CanonicalizedResource
         # where CanonicalizedOSSHeaders includes lowercase x-oss-* headers
         # sorted by header name; for STS, x-oss-security-token is required.
-        import hmac as _hmac, hashlib as _hashlib, base64 as _base64
+        import base64 as _base64
+        import hashlib as _hashlib
+        import hmac as _hmac
         from email.utils import formatdate as _formatdate
         if not all(k in token for k in ("accessKeyId", "accessKeySecret",
                                         "bucket", "fileSavePath")):

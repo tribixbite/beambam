@@ -715,6 +715,8 @@ def main(argv: list[str] | None = None) -> int:
     # `beambam-mcp --help` / `--version` must answer and exit instead of
     # silently starting the server and waiting on stdin.
     _arg_parser().parse_args(argv)
+    from beambam.console import utf8_stdio
+    utf8_stdio()
     return serve_stdio()
 
 

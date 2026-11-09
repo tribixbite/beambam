@@ -102,7 +102,7 @@ ship a plugin," not "skip cloud."
 
 ### Our `~/git/x2d`
 
-`x2d_bridge.py` already implements:
+`beambam` already implements:
 - LAN MQTT with `bblp:<code>` auth.
 - RSA signing **using a key we have to extract** (`runtime/handy_extract/`).
   Without the key, signed publishes fail.
@@ -172,7 +172,7 @@ Concrete next slice if you go A→B:
 
 1. **Doc & polish what works locally** (~half day)
    - Update README's "What works" table.
-   - Add `~/git/x2d/x2d_bridge.py local-status` /
+   - Add `~/git/x2d/beambam local-status` /
      `local-camera` / `local-pause` etc. names that mirror the
      cloud-* CLIs but use LAN MQTT only.
    - Document the "to start a new print, copy to SD or use cloud" workflow.

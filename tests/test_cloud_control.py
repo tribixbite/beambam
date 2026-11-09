@@ -66,6 +66,9 @@ def test_cmd_pause_routes_to_cloud_signed(monkeypatch, tmp_path):
         serialization.PrivateFormat.PKCS8, serialization.NoEncryption()))
     monkeypatch.delenv("X2D_FORCE_LAN", raising=False)
     monkeypatch.setattr(control, "_signing_key_path", lambda: keyp)
+    # No cert id for LAN signing on this "machine": the cloud relay is the
+    # route (with LAN signing ready, LAN is preferred unless --cloud).
+    monkeypatch.setattr(control, "_lan_signing_ready", lambda: False)
     # fake cloud_client module + CloudPrinter
     sess = types.SimpleNamespace(empty=False, user_id="u")
     fake_cc = types.SimpleNamespace(
@@ -97,6 +100,9 @@ def test_cmd_skip_routes_to_cloud_signed(monkeypatch, tmp_path):
         serialization.PrivateFormat.PKCS8, serialization.NoEncryption()))
     monkeypatch.delenv("X2D_FORCE_LAN", raising=False)
     monkeypatch.setattr(control, "_signing_key_path", lambda: keyp)
+    # No cert id for LAN signing on this "machine": the cloud relay is the
+    # route (with LAN signing ready, LAN is preferred unless --cloud).
+    monkeypatch.setattr(control, "_lan_signing_ready", lambda: False)
     sess = types.SimpleNamespace(empty=False, user_id="u")
     fake_cc = types.SimpleNamespace(
         CloudClient=types.SimpleNamespace(load_or_anonymous=lambda: types.SimpleNamespace(session=sess)))
@@ -144,3 +150,42 @@ def test_auto_adb_serial_none_when_zero_or_many(monkeypatch):
     monkeypatch.setattr(subprocess, "run",
                         fake("List of devices attached\nA\toffline\nB\tdevice\n"))
     assert control._auto_adb_serial() == ("B", ["B"])
+
+
+def test_lan_first_when_recovered_key_ready(monkeypatch):
+    """With the recovered key + cert id on disk, control verbs go LAN-signed
+    (no cloud session or internet needed); --cloud forces the relay."""
+    import argparse
+    from beambam.cli import control
+    calls: list[str] = []
+    monkeypatch.setattr(control, "_lan_signing_ready", lambda: True)
+    monkeypatch.setattr(control, "_try_cloud_signed", lambda a, p: calls.append("cloud") or 0)
+    monkeypatch.setattr(control, "_publish_one", lambda a, p: calls.append("lan") or 0)
+    assert control.cmd_pause(argparse.Namespace()) == 0
+    assert control.cmd_pause(argparse.Namespace(cloud=True)) == 0
+    assert calls == ["lan", "cloud"]
+
+
+def test_publish_one_reports_a_refusal(monkeypatch, capsys):
+    """The printer's reply decides the exit code (1 + hint on a signature reject)."""
+    import argparse
+    import types
+    from beambam.cli import control
+    import beambam.print_job as pj
+
+    class _Cli:
+        message_seq = 0
+        def __init__(self, creds): pass
+        def connect(self): pass
+        def disconnect(self): pass
+        def wait_for(self, pred, timeout, since=None):
+            msg = {"print": {"command": "pause", "err_code": 84033545, "result": "failed",
+                             "reason": "mqtt message verify failed"}}
+            return msg if pred(msg) else None
+    monkeypatch.setattr(control._mqtt, "X2DClient", _Cli)
+    monkeypatch.setattr(control._config.Creds, "resolve",
+                        classmethod(lambda cls, a: types.SimpleNamespace(serial="S1")))
+    monkeypatch.setattr(pj, "_publish_signed_or_legacy", lambda cli, payload: None)
+    rc = control._publish_one(argparse.Namespace(), {"print": {"command": "pause", "sequence_id": "1"}})
+    assert rc == 1
+    assert "signature rejected" in capsys.readouterr().err

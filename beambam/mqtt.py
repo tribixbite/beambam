@@ -241,6 +241,7 @@ class X2DClient:
         self.client.tls_set_context(ssl_ctx)
         self.client.username_pw_set("bblp", creds.code)
         self.client.on_connect = self._on_connect
+        self.client.on_disconnect = self._on_disconnect
         self.client.on_message = self._on_message
 
     # --- callbacks --------------------------------------------------------
@@ -253,6 +254,20 @@ class X2DClient:
         else:
             print(f"[x2d-bridge] MQTT connect failed: rc={rc}",
                   file=sys.stderr)
+            metric_inc(self.creds.serial, "mqtt_disconnects_total")
+
+    def _on_disconnect(self, client, userdata, *args):
+        # paho calls this on any drop (clean or lost). Clear _connected so
+        # publish()'s is_connected() check reconnects, and count real drops
+        # (rc 0 = our own disconnect()). The signature differs across paho
+        # CallbackAPIVersion revisions, so take *args.
+        self._connected.clear()
+        rc = args[0] if args else 0
+        try:
+            rc = int(rc.value) if hasattr(rc, "value") else int(rc)
+        except (TypeError, ValueError):
+            rc = 0
+        if rc != 0:
             metric_inc(self.creds.serial, "mqtt_disconnects_total")
 
     def _on_message(self, client, userdata, msg):

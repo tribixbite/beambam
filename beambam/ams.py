@@ -70,15 +70,36 @@ def _tray_state_label(s: int) -> str:
     return _TRAY_STATE.get(s, f"state={s}")
 
 
-def _humidity_bar(level: str) -> str:
-    """Convert humidity '0'..'4' to a 5-cell bar (4 = wet, 0 = dry).
-    Lower numbers print fewer fill blocks."""
+def humidity_level(raw: Any) -> int | None:
+    """Bambu's user-facing AMS humidity level, 1 (dry) .. 5 (wet).
+
+    The MQTT `humidity` field is an index running the OTHER way (1 = wet,
+    5 = dry); Bambu Studio and Handy show `6 - index` (ha-bambulab
+    definitions.py does the same). beambam used to print the raw index,
+    so a damp AMS (index 2, ~40 % RH) looked nearly dry. None when the
+    value is missing or outside 1..5."""
     try:
-        n = int(level)
+        idx = int(raw)
     except (TypeError, ValueError):
+        return None
+    return 6 - idx if 1 <= idx <= 5 else None
+
+
+def humidity_percent(unit: dict[str, Any]) -> int | None:
+    """Measured relative humidity (%) where the AMS reports it (`humidity_raw`)."""
+    try:
+        return int(unit["humidity_raw"])
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def _humidity_bar(raw: Any) -> str:
+    """5-cell bar for the MQTT humidity index: one filled cell per
+    user-facing level (1 = dry .. 5 = wet), '?' when unknown."""
+    level = humidity_level(raw)
+    if level is None:
         return "?"
-    n = max(0, min(4, n))
-    return "▓" * n + "░" * (4 - n)
+    return "▓" * level + "░" * (5 - level)
 
 
 # ----- formatting ---------------------------------------------------------
@@ -94,12 +115,26 @@ def format_status(ams_block: dict[str, Any], *, color: bool = True) -> str:
     for unit in units:
         uid = unit.get("id", "?")
         humidity = _humidity_bar(unit.get("humidity", "?"))
+        pct = humidity_percent(unit)
+        if pct is not None:
+            humidity += f" {pct}%"
         temp = unit.get("temp", "?")
         lines.append(f"AMS {uid}  humidity {humidity}  temp {temp}°C  "
                      f"version {unit.get('info', '?')}")
+        # AMS HT units and external/virtual slots can carry a non-numeric
+        # id; show the tray id alone there instead of crashing the whole
+        # `beambam ams` output on int("?").
+        try:
+            unit_base = int(uid) * 4
+        except (TypeError, ValueError):
+            unit_base = None
         trays = unit.get("tray") or []
         for t in trays:
-            slot_global = int(uid) * 4 + int(t.get("id", 0))
+            try:
+                tray_id = int(t.get("id", 0))
+            except (TypeError, ValueError):
+                tray_id = 0
+            slot_global = unit_base + tray_id if unit_base is not None else tray_id
             color_str = _swatch(t.get("tray_color", "808080"), color=color)
             remain = t.get("remain", -1)
             remain_str = "—" if remain < 0 else f"{remain}%"
@@ -151,11 +186,46 @@ def format_tray_info(ams_block: dict[str, Any], slot: int,
 # Bambu's "tray_info_idx" classifies the spool to the firmware's filament
 # library. For 3rd-party / generic filaments we use the open generic IDs that
 # Bambu Studio itself writes for community profiles.
+# Bambu's generic "@base" filament ids (from resources/profiles/BBL/filament,
+# verified against the installed Bambu Studio catalogue). Used when a 3rd-party
+# profile has no setting_id of its own.
 _GENERIC_INFO_IDX = {
-    "PLA":  "GFL99",
-    "PETG": "GFG99",
-    "TPU":  "GFU99",
+    "PLA":      "GFL99",
+    "PLA-CF":   "GFL98",
+    "PLA Silk": "GFL96",
+    "PETG":     "GFG99",
+    "PETG-CF":  "GFG98",
+    "PCTG":     "GFG97",
+    "TPU":      "GFU99",
+    "ABS":      "GFB99",
+    "ASA":      "GFB98",
+    "PC":       "GFC99",
+    "PA":       "GFN99",
+    "PA-CF":    "GFN98",
+    "PVA":      "GFS99",
+    "HIPS":     "GFS98",
+    "BVOH":     "GFS97",
+    "PP":       "GFP97",
+    "PE":       "GFP99",
+    "PPS":      "GFT97",
+    "PPS-CF":   "GFT98",
+    "PHA":      "GFR98",
+    "EVA":      "GFR99",
 }
+
+
+def _generic_info_idx(tray_type: str) -> str:
+    """Generic filament id for a type, trying the exact name then its base
+    polymer (so "PLA-CF Plus" -> PLA-CF -> PLA). Unknown types return "" —
+    better a blank tray_info than telling the firmware an ABS spool is PLA."""
+    t = (tray_type or "").strip()
+    if t in _GENERIC_INFO_IDX:
+        return _GENERIC_INFO_IDX[t]
+    base = t.split()[0] if t else ""           # "PLA-CF Plus" -> "PLA-CF"
+    if base in _GENERIC_INFO_IDX:
+        return _GENERIC_INFO_IDX[base]
+    root = base.split("-")[0]                   # "PLA-CF" -> "PLA"
+    return _GENERIC_INFO_IDX.get(root, "")
 
 
 def _load_flat_profile(path: str) -> dict[str, Any]:
@@ -178,7 +248,7 @@ def _profile_tray_fields(profile: dict[str, Any]) -> dict[str, Any]:
     name = str(profile.get("name", ""))
     sub_brand = name.split("@")[0].strip() or name or tray_type
 
-    info_idx = _GENERIC_INFO_IDX.get(tray_type) or "GFL99"
+    info_idx = _generic_info_idx(tray_type)
 
     n_lo = int(str(profile.get("nozzle_temperature_range_low", ["190"])[0]))
     n_hi = int(str(profile.get("nozzle_temperature_range_high", ["240"])[0]))
@@ -524,9 +594,11 @@ def cmd_ams(args: argparse.Namespace) -> int:
         return 0
 
     if args.ams_cmd == "dry":
-        # Drying control payload — Bambu uses `ams.cmd=drying_set` with
-        # target_temp + target_time. Sent against the AMS unit, not the
-        # active extruder.
+        # Drying control payload. NOTE: this sends `print.ams_filament_setting`
+        # with drying_temp/drying_time against the whole unit (tray_id 255).
+        # TODO: unverified against a real AMS dryer (AMS 2 Pro / HT) — the
+        # exact start-drying command/fields are not confirmed, and sending it
+        # changes printer state, so test with the owner before relying on it.
         from beambam import Printer
         payload = {
             "print": {

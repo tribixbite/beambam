@@ -259,12 +259,30 @@ def test_cam_stop_sends_signal_and_removes_pidfile(tmp_path, capsys,
     pid_file.write_text("4242\n")
     monkeypatch.setattr("beambam.cam._CAM_PID_FILE", pid_file)
     sent: list[tuple[int, int]] = []
+    monkeypatch.setattr("os.name", "posix")
     monkeypatch.setattr("os.kill", lambda pid, sig: sent.append((pid, sig)))
     rc = cmd_cam(argparse.Namespace(cam_cmd="stop", signal="TERM"))
     assert rc == 0
     assert len(sent) == 1 and sent[0][0] == 4242
     assert not pid_file.exists()
     assert "sent SIGTERM" in capsys.readouterr().out
+
+
+def test_cam_stop_windows_kills_the_process_tree(tmp_path, capsys, monkeypatch):
+    """Windows has no POSIX signals: the proxy and its ffmpeg child are ended
+    with `taskkill /T` (os.kill would orphan ffmpeg)."""
+    import subprocess
+    pid_file = tmp_path / "cam.pid"
+    pid_file.write_text("4242\n")
+    monkeypatch.setattr("beambam.cam._CAM_PID_FILE", pid_file)
+    monkeypatch.setattr("os.name", "nt")
+    monkeypatch.setattr("beambam.cam._pid_alive", lambda pid: True)
+    calls: list[list[str]] = []
+    monkeypatch.setattr(subprocess, "run", lambda cmd, **kw: (
+        calls.append(cmd), subprocess.CompletedProcess(cmd, 0, "", ""))[1])
+    assert cmd_cam(argparse.Namespace(cam_cmd="stop", signal="INT")) == 0
+    assert calls == [["taskkill", "/PID", "4242", "/T", "/F"]]
+    assert not pid_file.exists()
 
 
 def test_cam_stop_stale_pidfile_still_cleans_up(tmp_path, capsys,
@@ -275,6 +293,7 @@ def test_cam_stop_stale_pidfile_still_cleans_up(tmp_path, capsys,
     pid_file.write_text("9999999\n")
     monkeypatch.setattr("beambam.cam._CAM_PID_FILE", pid_file)
     def _raise(*a, **kw): raise ProcessLookupError(3)
+    monkeypatch.setattr("os.name", "posix")
     monkeypatch.setattr("os.kill", _raise)
     rc = cmd_cam(argparse.Namespace(cam_cmd="stop", signal="TERM"))
     assert rc == 0
@@ -297,8 +316,8 @@ def test_cam_start_blocks_double_start(tmp_path, monkeypatch, capsys):
     pid_file = tmp_path / "cam.pid"
     pid_file.write_text("1111\n")
     monkeypatch.setattr("beambam.cam._CAM_PID_FILE", pid_file)
-    # Make os.kill(pid, 0) treat the PID as alive (no exception).
-    monkeypatch.setattr("os.kill", lambda pid, sig: None)
+    # The PID is alive (probe without signalling: see cam._pid_alive).
+    monkeypatch.setattr("beambam.cam._pid_alive", lambda pid: True)
     args = argparse.Namespace(
         cam_cmd="start", bind="127.0.0.1:8766", port=322, proto="rtsp",
         idle_timeout=30.0, skip_check=False, auth_token="",

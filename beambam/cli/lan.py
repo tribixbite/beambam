@@ -28,11 +28,21 @@ def cmd_upload(args: argparse.Namespace) -> int:
     from beambam.config import Creds
     from beambam.ftps import upload_file
 
+    import ftplib
+    import ssl
     creds = Creds.resolve(args)
-    upload_file(creds, Path(args.file), remote_name=args.remote)
+    try:
+        upload_file(creds, Path(args.file), remote_name=args.remote)
+    except FileNotFoundError as e:
+        sys.exit(str(e))
+    except (ssl.SSLError, ftplib.Error, OSError, EOFError) as e:
+        sys.exit(f"upload failed: {type(e).__name__}: {e}")
     print(f"uploaded {args.file} -> {creds.ip}:/"
           f"{args.remote or Path(args.file).name}")
     return 0
+
+
+from beambam.signing import SIGNATURE_REJECTED, signing_status  # noqa: E402
 
 
 def cmd_print(args: argparse.Namespace) -> int:
@@ -135,6 +145,11 @@ def cmd_print(args: argparse.Namespace) -> int:
         return _dry_run_report(local, float(getattr(args, "max_flush_g", 10.0)))
 
     creds = Creds.resolve(args)
+    signing = signing_status()
+    if not signing.ready:
+        # Not fatal (older firmware takes the legacy signature), but on an
+        # X2D/H2D this is why a start would be refused: say so up front.
+        sys.stderr.write(f"[print] WARNING: LAN print signing not ready: {signing.summary()}\n")
 
     # Step 3: upload (if requested) BEFORE we open the MQTT client so a
     # transient FTPS failure doesn't leave a stale subscription.
@@ -195,6 +210,8 @@ def cmd_print(args: argparse.Namespace) -> int:
             return 0
         if verdict == "refused":
             sys.stderr.write(f"[print] printer REFUSED the job: {detail}\n")
+            if any(str(code) in detail for code in SIGNATURE_REJECTED):
+                sys.stderr.write(f"[print] signature rejected: {signing_status().summary()}\n")
             return 1
         sys.stderr.write(
             f"[print] sent, but the printer did not confirm within {wait_s:g} s "
@@ -204,42 +221,8 @@ def cmd_print(args: argparse.Namespace) -> int:
         cli.disconnect()
 
 
-# gcode_state values that mean a job is in progress (a new start is refused).
-BUSY_STATES = frozenset({"RUNNING", "PAUSE", "PREPARE", "SLICING", "INIT"})
-# gcode_state values a freshly accepted job moves into.
-STARTED_STATES = frozenset({"PREPARE", "RUNNING", "SLICING"})
-
-
-def await_print_start(cli, since: int, timeout: float) -> tuple[str, str]:
-    """Wait for the printer's verdict on a project_file sent after message
-    `since`. Returns ("started" | "refused" | "unconfirmed", detail).
-
-    Evidence, whichever comes first: the printer's `print.project_file`
-    reply (err_code / result), or the print state machine leaving idle
-    (gcode_state PREPARE/RUNNING/SLICING) — the caller checked the printer
-    was idle before sending, so that transition is this job's.
-    """
-    from beambam.state import command_reply
-
-    def verdict(msg: dict) -> tuple[str, str] | None:
-        reply = command_reply(msg, "print", "project_file")
-        if reply is not None:
-            if reply.ok:
-                return "started", "printer acknowledged project_file"
-            return "refused", (f"err_code {reply.err_code}"
-                               + (f" ({reply.reason})" if reply.reason else ""))
-        state = (msg.get("print") or {}).get("gcode_state")
-        if state in STARTED_STATES:
-            return "started", f"gcode_state={state}"
-        return None
-
-    msg = cli.wait_for(lambda m: verdict(m) is not None, timeout, since=since)
-    if msg is None:
-        st = (cli.merged_state().get("print") or {}).get("gcode_state", "?")
-        return "unconfirmed", f"no reply; gcode_state={st}"
-    result = verdict(msg)
-    assert result is not None
-    return result
+# Re-exported for callers of the CLI module; the canonical home is print_job.
+from beambam.print_job import BUSY_STATES, STARTED_STATES, await_print_start  # noqa: E402,F401
 
 
 def _dry_run_report(local: Path, max_g: float) -> int:
@@ -314,8 +297,10 @@ def cmd_slice_print(args: argparse.Namespace) -> int:
             # existing BS docs apply.
             print(f"[slice-print] input already a 3mf, re-slicing in "
                   f"place", file=sys.stderr)
-            bs_bin = (X2D_ROOT_PATH / "bs-bionic" / "build" / "src"
-                      / "bambu-studio")
+            from beambam.slicer_paths import bambu_studio_bin, run_bambu_cli
+            bs_bin = bambu_studio_bin()
+            if bs_bin is None:
+                sys.exit("bambu-studio not found: install Bambu Studio or set BAMBU_STUDIO")
             cmd = [
                 str(bs_bin), "--slice", "0",
                 "--outputdir", str(out_3mf.parent),
@@ -343,13 +328,15 @@ def cmd_slice_print(args: argparse.Namespace) -> int:
                 # x2d_slice.py's --copies (which tiles one model).
                 cmd.extend(["--repetitions", str(int(args.repetitions))])
             cmd.append(str(stl))
-            rc = subprocess.call(cmd, env={
-                **os.environ,
-                "DISPLAY": os.environ.get("DISPLAY", ":1"),
-            })
+            env = dict(os.environ)
+            if os.name != "nt":
+                env.setdefault("DISPLAY", ":1")
+            rc = run_bambu_cli(cmd, out_3mf.parent, env=env)
         else:
             # STL/OBJ/STEP — graft into template and slice
-            cmd = [str(slice_bin), str(stl), "--out", str(out_3mf)]
+            # Through this interpreter: running the .py directly fails on
+            # Windows (WinError 193) and wherever the file isn't executable.
+            cmd = [sys.executable, str(slice_bin), str(stl), "--out", str(out_3mf)]
             if args.template:
                 cmd.extend(["--template", str(args.template)])
             if args.scale and args.scale != 1.0:

@@ -123,11 +123,14 @@ class Printer(AbstractContextManager):
         within `timeout` seconds."""
         return self.mqtt.request_state(timeout=timeout)
 
-    def publish(self, payload: dict[str, Any]) -> None:
-        """Sign and publish a raw payload on device/<serial>/request.
-        For escape hatches when the typed methods don't cover what you
-        need. The payload is signed exactly like every cmd_* publishes."""
-        self.mqtt.publish(payload)
+    def publish(self, payload: dict[str, Any], *, timeout: float = 8.0) -> Any:
+        """Publish a raw command and return the printer's reply
+        (beambam.state.CommandReply) or None if none arrived in `timeout`
+        seconds. Signed exactly like the CLI verbs (beambam.commands):
+        print.* with the recovered per-install key. Raises
+        beambam.commands.CommandRefused when the printer refuses it."""
+        from beambam.commands import send_command
+        return send_command(self.mqtt, payload, timeout=timeout, raise_on_refusal=True)
 
     # --- printing ---------------------------------------------------------
 
@@ -140,13 +143,18 @@ class Printer(AbstractContextManager):
                     timelapse: bool = False,
                     flow_cali: bool = False,
                     bed_levelling: bool = True,
-                    vibration_cali: bool = False) -> dict[str, Any]:
+                    vibration_cali: bool = False,
+                    confirm_timeout: float = 45.0) -> dict[str, Any]:
         """Send the signed start_print MQTT. `ams` accepts an int (single
         slot 0..15) or a list of ints (multi-filament). `use_ams=False`
         with `ams=None` switches to external spool. `local_path`
         auto-derives bed_type+bed_temp from the .gcode.3mf — pass it
-        when uploading + printing in one shot. Returns the wire payload
-        that was published (useful for logging/diff in simulate mode)."""
+        when uploading + printing in one shot. The file must be in the
+        printer's cache/ (`upload()` puts it there).
+
+        Returns ``{"verdict": "started"|"refused"|"unconfirmed", "detail"}``
+        after waiting up to `confirm_timeout` s for the printer's answer
+        (print_job.await_print_start)."""
         from beambam.print_job import start_print
         if use_ams is None:
             use_ams = ams is not None
@@ -154,6 +162,8 @@ class Printer(AbstractContextManager):
             ams_slot: int | list[int] = 0
         else:
             ams_slot = ams
+        from beambam.print_job import await_print_start
+        since = self.mqtt.message_seq if hasattr(self.mqtt, "message_seq") else 0
         start_print(
             self.mqtt, gcode_filename,
             use_ams=use_ams, ams_slot=ams_slot,
@@ -162,16 +172,22 @@ class Printer(AbstractContextManager):
             timelapse=timelapse, flow_cali=flow_cali,
             bed_levelling=bed_levelling, vibration_cali=vibration_cali,
         )
-        return getattr(self.mqtt, "published", {}) or {}
+        if not hasattr(self.mqtt, "wait_for"):           # test / simulate clients
+            return {"verdict": "sent", "detail": ""}
+        verdict, detail = await_print_start(self.mqtt, since, confirm_timeout)
+        return {"verdict": verdict, "detail": detail}
 
-    def pause(self) -> None:
-        self.mqtt.publish({"print": {"sequence_id": "0", "command": "pause"}})
+    def pause(self) -> Any:
+        from beambam.commands import command_payload
+        return self.publish(command_payload("print", "pause", param=""))
 
-    def resume(self) -> None:
-        self.mqtt.publish({"print": {"sequence_id": "0", "command": "resume"}})
+    def resume(self) -> Any:
+        from beambam.commands import command_payload
+        return self.publish(command_payload("print", "resume", param=""))
 
-    def stop(self) -> None:
-        self.mqtt.publish({"print": {"sequence_id": "0", "command": "stop"}})
+    def stop(self) -> Any:
+        from beambam.commands import command_payload
+        return self.publish(command_payload("print", "stop", param=""))
 
     # --- direct control ---------------------------------------------------
 
@@ -179,10 +195,9 @@ class Printer(AbstractContextManager):
         """Send a single raw G-code line. The printer accepts most
         Marlin-ish commands (G/M/T) and a smattering of Bambu-specific
         M codes — see docs/LOCAL_CONTROL_PATHS.md."""
-        self.mqtt.publish({
-            "print": {"sequence_id": "0", "command": "gcode_line",
-                      "param": line + ("\n" if not line.endswith("\n") else "")}
-        })
+        from beambam.commands import command_payload
+        self.publish(command_payload("print", "gcode_line",
+                                     param=line + ("\n" if not line.endswith("\n") else "")))
 
     def set_temp(self, *, nozzle: int | None = None,
                  bed: int | None = None,
@@ -210,20 +225,17 @@ class Printer(AbstractContextManager):
                        "loop_times": 0, "interval_time": 0}
         })
 
-    def ams_load(self, slot: int) -> None:
-        """Load filament from AMS global slot (0..15) into the active
-        extruder."""
-        self.mqtt.publish({
-            "print": {"sequence_id": "0", "command": "ams_change_filament",
-                      "target": int(slot), "curr_temp": 215, "tar_temp": 215}
-        })
+    def ams_load(self, slot: int, *, curr_temp: int = 215, tar_temp: int = 215) -> Any:
+        """Load filament from AMS global slot (0..15: unit*4 + tray) — the
+        same payload as `beambam ams-load` (beambam.commands)."""
+        from beambam.commands import ams_load_payload
+        return self.publish(ams_load_payload(int(slot) // 4, int(slot) % 4,
+                                             curr_temp=curr_temp, tar_temp=tar_temp))
 
-    def ams_unload(self) -> None:
+    def ams_unload(self, ams_id: int = 0, *, curr_temp: int = 215, tar_temp: int = 215) -> Any:
         """Unload the currently-loaded filament back to its AMS slot."""
-        self.mqtt.publish({
-            "print": {"sequence_id": "0", "command": "ams_change_filament",
-                      "target": 255, "curr_temp": 215, "tar_temp": 215}
-        })
+        from beambam.commands import ams_unload_payload
+        return self.publish(ams_unload_payload(ams_id, curr_temp=curr_temp, tar_temp=tar_temp))
 
     def home(self, *, axes: str = "XYZ") -> None:
         """Home one or more axes. `axes='Z'` for Z-only, 'XY' for the
@@ -269,12 +281,16 @@ class Printer(AbstractContextManager):
     # --- FTPS (no MQTT) ---------------------------------------------------
 
     def upload(self, local_path: str | Path,
-               remote_name: str | None = None) -> None:
-        """FTPS-implicit-TLS upload to the printer's SD card. No MQTT;
-        the file appears on the Files screen for manual or scripted
-        start_print() later."""
+               remote_name: str | None = None,
+               remote_dir: str | None = "cache") -> None:
+        """FTPS-implicit-TLS upload to the printer's SD card. No MQTT.
+        Defaults to cache/, the only place the X2D/H2D LAN print start
+        (`ftp:///cache/<file>`) finds a file; it used to upload to the root,
+        so upload() + start_print() failed file-verify (err 84033544).
+        Pass remote_dir=None for the root."""
         from beambam.ftps import upload_file
-        upload_file(self.creds, Path(local_path), remote_name=remote_name)
+        upload_file(self.creds, Path(local_path), remote_name=remote_name,
+                    remote_dir=remote_dir)
 
     def download(self, remote_name: str, local_path: str | Path) -> int:
         """FTPS download of a file from the printer's SD card. Returns

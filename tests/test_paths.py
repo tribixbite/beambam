@@ -101,3 +101,17 @@ def test_creds_and_configcli_share_x2d_creds(clean_env: Path, monkeypatch: pytes
     monkeypatch.setenv("X2D_CREDS", str(ini))
     assert Creds.list_names() == [""]
     assert Creds.resolve_default().ip == "1.2.3.4"
+
+
+def test_named_section_beats_env_vars(clean_env: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """X2D_IP for printer A must not leak into an explicit --printer B."""
+    ini = clean_env / "creds.ini"
+    ini.write_text("[printer:a]\nip = 10.0.0.1\ncode = aaaa\nserial = SA\n"
+                   "[printer:b]\nip = 10.0.0.2\ncode = bbbb\nserial = SB\n", encoding="utf-8")
+    monkeypatch.setenv("X2D_CREDS", str(ini))
+    monkeypatch.setenv("X2D_IP", "10.0.0.1")
+    b = Creds.resolve(argparse.Namespace(ip=None, code=None, serial=None, printer="b"))
+    assert (b.ip, b.code, b.serial) == ("10.0.0.2", "bbbb", "SB")
+    # Explicit flags still win over the named section.
+    b2 = Creds.resolve(argparse.Namespace(ip="10.0.0.9", code=None, serial=None, printer="b"))
+    assert b2.ip == "10.0.0.9" and b2.code == "bbbb"

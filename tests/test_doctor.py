@@ -46,9 +46,10 @@ def test_decode_hms_unknown_falls_back():
 
 def test_check_ams_humidity_levels():
     state = {"print": {"ams": {"ams": [
-        {"id": "0", "humidity": "1"},
-        {"id": "1", "humidity": "3"},
-        {"id": "2", "humidity": "4"},
+        # MQTT index: 5 = dry, 2 = damp, 1 = wet (shown as 6 - index).
+        {"id": "0", "humidity": "5"},
+        {"id": "1", "humidity": "2"},
+        {"id": "2", "humidity": "1"},
     ]}}}
     checks = check_ams_humidity(state)
     sevs = {c.name: c.severity for c in checks}
@@ -228,7 +229,11 @@ def test_cmd_doctor_exit_0_all_pass():
     args = argparse.Namespace(no_color=True, json_out=False)
     state = {"print": {"gcode_state": "IDLE", "ams": {"ams": []},
                        "hms": [], "wifi_signal": "-50dBm"}}
-    with patch("beambam.Printer") as Printer:
+    from beambam.doctor import Check
+    # The signing check reads this machine's ~/.x2d: pin it to pass.
+    with patch("beambam.Printer") as Printer, \
+         patch("beambam.doctor.check_signing",
+               return_value=Check("Control", "Print-control signing", "pass", "ok")):
         fake = MagicMock()
         Printer.return_value.__enter__.return_value = fake
         fake.state.return_value = state
@@ -239,7 +244,7 @@ def test_cmd_doctor_exit_0_all_pass():
 def test_cmd_doctor_exit_1_with_warnings():
     args = argparse.Namespace(no_color=True, json_out=False)
     state = {"print": {"gcode_state": "IDLE", "ams":
-                        {"ams": [{"id": "0", "humidity": "3"}]},
+                        {"ams": [{"id": "0", "humidity": "2"}]},
                        "hms": [], "wifi_signal": "-50dBm"}}
     with patch("beambam.Printer") as Printer:
         fake = MagicMock()

@@ -174,11 +174,14 @@ def format_devices(devices: list[dict[str, Any]]) -> str:
         return "no printers bound to this Bambu Cloud account"
     lines = [f"{len(devices)} bound printer(s):"]
     for d in devices:
-        code = d.get('dev_access_code') or ""
+        # The bind list carries the LAN access code (dev_access_code); it
+        # used to print its first 4 characters labelled "version=". Show
+        # only whether one is present.
+        has_code = "yes" if d.get("dev_access_code") else "no"
         lines.append(
             f"  [{d.get('dev_id')}] {d.get('name')} "
             f"model={d.get('dev_product_name')} "
-            f"version={code[:4]}…  "
+            f"access_code={has_code}  "
             f"online={d.get('online')}"
         )
     return "\n".join(lines)

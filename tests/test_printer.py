@@ -120,11 +120,12 @@ def test_upload_delegates_to_ftps_helper(tmp_path):
     fixture.write_bytes(b"x")
     p = Printer(creds=FAKE)
     with patch("beambam.ftps.upload_file") as upload:
+        # cache/ by default: where the X2D LAN print start looks for the file.
         p.upload(fixture)
-        upload.assert_called_once_with(FAKE, fixture, remote_name=None)
+        upload.assert_called_once_with(FAKE, fixture, remote_name=None, remote_dir="cache")
         upload.reset_mock()
-        p.upload(fixture, remote_name="other.3mf")
-        upload.assert_called_once_with(FAKE, fixture, remote_name="other.3mf")
+        p.upload(fixture, remote_name="other.3mf", remote_dir=None)
+        upload.assert_called_once_with(FAKE, fixture, remote_name="other.3mf", remote_dir=None)
 
 
 def test_list_files_delegates(tmp_path):
@@ -149,3 +150,35 @@ def test_live_state_request(live_printer):
     assert "print" in s
     gs = s["print"].get("gcode_state")
     assert gs in {"IDLE", "RUNNING", "PAUSE", "FINISH", "FAILED", "PREPARE"}
+
+
+def test_print_control_goes_through_send_command():
+    """pause/stop/gcode use beambam.commands.send_command (print.* signed with
+    the recovered key), not the leaked-cert X2DClient.publish."""
+    p = Printer(creds=FAKE)
+    p._client = MagicMock()
+    with patch("beambam.commands.send_command", return_value=None) as send:
+        p.pause()
+        p.gcode("M400")
+    sent = [c.args[1] for c in send.call_args_list]
+    assert sent[0]["print"]["command"] == "pause"
+    assert sent[1]["print"]["command"] == "gcode_line"
+    assert sent[1]["print"]["param"] == "M400\n"
+    assert all(c.kwargs["raise_on_refusal"] for c in send.call_args_list)
+
+
+def test_refused_command_raises():
+    import pytest as _pytest
+    from beambam.commands import CommandRefused, send_command
+    from beambam.state import command_reply
+
+    class _Cli:
+        message_seq = 0
+        def publish(self, payload): pass
+        def wait_for(self, pred, timeout, since=None):
+            msg = {"system": {"command": "ledctrl", "result": "failed", "err_code": 7}}
+            return msg if pred(msg) else None
+    with _pytest.raises(CommandRefused, match="err_code 7"):
+        send_command(_Cli(), {"system": {"command": "ledctrl"}}, raise_on_refusal=True)
+    assert command_reply({"system": {"command": "ledctrl", "result": "success"}},
+                         "system", "ledctrl").ok

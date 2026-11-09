@@ -89,6 +89,9 @@ dev = [
     # (runtime/ha/test_*.py — they spin up an amqtt broker on a free
     # port so paho clients can publish + verify without a real broker).
     "amqtt>=0.11",
+    # Renders the HA entity templates in tests/test_ha_discovery.py with
+    # the same engine Home Assistant uses (skipped when absent).
+    "jinja2>=3.1",
 ]
 
 [project.urls]
@@ -132,6 +135,7 @@ packages = ["beambam", "runtime"]
 "lan_upload.py" = "lan_upload.py"
 "x2d_slice.py" = "x2d_slice.py"
 "inject_thumbnails.py" = "inject_thumbnails.py"
+"make_frame.py" = "make_frame.py"
 "remix_3mf.py" = "remix_3mf.py"
 "preflight_3mf.py" = "preflight_3mf.py"
 "resolve_profile.py" = "resolve_profile.py"
@@ -160,6 +164,7 @@ include = [
     "/lan_upload.py",
     "/x2d_slice.py",
     "/inject_thumbnails.py",
+    "/make_frame.py",
     "/remix_3mf.py",
     "/preflight_3mf.py",
     "/resolve_profile.py",
@@ -191,6 +196,10 @@ exclude = [
 [tool.ruff]
 line-length = 100
 target-version = "py310"
+# Device-provisioning tooling (Frida/capstone scripts for `beambam key`) and
+# the site OG-image generator are auxiliary scratch scripts with intentional
+# one-liner style; lint the mainline package + shipped helpers, not these.
+extend-exclude = ["runtime/handy_extract", "site", "runtime/bambu_extract"]
 
 [tool.ruff.lint]
 # Lean ruleset for the beambam package. Stricter codes (B/UP/I/RUF) flag
@@ -228,12 +237,6 @@ addopts = "-ra --strict-markers"
 markers = [
     "live: requires a real printer reachable at BEAMBAM_TEST_IP (default skip in CI)",
     "slow: takes > 10 seconds",
-]
-filterwarnings = [
-    # tests/test_remix_3mf.py returns bool from its test_* helpers so the
-    # same module can be invoked standalone (`python tests/test_remix_3mf.py`).
-    # TODO: convert to assert-style + drop the standalone main() shim.
-    "ignore::pytest.PytestReturnNotNoneWarning",
 ]
 # The runtime/ subpackages ship script-style test_*.py files that are
 # meant to be invoked directly (`python runtime/ha/test_ha.py`) rather

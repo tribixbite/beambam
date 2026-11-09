@@ -144,6 +144,24 @@ class TestCloudUploadFile(unittest.TestCase):
         called_req = mu.call_args[0][0]
         self.assertEqual(called_req.get_method(), "PUT")
 
+    def test_shape_A_presigned_v4_signature(self):
+        """OSS V4 presigned URLs name the signature `x-oss-signature`, not
+        `Signature`. The old `"Signature" in url` test misrouted these to the
+        STS branch and raised; a presigned URL is one with a url and no STS
+        creds, whatever the signature parameter is called."""
+        cli = cloud_client.CloudClient(self.s)
+        token = {
+            "url": ("https://my-bucket.oss-cn-shanghai.aliyuncs.com/"
+                    "users/42/abc.3mf?x-oss-signature=abc123&"
+                    "x-oss-signature-version=OSS4-HMAC-SHA256"),
+            "fileName": "users/42/abc.3mf",
+        }
+        with mock.patch("urllib.request.urlopen") as mu:
+            mu.return_value = _FakeUrlopenResp(status=200)
+            out = cli.cloud_upload_file(self.file, token=token)
+        self.assertTrue(out["url"].startswith("cloud://my-bucket/"))
+        self.assertEqual(mu.call_args[0][0].get_method(), "PUT")
+
     def test_shape_B_sts_credentials_signs_correctly(self):
         """Shape B: STS creds + bucket/region/path; we have to HMAC-sign."""
         cli = cloud_client.CloudClient(self.s)

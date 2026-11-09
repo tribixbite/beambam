@@ -65,13 +65,21 @@ def test_hex_to_rgb_too_short_returns_default():
     assert _hex_to_rgb("123") == (128, 128, 128)
 
 
-def test_humidity_bar_clamps_to_0_4():
-    assert _humidity_bar("0") == "░░░░"
-    assert _humidity_bar("2") == "▓▓░░"
-    assert _humidity_bar("4") == "▓▓▓▓"
-    assert _humidity_bar("5") == "▓▓▓▓"             # clamped
-    assert _humidity_bar("-1") == "░░░░"            # clamped
+def test_humidity_bar_shows_user_facing_level():
+    # MQTT index 5 = dry (level 1), 1 = wet (level 5): Bambu shows 6 - index.
+    assert _humidity_bar("5") == "▓░░░░"
+    assert _humidity_bar("2") == "▓▓▓▓░"
+    assert _humidity_bar("1") == "▓▓▓▓▓"
+    assert _humidity_bar("0") == "?"                # outside 1..5
+    assert _humidity_bar("-1") == "?"
     assert _humidity_bar("?") == "?"                # non-int
+
+
+def test_humidity_level_and_percent():
+    from beambam.ams import humidity_level, humidity_percent
+    assert [humidity_level(i) for i in (1, 2, 3, 4, 5)] == [5, 4, 3, 2, 1]
+    assert humidity_percent({"humidity_raw": "40"}) == 40
+    assert humidity_percent({}) is None
 
 
 def test_tray_state_label_known():
@@ -567,3 +575,27 @@ def test_live_ams_status_renders(live_printer):
     ams_block = state.get("print", {}).get("ams", {})
     text = format_status(ams_block, color=False)
     assert "AMS" in text or "no AMS" in text
+
+
+def test_generic_info_idx_covers_common_types():
+    from beambam.ams import _generic_info_idx
+    # Verified against the installed Bambu Studio generic @base catalogue.
+    assert _generic_info_idx("PLA") == "GFL99"
+    assert _generic_info_idx("PETG") == "GFG99"
+    assert _generic_info_idx("ABS") == "GFB99"
+    assert _generic_info_idx("ASA") == "GFB98"
+    assert _generic_info_idx("PC") == "GFC99"
+    assert _generic_info_idx("TPU") == "GFU99"
+    # Decorated / compound names fall back to the base polymer, not PLA.
+    assert _generic_info_idx("PETG-CF") == "GFG98"
+    assert _generic_info_idx("ABS-GF Pro") == "GFB99"
+    # A genuinely unknown type returns "" (never a wrong PLA claim).
+    assert _generic_info_idx("Unobtanium") == ""
+
+
+def test_format_status_survives_non_numeric_unit_id():
+    """An external/HT unit with a non-numeric id must not crash `beambam ams`."""
+    from beambam.ams import format_status
+    out = format_status({"ams": [{"id": "?", "humidity": "2", "temp": "25",
+                                  "tray": [{"id": 0, "tray_type": "PLA"}]}]}, color=False)
+    assert "slot" in out and "PLA" in out

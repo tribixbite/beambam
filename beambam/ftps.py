@@ -115,29 +115,31 @@ def download_file(creds: "Creds", remote_name: str, local_path: Path) -> int:
     (see _manual_ftp_tls + the file-level INVALID_ALERT note)."""
     ftp = _manual_ftp_tls(creds, timeout=20.0)
     written = 0
-    ftp.voidcmd("TYPE I")
-    conn = ftp.transfercmd(f"RETR {remote_name}")
     try:
-        with local_path.open("wb") as f:
-            while True:
-                chunk = conn.recv(32768)
-                if not chunk:
-                    break
-                f.write(chunk)
-                written += len(chunk)
-        if isinstance(conn, ssl.SSLSocket):
-            try:
-                conn.unwrap()
-            except (OSError, ssl.SSLError):
-                pass
+        ftp.voidcmd("TYPE I")
+        conn = ftp.transfercmd(f"RETR {remote_name}")   # may raise -> ftp still closed below
+        try:
+            with local_path.open("wb") as f:
+                while True:
+                    chunk = conn.recv(32768)
+                    if not chunk:
+                        break
+                    f.write(chunk)
+                    written += len(chunk)
+            if isinstance(conn, ssl.SSLSocket):
+                try:
+                    conn.unwrap()
+                except (OSError, ssl.SSLError):
+                    pass
+        finally:
+            conn.close()
+        ftp.voidresp()
     finally:
-        conn.close()
-    ftp.voidresp()
-    try:
-        ftp.quit()
-    except (OSError, ssl.SSLError, ftplib.error_perm):
-        try: ftp.close()
-        except Exception: pass
+        try:
+            ftp.quit()
+        except (OSError, ssl.SSLError, ftplib.error_perm, EOFError):
+            try: ftp.close()
+            except Exception: pass
     return written
 
 
@@ -199,7 +201,7 @@ def upload_file(creds: "Creds", local_path: Path,
     Bambu Studio's desktop LAN flow does. With no `remote_dir` the file lands at
     the FTP root (back-compat)."""
     if not local_path.is_file():
-        sys.exit(f"file not found: {local_path}")
+        raise FileNotFoundError(f"file not found: {local_path}")
     if remote_name is None:
         remote_name = local_path.name
     ftp = _manual_ftp_tls(creds, timeout=15.0)

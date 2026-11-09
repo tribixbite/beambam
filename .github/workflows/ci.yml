@@ -31,17 +31,27 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install --upgrade pip
-      - run: pip install ruff mypy paho-mqtt cryptography
-      - name: ruff check (beambam package only — legacy modules tracked separately)
-        run: |
-          # Lint the package + all beambam-owned tests. Legacy modules
-          # (x2d_bridge.py, cloud_client.py, etc.) and the pre-rename test
-          # files (test_ams_mapping, test_cloud_client, test_ipcam_commands,
-          # test_remix_3mf, test_serve_smoke, test_signing_roundtrip) have
-          # years of style drift — fix incrementally, not in CI.
-          ruff check beambam $(ls tests/test_*.py | grep -vE 'test_(ams_mapping|cloud_client|ipcam_commands|remix_3mf|serve_smoke|signing_roundtrip)\.py$' | tr '\n' ' ')
-      - name: mypy (beambam shim)
-        run: mypy beambam
+      # Pinned so a new ruff/mypy release can't turn CI red without a commit.
+      - run: pip install "ruff==0.17.1" "mypy==2.4.0" paho-mqtt cryptography
+      - name: ruff check (whole repo; device-tooling excluded in pyproject)
+        run: ruff check .
+
+  typecheck:
+    # mypy on BOTH OSes: socket.AF_UNIX exists only on POSIX, so a
+    # Windows-only type error (serve_socket, cli/info) hides on Ubuntu.
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install --upgrade pip
+      - run: pip install "mypy==2.4.0" paho-mqtt cryptography numpy numpy-stl Pillow
+      - run: mypy beambam
 
   test:
     runs-on: ${{ matrix.os }}
@@ -63,7 +73,7 @@ jobs:
 
   build:
     runs-on: ubuntu-24.04
-    needs: [lint, test]
+    needs: [lint, typecheck, test]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -72,12 +82,21 @@ jobs:
       - run: pip install --upgrade pip build
       - name: Build wheel + sdist
         run: python -m build
-      - name: Verify wheel installs + entry points present
+      - name: Verify wheel installs + entry points work from a clean env
         run: |
-          pip install dist/beambam-*.whl
+          python -m venv /tmp/wheelcheck
+          . /tmp/wheelcheck/bin/activate
+          pip install dist/beambam-*.whl numpy numpy-stl Pillow
           beambam --version
           bb --version
-          which beambam-mcp beambam-slice beambam-upload beambam-print
+          # --help must not crash (UnicodeEncodeError on narrow consoles, F-06)
+          for s in beambam-mcp beambam-slice beambam-upload beambam-print; do
+            command -v "$s"
+            "$s" --help >/dev/null
+          done
+          # `beambam frame` imports make_frame — only works if it ships (F-03)
+          beambam frame --preset mira --out /tmp/frame.stl
+          test -s /tmp/frame.stl
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:

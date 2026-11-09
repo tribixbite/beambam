@@ -109,3 +109,43 @@ def split_jpeg_frames(buf: bytes) -> tuple[bytes | None, bytes]:
         frame, buf = buf[:idx], buf[idx:]
         if frame.startswith(b"\xff\xd8") and frame.endswith(b"\xff\xd9"):
             latest = frame
+
+
+class NonBlockingLog:
+    """A stderr logger that never blocks the caller.
+
+    A parent that starts beambam with ``stderr=PIPE`` and only reads the pipe
+    when the child exits (pokefit's camera proxy does) lets the OS pipe fill
+    (4 KB on Windows); the next ``print(..., file=sys.stderr)`` then blocks
+    forever. In `beambam camera` that write happened while holding the
+    supervisor lock, so every HTTP request hung. Lines go into a bounded
+    queue that a daemon thread writes out; when the queue is full a line is
+    dropped (and counted) instead of blocking.
+
+    Call it like ``print``: ``log("text", more, sep=" ")`` (``file=`` is
+    accepted and ignored so call sites can be converted mechanically).
+    """
+
+    def __init__(self, stream: IO[str] | None = None, maxsize: int = 256) -> None:
+        import sys
+        self._stream = stream if stream is not None else sys.stderr
+        self._q: queue.Queue[str] = queue.Queue(maxsize=maxsize)
+        self.dropped = 0
+        self._thread = threading.Thread(target=self._run, name="nonblocking-log", daemon=True)
+        self._thread.start()
+
+    def __call__(self, *parts: object, sep: str = " ", end: str = "\n",
+                 file: object = None, flush: bool = False) -> None:  # noqa: ARG002
+        try:
+            self._q.put_nowait(sep.join(str(p) for p in parts) + end)
+        except queue.Full:
+            self.dropped += 1
+
+    def _run(self) -> None:
+        while True:
+            line = self._q.get()
+            try:
+                self._stream.write(line)
+                self._stream.flush()
+            except (OSError, ValueError):
+                pass     # closed / broken stderr: nothing useful to do

@@ -257,11 +257,15 @@ def test_patch_wrapper_for_copies_emits_n_objects():
     text = patched.decode("utf-8")
     objs = re.findall(r'<object\s+id="(\d+)"', text)
     items = re.findall(r'<item\s+objectid="(\d+)"', text)
-    # Should be 4 objects (ids 2, 3, 4, 5) + 4 items referencing each
+    # 4 objects numbered up from the template's own wrapper object id
+    # (2 in the rumi template, 3 in a Bambu project with a separate mesh
+    # object) + 4 items referencing each.
+    base = int(re.search(r'<object\s+id="(\d+)"', wrapper.decode("utf-8")).group(1))
+    expected = list(range(base, base + 4))
     assert len(objs) == 4
-    assert sorted(int(x) for x in objs) == [2, 3, 4, 5]
+    assert sorted(int(x) for x in objs) == expected
     assert len(items) == 4
-    assert sorted(int(x) for x in items) == [2, 3, 4, 5]
+    assert sorted(int(x) for x in items) == expected
 
 
 @needs_template

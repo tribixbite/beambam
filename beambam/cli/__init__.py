@@ -1,7 +1,5 @@
-"""beambam.cli — CLI handlers being migrated out of x2d_bridge.py.
-
-Phase 5 of `docs/BRIDGE_SPLIT_PLAN.md`. Each sub-package groups related
-handlers:
+"""beambam.cli — the `beambam` command. `main()` here builds the argparse
+tree and dispatches; the handlers live in sub-packages by topic:
 
   beambam.cli.cloud   — every `cmd_cloud_*` handler + Printables /
                         MakerWorld search variants
@@ -12,19 +10,14 @@ handlers:
   beambam.cli.info    — read-only status + utility (status/health/watch
                         /tail/notify/printers/fetch/analyze/fcm-harvest
                         /help)
-  beambam.cli.lan     — LAN file-mover (upload/files)
-  beambam.cli.daemon  — long-running services (webrtc, ha-publish)
+  beambam.cli.lan     — LAN file-mover + print (upload/files/print/slice-print)
+  beambam.cli.daemon  — long-running services (serve, webrtc, ha-publish)
 
-Handlers in this package expose two things to x2d_bridge's `main()`:
-
-  add_subparser(subparsers, root_parser=None) -> None
-      Register the subparser(s) the module owns.
-  (each `cmd_*` is also importable directly for tests.)
-
-x2d_bridge.py imports `add_subparser` from each module and calls it
-inside `main()`. The bridge stays the single argparse-orchestration
-point until Phase 5e collapses `main()` into `beambam/cli/__init__.py`
-too.
+Each module exposes `add_subparser(subparsers, root_parser=None)` which
+`main()` calls to register its subparsers; every `cmd_*` is importable
+directly for tests. (The original single-file `x2d_bridge.py` was removed
+in v1.5.0; `x2d_bridge` survives only as a console-script alias of
+`beambam` for the network-plugin shim.)
 """
 from __future__ import annotations
 
@@ -214,18 +207,9 @@ from beambam.cli.lan import (
 from beambam.paths import config_path
 
 def main() -> int:
-    # On Windows the default console codepage (cp1252) can't encode the
-    # em-dashes / arrows / degree signs in our help + status text, which
-    # crashes `--help` (and any unicode output) with UnicodeEncodeError.
-    # Force UTF-8 on the std streams so the CLI prints cleanly on any console.
-    if sys.platform == "win32":                       # pragma: no cover (POSIX CI)
-        for _stream in (sys.stdout, sys.stderr):
-            _reconfigure = getattr(_stream, "reconfigure", None)
-            if _reconfigure is not None:
-                try:
-                    _reconfigure(encoding="utf-8")
-                except (ValueError, OSError):
-                    pass
+    # UTF-8 output on Windows consoles/pipes (help text has em dashes, ≈, °).
+    from beambam.console import utf8_stdio
+    utf8_stdio()
     p = argparse.ArgumentParser(prog="beambam", description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter,
                                 epilog=_build_epilog())
@@ -342,29 +326,35 @@ def main() -> int:
     d.set_defaults(fn=cmd_daemon)
 
     # ----- print-control verbs -----------------------------------------
-    # These auto-route over the cloud broker with the recovered RSA signing key
-    # (X-series firmware rejects unsigned LAN print.*); pass --lan to force LAN.
-    pa = sub.add_parser("pause", help="Pause current print (cloud-signed; --lan to force LAN)")
+    # LAN-signed with the recovered per-install key (`beambam key`) when it is
+    # on disk; the cloud-signed relay otherwise, or with --cloud. Each verb
+    # waits for the printer's reply: exit 1 when the printer refuses.
+    pa = sub.add_parser("pause", help="Pause current print (LAN-signed; --cloud for the relay)")
     pa.add_argument("--lan", action="store_true", help="force the LAN publish path")
+    pa.add_argument("--cloud", action="store_true", help="use the cloud-signed relay instead of LAN")
     pa.set_defaults(fn=cmd_pause)
 
-    re_ = sub.add_parser("resume", help="Resume current print (cloud-signed)")
+    re_ = sub.add_parser("resume", help="Resume current print (LAN-signed)")
     re_.add_argument("--lan", action="store_true", help="force the LAN publish path")
+    re_.add_argument("--cloud", action="store_true", help="use the cloud-signed relay instead of LAN")
     re_.set_defaults(fn=cmd_resume)
 
-    sp = sub.add_parser("stop", help="Abort current print (cloud-signed)")
+    sp = sub.add_parser("stop", help="Abort current print (LAN-signed)")
     sp.add_argument("--lan", action="store_true", help="force the LAN publish path")
+    sp.add_argument("--cloud", action="store_true", help="use the cloud-signed relay instead of LAN")
     sp.set_defaults(fn=cmd_stop)
 
     sk = sub.add_parser("skip", help="Skip objects on the running print "
-                                     "(print.skip_objects; cloud-signed)")
+                                     "(print.skip_objects; LAN-signed)")
     sk.add_argument("obj_ids", nargs="+", type=int,
                     help="per-plate object id(s) to skip")
     sk.add_argument("--lan", action="store_true", help="force the LAN publish path")
+    sk.add_argument("--cloud", action="store_true", help="use the cloud-signed relay instead of LAN")
     sk.set_defaults(fn=cmd_skip)
 
     sa = sub.add_parser("start", help="Smart start: resume paused print, else print again (ranked)")
     sa.add_argument("--lan", action="store_true", help="force the LAN publish path")
+    sa.add_argument("--cloud", action="store_true", help="use the cloud-signed relay instead of LAN")
     sa.set_defaults(fn=cmd_start)
 
     ky = sub.add_parser("key", aliases=["token"],
@@ -1173,11 +1163,21 @@ def main() -> int:
     ha.add_argument("--printer", default="",
                     help="Printer name (matches --printer on daemon)")
     ha.add_argument("--device-serial", default="",
-                    help="HA device identifier (defaults to printer's serial)")
+                    help="Printer serial used as the HA device identifier "
+                         "(default: from the credentials file, else from "
+                         "the daemon's state)")
     ha.add_argument("--device-model", default="X2D",
-                    help="Model string for HA device card (default X2D)")
+                    help="Printer model, e.g. X2D, H2D, X1C, P1S (default X2D); "
+                         "selects dual-nozzle and door entities")
     ha.add_argument("--discovery-prefix", default="homeassistant",
                     help="HA discovery topic prefix (default homeassistant)")
+    ha.add_argument("--ha-status-topic", default="homeassistant/status",
+                    help="HA birth-message topic; discovery is republished "
+                         "when HA sends 'online' there (default "
+                         "homeassistant/status)")
+    ha.add_argument("--configuration-url", default="",
+                    help="URL shown as the device's 'Visit' link in HA "
+                         "(default: --daemon-url unless it is loopback)")
     ha.set_defaults(fn=cmd_ha_publish)
 
     from beambam.frame import add_subparser as _frame_subparser

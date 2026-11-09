@@ -97,6 +97,7 @@ class Creds:
 
         ini_ip = ini_code = ini_serial = ""
         chosen_name = ""
+        explicit_section = False      # --printer / X2D_PRINTER named one
         ini_path = credentials_path()
         if ini_path.exists():
             cp = configparser.ConfigParser()
@@ -114,6 +115,7 @@ class Creds:
                     )
                 section = target
                 chosen_name = requested
+                explicit_section = True
             elif cp.has_section("printer"):
                 section = "printer"
             elif len(named_sections) == 1:
@@ -132,9 +134,18 @@ class Creds:
                 ini_code = cp.get(section, "code", fallback="")
                 ini_serial = cp.get(section, "serial", fallback="")
 
-        ip = (getattr(args, "ip", None) or env_ip or ini_ip)
-        code = (getattr(args, "code", None) or env_code or ini_code)
-        serial = (getattr(args, "serial", None) or env_serial or ini_serial)
+        # Precedence: explicit flags > a section the caller NAMED (--printer /
+        # X2D_PRINTER) > X2D_IP/CODE/SERIAL > the default [printer] section.
+        # Env vars used to beat a named section field by field, so X2D_IP
+        # (printer A) + `--printer B` connected to A with B's access code.
+        if explicit_section:
+            ip = getattr(args, "ip", None) or ini_ip or env_ip
+            code = getattr(args, "code", None) or ini_code or env_code
+            serial = getattr(args, "serial", None) or ini_serial or env_serial
+        else:
+            ip = getattr(args, "ip", None) or env_ip or ini_ip
+            code = getattr(args, "code", None) or env_code or ini_code
+            serial = getattr(args, "serial", None) or env_serial or ini_serial
         if not (ip and code and serial):
             sys.exit(
                 "credentials missing — provide --ip --code --serial, or\n"

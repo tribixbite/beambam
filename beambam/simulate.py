@@ -18,9 +18,14 @@ Usage:
     beambam simulate gcode "G28 Z"
     beambam simulate light --on
 
-The output is the SIGNED envelope (sign_payload wraps it), exactly what
-the bridge would publish to device/<serial>/request. Cert/sig are
-deterministic for a given payload so the golden-file diff is stable.
+The output's BODY is exactly what the bridge builds for
+device/<serial>/request (the X2D `project_file` shape when a device cert
+is cached, else the legacy shape). The signature wrapper shown is the
+leaked-Bambu-Connect `sign_payload` envelope, used here for a stable
+golden-file diff — it is NOT the signature an X2D/H2D actually accepts
+for print.*, which is RSA-signed with the per-install key recovered by
+`beambam key` (beambam.mqtt_sign). Pass sign=False / --no-sign to see the
+unsigned body alone.
 """
 from __future__ import annotations
 
@@ -60,9 +65,10 @@ def simulate_start_print(
     serial: str = "SIMULATED000000",
     sign: bool = True,
 ) -> dict[str, Any]:
-    """Build a start_print payload. Returns the SIGNED envelope (with
-    cert + signature) by default; pass sign=False to get the inner
-    unsigned dict."""
+    """Build a start_print payload. Returns the body wrapped in the
+    leaked-cert `sign_payload` envelope by default (a stable preview, not
+    the recovered-key signature an X2D accepts — see the module docstring);
+    pass sign=False for the inner unsigned body."""
     from beambam.mqtt import sign_payload
     from beambam.print_job import start_print
     client = _CapturingClient(serial=serial)

@@ -143,3 +143,7 @@ runtime/handy_extract/captures/
 runtime/handy_extract/keystore_dumper/build/
 runtime/handy_extract/sign_helper/build/
 scratch/
+
+# Security audits + phone-print design — reference only, not for the public repo
+# (they enumerate unfixed exploits in shipped code; see docs/plan-2026-11/TASKS.md).
+docs/plan-2026-11/

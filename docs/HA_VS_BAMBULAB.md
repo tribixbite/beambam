@@ -1,148 +1,74 @@
-# X2D bridge HA integration vs. ha-bambulab feature matrix
+# beambam's HA publisher vs. ha-bambulab
 
-[`ha-bambulab`](https://github.com/greghesp/ha-bambulab) is the
-community gold-standard Home Assistant custom-component for Bambu Lab
-printers. It supports A1, A1-mini, P1P, P1S, X1C, X1E and the H2D —
-but **not the X2D**, because the X2D's RSA-signed MQTT (Jan-2025+
-firmware) breaks ha-bambulab's plain-text MQTT client until the
-ha-bambulab maintainers add RSA-SHA256 signing on their side. (As of
-2026-04, that's an [open issue][hb-issue].)
+[ha-bambulab](https://github.com/greghesp/ha-bambulab) is the
+community Home Assistant integration for Bambu Lab printers (a HACS
+custom component that connects to the printer itself). beambam's
+publisher is a separate process that feeds HA through MQTT discovery.
 
-The X2D bridge fills that gap: it owns the RSA-SHA256 signing path,
-exposes the same set of HA entities ha-bambulab does (plus a few
-X-series-specific ones), and adds a stack ha-bambulab does NOT
-provide — WebRTC streaming, MCP server, structured access logs,
-sub-second SSE state stream, multi-printer auto-discovery, web UI,
-Prometheus metrics, and a one-line LAN-only install.
+Checked 2026-11-09 against ha-bambulab `main` and its release notes.
 
-## 1. Entity-by-entity parity table
+## 1. X2D support in ha-bambulab
 
-Total ha-bambulab entities (from
-[`definitions.py`](https://github.com/greghesp/ha-bambulab/blob/main/custom_components/bambu_lab/definitions.py)
-+ per-platform files): **~78 sensor keys + 7 buttons + 4 switches +
-4 fans + 3 images + 3 numbers + 1 update + 1 camera = ~101 entities
-across all platform files**.
+The earlier version of this page said ha-bambulab does not support the
+X2D. That is no longer true:
 
-X2D bridge entity count after this matrix landed: **45 entities per
-printer** (12 sensors + 13 expansion sensors + 12 AMS + 1 switch +
-6 buttons + 3 numbers + 1 image + 2 binary_sensors).
+- ha-bambulab's code lists the X2D among its two-nozzle printers
+  (`Printers.X2D` in `pybambu/models.py`: per-nozzle temperatures from
+  `device.extruder.info`, active nozzle, door from `stat`).
+- v2.2.26 (2026-09-12) added the X2D to its device lists and fixed X2D
+  camera stream URLs.
+- v2.3.0 (2026-11-08) added the X2D filament track switch, AMS nozzle
+  routing and per-extruder filament sensors.
 
-|  ha-bambulab key                  | x2d-bridge equivalent      | Status | Notes |
-|-----------------------------------|----------------------------|--------|-------|
-| `nozzle_temp`                     | `sensor.nozzle_temp`       | ✅ parity | |
-| `bed_temp`                        | `sensor.bed_temp`          | ✅ parity | |
-| `chamber_temp`                    | `sensor.chamber_temp`      | ✅ parity | |
-| `target_nozzle_temp`              | `sensor.nozzle_target` + `number.nozzle_set` | ✅ better | settable via slider |
-| `target_bed_temp`                 | `sensor.bed_target` + `number.bed_set` | ✅ better | settable via slider |
-| `target_chamber_temp`             | `sensor.chamber_temp` + `number.chamber_set` | ✅ better | settable via slider |
-| `print_progress`                  | `sensor.progress`          | ✅ parity | |
-| `current_layer`                   | `sensor.current_layer`     | ✅ parity | |
-| `total_layers`                    | `sensor.total_layers`      | ✅ parity | |
-| `remaining_time`                  | `sensor.remaining`         | ✅ parity | minutes, `device_class: duration` |
-| `wifi_signal`                     | `sensor.wifi`              | ✅ parity | dBm, signed |
-| `subtask_name` / `gcode_file`     | `sensor.filename`          | ✅ parity | |
-| `stage` / `print_status`          | `sensor.stage`             | ✅ parity | |
-| `chamber_fan_speed`               | `sensor.chamber_fan_speed` | ✅ parity | |
-| `aux_fan_speed`                   | `sensor.aux_fan_speed`     | ✅ parity | |
-| `cooling_fan_speed`               | `sensor.cooling_fan_speed` | ✅ parity | |
-| `heatbreak_fan_speed`             | `sensor.heatbreak_fan_speed` | ✅ parity | |
-| `speed_profile`                   | `sensor.speed_profile`     | ✅ parity | |
-| `hms` / `hms_errors`              | `sensor.hms_count`         | ✅ parity | error count; full HMS list via `x2d://state` MCP resource |
-| `ip_address`                      | `sensor.ip_address`        | ✅ parity | from `print.net.info[0].ip` |
-| `firmware_update` (binary)        | (omitted)                   | ➖ planned | X2D firmware updates ship via cloud only; LAN can't trigger |
-| `online`                          | `binary_sensor.online`     | ✅ parity | + retained `availability` topic with offline LWT |
-| `door_open`                       | `binary_sensor.door_open`  | ✅ parity | maps to `print.hw_switch_state == 1` |
-| `printable_objects`               | `sensor.printable_objects` | ✅ parity | count of `print.s_obj[]` |
-| `skipped_objects`                 | `sensor.skipped_objects`   | ✅ parity | |
-| `total_usage_hours`               | `sensor.total_usage_hours` | ✅ parity | hours, `total_increasing` |
-| `tray` (per-AMS-slot color)       | `sensor.ams_slot{1..4}_color` | ✅ parity | RGB hex, alpha stripped |
-| `tray.tray_type` (per-slot mat)   | `sensor.ams_slot{1..4}_material` | ✅ parity | |
-| `humidity`                        | (planned)                  | ➖ planned | `print.ams.ams[0].humidity` — easy add |
-| `humidity_index`                  | (planned)                  | ➖ planned | derived |
-| `drying`/`drying_temperature`/`drying_filament`/`drying_duration`/`remaining_drying_time` | (planned) | ➖ planned | AMS dryer entities |
-| `tool_module`                     | (X-series specific)        | ➖ N/A | X2D has 2 nozzles, both reported as `nozzle_temp` |
-| `left_nozzle_*` / `right_nozzle_*`| (X-series specific)        | ➖ planned | will split when needed; X2D pushall doesn't separate them yet |
-| `pause` / `resume` / `stop` (button) | `button.pause/resume/stop` | ✅ parity | |
-| `home` (implicit via gcode)       | `button.home`              | ✅ parity | |
-| `level` (implicit via gcode)      | `button.level`             | ✅ parity | |
-| `buzzer_silence`                  | `button.buzzer_silence`    | ✅ parity | M300 S0 P0 |
-| `buzzer_beeping` / `buzzer_fire_alarm` | (planned)             | ➖ planned | low-priority diagnostic |
-| `refresh` (force pushall)         | (omitted by design)         | ➖ N/A | bridge daemon does pushall every 5 s automatically |
-| `light` (chamber LED)             | `switch.light`             | ✅ parity | |
-| `camera` switch (enable/disable)  | (omitted)                   | ➖ N/A | LAN-mode liveview is firmware-side |
-| `ftp` switch                      | (omitted by design)         | ➖ N/A | bridge always uses FTPS for upload |
-| `prompt_sound` switch             | (planned)                  | ➖ planned | |
-| `aux_fan` / `chamber_fan` / `cooling_fan` / `secondary_aux_fan` (controllable) | (planned) | ➖ planned | exposed as sensors today; controllable later |
-| `target_*_temperature` (numbers)  | `number.*_set`             | ✅ parity | |
-| `cover_image` / `pick_image` (P1P-specific) | (omitted)         | ➖ N/A | not on X2D |
-| `p1p_camera`                      | `image.snapshot`           | ✅ parity | `mqtt.image` platform |
-| `firmware_update` (update entity) | (planned)                  | ➖ planned | LAN can't trigger update on X-series |
+Commands to printers on Bambu's authorization-control firmware are the
+difference that remains. Bambu's
+[third-party integration page](https://wiki.bambulab.com/en/software/third-party-integration)
+says third-party control needs either authorization or **Developer
+Mode**, which runs only in LAN-only mode (no Bambu cloud). beambam signs
+its commands instead (see [`SIGNED_VS_UNSIGNED.md`](./SIGNED_VS_UNSIGNED.md)),
+so its HA controls work without Developer Mode. Monitoring works with
+either.
 
-**Summary**:
+## 2. Entity coverage
 
-* **34 of 36 X2D-applicable ha-bambulab entities are at parity OR
-  better** (better = controllable instead of read-only, or settable
-  slider instead of plain number). The 2 gaps are minor sensor
-  details (humidity, drying state) — backlog items.
-* **12 ha-bambulab entities are X-series-irrelevant** (ftp switch,
-  P1P-specific camera/image entities, multi-extruder splits the X2D
-  doesn't expose distinctly).
+ha-bambulab exposes more entities than beambam. Rough comparison for an
+X2D:
 
-## 2. X2D bridge features ha-bambulab DOESN'T have
+| Area | beambam | ha-bambulab |
+|---|---|---|
+| Nozzle / bed / chamber temperatures and targets | yes, incl. left/right nozzle and active nozzle | yes |
+| Temperature setpoints | bed, chamber, one nozzle slider (right nozzle on two-nozzle models) | yes |
+| Job progress, layers, remaining time, start/end time, status | yes | yes, plus print stage detail and cover image |
+| Fans | read-only sensors | controllable fan entities |
+| AMS trays (16) + external spools | color, material (+ remain/filament attributes), load button | richer tray entities, filament track switch, nozzle routing |
+| AMS unit humidity / temperature | %, A-E level, temperature, warning | yes, plus drying control and status |
+| AMS HT | no | yes |
+| HMS | count, problem flag with codes as attributes | errors with descriptions |
+| Door, online, timelapse, print error | yes | yes |
+| Firmware | read-only `update` entity; version unknown until the daemon requests `get_version` | update entity with install action |
+| Camera | MQTT snapshot image/camera every 10 s; MJPEG/WebRTC via the camera daemon | camera entity |
+| Chamber light, prompt sound, pause/resume/stop, home, level, buzzer | yes | yes (set differs) |
 
-|  Feature                     | x2d-bridge | ha-bambulab |
-|------------------------------|------------|-------------|
-| Works on aarch64 / Termux    | ✅         | ❌ (HA Core required, hard on Android) |
-| LAN-only operation           | ✅         | ⚠️ requires cloud creds even for LAN |
-| RSA-SHA256 signed MQTT (X2D / H2D / refreshed P1+X1) | ✅ | ❌ blocker for X2D |
-| WebRTC video streaming (~100 ms latency) | ✅  | ❌ (HLS or static images only) |
-| MJPEG + HLS + WebRTC + JPEG snapshot — all four transports | ✅ | partial |
-| MCP server (Claude / Cursor / Continue tool surface) | ✅  | ❌ |
-| Web UI (mobile-friendly, no HA install needed)       | ✅  | ❌ |
-| Prometheus `/metrics` endpoint (per-printer gauges + counters) | ✅ | ❌ |
-| Structured JSON access log with rotation | ✅ | ❌ |
-| Bearer + cookie auth for the daemon HTTP | ✅ | N/A (HA owns auth) |
-| Multi-printer auto-discovery via SSDP (UDP/2021)     | ✅  | ❌ (manual config per printer) |
-| One Unix-domain RPC socket for shim integration       | ✅  | ❌ |
-| `libbambu_networking.so` ABI shim (lets BambuStudio GUI work on aarch64) | ✅ | ❌ (entirely separate concern) |
-| Single-binary install (`./install.sh`)                | ✅  | ❌ (HA + HACS + custom-component flow) |
+## 3. Differences in how they run
 
-## 3. Migration path for ha-bambulab users
+| | beambam | ha-bambulab |
+|---|---|---|
+| Where it runs | any host on the printer LAN; HA only needs an MQTT broker | inside Home Assistant |
+| Command signing on authorization-control firmware | yes | no (needs Developer Mode) |
+| Same printer data for other tools | web UI, MCP server, Prometheus `/metrics`, CLI from the same daemon | HA only |
+| Install | `pip install "beambam[all]"` + three services | HACS |
 
-1. Keep your existing HA install. Disable the `bambu_lab` integration
-   in HA (Settings → Integrations → Bambu Lab → Disable).
-2. Install the X2D bridge on whatever device sees the printer (a
-   Termux phone, a Raspberry Pi, an x86 box):
-   ```bash
-   git clone https://github.com/tribixbite/x2d
-   cd x2d && ./install.sh
-   ```
-3. Set up `~/.x2d/credentials` (one INI section per printer; same
-   `ip / code / serial` triple ha-bambulab asks for).
-4. Start the bridge daemon + HA publisher pointed at the same MQTT
-   broker HA already uses:
-   ```bash
-   python3.12 x2d_bridge.py daemon --http 127.0.0.1:8765 &
-   python3.12 x2d_bridge.py ha-publish \
-       --broker localhost:1883 \
-       --daemon-url http://127.0.0.1:8765 \
-       --device-serial $(grep ^serial ~/.x2d/credentials | head -1 | cut -d= -f2 | tr -d ' ')
-   ```
-5. HA's MQTT integration auto-discovers a new "Bambu Lab X2D" device
-   with all entities. Your existing dashboards using
-   `sensor.bambu_lab_*` entities will need to be re-pointed at
-   `sensor.x2d_<serial>_*` (or you can rename the new entities to
-   the old IDs in HA → Settings → Devices → Bambu Lab X2D).
+## 4. Switching from ha-bambulab
 
-## 4. When to use ha-bambulab instead
+1. Disable the Bambu Lab integration in HA (or keep it for monitoring;
+   the two can run side by side).
+2. Follow [`HA_SETUP.md`](./HA_SETUP.md).
+3. Entities are new: `sensor.x2d_<serial>_*` instead of ha-bambulab's
+   ids, so dashboards and automations must be re-pointed.
 
-- You have a **P1P / P1S / X1C / X1E** (not X2D), and you don't need
-  the X2D bridge's WebRTC / MCP / web UI extras. ha-bambulab is more
-  mature on those models and ships nice things like the lovelace
-  card.
-- You have a P1P/P1S/X1C/X1E and want the X-series-specific sensors
-  the X2D doesn't expose (per-nozzle temps on dual-extruder X1E,
-  drying entities on AMS HT). The X2D bridge will add those when the
-  X2D firmware exposes the underlying fields.
+## 5. When to prefer ha-bambulab
 
-[hb-issue]: https://github.com/greghesp/ha-bambulab/issues
+- You do not need to send commands, or you run the printer in
+  Developer Mode.
+- You want its wider entity set (AMS drying, AMS HT, fan control,
+  firmware install) and its Lovelace cards.

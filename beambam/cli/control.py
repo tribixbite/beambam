@@ -39,27 +39,54 @@ from beambam import mqtt as _mqtt
 from beambam.paths import config_path
 
 
+from beambam.commands import DEFAULT_REPLY_TIMEOUT_S as REPLY_TIMEOUT_S  # noqa: E402
+# How long a control verb waits for the printer's reply (`--reply-timeout`):
+# REPLY_TIMEOUT_S, imported from beambam.commands.
+
+
 def _publish_one(args: argparse.Namespace, payload: dict) -> int:
-    """Connect, publish one signed-MQTT payload, disconnect, echo JSON.
+    """Connect, publish one control payload, wait for the printer's reply,
+    disconnect, echo JSON. Exit 0 = acknowledged (or no reply: some
+    commands never answer), 1 = the printer refused it.
 
     The wire workhorse for ~17 LAN-control verbs (pause / resume /
     stop / gcode / home / level / set-temp / chamber-light / reboot /
     jog / record / timelapse / resolution / fod-check / ams-load /
     ams-unload).
 
+    `print.*` goes through print_job._publish_signed_or_legacy: Jan-2025+
+    X2D/H2D firmware only accepts print control signed with the recovered
+    per-install key (`beambam key`), the same signature the LAN print start
+    uses; the leaked-cert signature `X2DClient.publish` applies is refused
+    for print.* (err 84033545). Other families (system, camera, ...) are
+    accepted with it.
+
     Tests can monkeypatch either `beambam.mqtt.X2DClient` (canonical)
     or `beambam.config.Creds.resolve` (for credential override) —
     both reach the publish path because we resolve the attributes at
     call time, not at module-load."""
+    from beambam.commands import refusal_message, send_command
+
     creds = _config.Creds.resolve(args)
     cli = _mqtt.X2DClient(creds)
     cli.connect()
+    family = next(iter(payload))
+    command = str(payload[family].get("command", ""))
+    wait = float(getattr(args, "reply_timeout", REPLY_TIMEOUT_S) or 0)
     try:
-        cli.publish(payload)
+        reply = send_command(cli, payload, timeout=wait)
     finally:
         cli.disconnect()
     print(json.dumps(payload, indent=2))
-    return 0
+    if reply is None:
+        if wait > 0 and command:
+            print(f"[{family}.{command}] sent; no reply within {wait:g} s", file=sys.stderr)
+        return 0
+    if reply.ok:
+        print(f"[{family}.{command}] printer acknowledged", file=sys.stderr)
+        return 0
+    print(f"[{family}.{command}] printer REFUSED: {refusal_message(reply)}", file=sys.stderr)
+    return 1
 
 
 def _signing_key_path():
@@ -107,13 +134,22 @@ def _try_cloud_signed(args: argparse.Namespace, payload: dict):
 
 
 def _publish(args: argparse.Namespace, payload: dict) -> int:
-    """Publish one control payload. Prefers the cloud-signed broker path when a
-    recovered RSA key + cloud session are present (LAN print.* is signature-
-    blocked on X-series firmware); otherwise the LAN `_publish_one` path."""
-    rc = _try_cloud_signed(args, payload)
-    if rc is not None:
-        return rc
+    """Publish one control payload.
+
+    LAN first: with the recovered key + cert id on disk, `_publish_one`
+    signs print.* exactly like the (live-verified) LAN print start, so no
+    cloud session or internet is needed. The cloud-signed relay is used
+    only when that key is missing or `--cloud` is passed."""
+    if getattr(args, "cloud", False) or not _lan_signing_ready():
+        rc = _try_cloud_signed(args, payload)
+        if rc is not None:
+            return rc
     return _publish_one(args, payload)
+
+
+def _lan_signing_ready() -> bool:
+    """Recovered per-install key AND its cert id are present."""
+    return _signing_key_path().is_file() and config_path("printer_cert_id.txt").is_file()
 
 
 def cmd_pause(args: argparse.Namespace) -> int:
@@ -327,15 +363,9 @@ def cmd_fod_check(args: argparse.Namespace) -> int:
 def cmd_ams_unload(args: argparse.Namespace) -> int:
     """MachineObject::command_ams_change_filament with !load —
     DeviceManager.cpp:1537. `target=255` is the unload sentinel."""
-    from beambam.cli._helpers import _print_cmd
-    payload = _print_cmd(
-        "ams_change_filament",
-        curr_temp=int(args.curr_temp),
-        tar_temp=int(args.tar_temp),
-        ams_id=int(args.ams),
-        target=255,
-        slot_id=255,
-    )
+    from beambam.commands import ams_unload_payload
+    payload = ams_unload_payload(int(args.ams), curr_temp=int(args.curr_temp),
+                                 tar_temp=int(args.tar_temp))
     return _publish(args, payload)
 
 
@@ -344,19 +374,9 @@ def cmd_ams_load(args: argparse.Namespace) -> int:
     DeviceManager.cpp:1537. `target` is the global tray id
     (ams_id*4 + slot_id), with a special case for ams_id=0 / slot=0
     where the firmware expects bare ams_id, not 0."""
-    from beambam.cli._helpers import _print_cmd
-    ams_id = int(args.ams)
-    slot_id = int(args.slot)
-    tray_id = ams_id * 4 + slot_id
-    target = ams_id if tray_id == 0 else tray_id
-    payload = _print_cmd(
-        "ams_change_filament",
-        curr_temp=int(args.curr_temp),
-        tar_temp=int(args.tar_temp),
-        ams_id=ams_id,
-        target=target,
-        slot_id=slot_id,
-    )
+    from beambam.commands import ams_load_payload
+    payload = ams_load_payload(int(args.ams), int(args.slot), curr_temp=int(args.curr_temp),
+                               tar_temp=int(args.tar_temp))
     return _publish(args, payload)
 
 
@@ -541,9 +561,14 @@ def cmd_key(args: argparse.Namespace) -> int:
     # `--wait <seconds>`.
     wait = int(getattr(args, "wait", 0) or 0)
     retries, delay = (max(2, wait // 10), 10) if wait else (3, 10)
-    rc = os.system(
-        f"cd {Path.home()} && python3 {esk.__file__} --serial {adb} "
-        f"--cert {cert} --out {out} --retries {retries} --retry-delay {delay}")
+    # This interpreter + an argument list: `os.system("python3 ...")` hit
+    # the Microsoft Store stub (or another Python) on Windows, broke on
+    # paths with spaces and let an adb serial inject shell syntax.
+    import subprocess
+    rc = subprocess.run(
+        [sys.executable, str(esk.__file__), "--serial", str(adb), "--cert", str(cert),
+         "--out", out, "--retries", str(retries), "--retry-delay", str(delay)],
+        cwd=str(Path.home())).returncode
     if rc != 0 or not Path(out).is_file():
         print("[key] extraction failed. The signing key is only in the heap "
               "after Handy CONNECTS TO THE PRINTER and signs — open Handy's "
@@ -561,7 +586,7 @@ def cmd_key(args: argparse.Namespace) -> int:
         printer_serial = _config.Creds.resolve(args).serial or os.environ.get("X2D_SERIAL", "")
         cid = mqtt_sign.make_cert_id(serial_hex, printer_serial.replace("GLOF", ""))
         config_path("printer_cert_id.txt").write_text(cid)
-        print(f"[key] OK → {out}\n[key] cert_id → ~/.x2d/printer_cert_id.txt")
+        print(f"[key] OK → {out}\n[key] cert_id → {config_path('printer_cert_id.txt')}")
     except Exception as e:                                # noqa: BLE001
         print(f"[key] key saved, but cert_id write failed: {e}", file=sys.stderr)
     return 0

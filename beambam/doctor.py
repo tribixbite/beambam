@@ -74,25 +74,25 @@ def decode_hms(code: str) -> str:
 def check_ams_humidity(state: dict[str, Any]) -> list[Check]:
     out = []
     units = state.get("print", {}).get("ams", {}).get("ams", []) or []
+    from beambam.ams import humidity_level, humidity_percent
     for unit in units:
         uid = unit.get("id", "?")
-        humidity = unit.get("humidity", "0")
-        try:
-            level = int(humidity)
-        except (TypeError, ValueError):
-            level = 0
-        if level >= 4:
-            out.append(Check("AMS", f"unit {uid} humidity",
-                             "fail",
-                             f"level {level}/4 — very wet; dry filament "
-                             f"before printing"))
-        elif level == 3:
-            out.append(Check("AMS", f"unit {uid} humidity",
-                             "warn",
-                             f"level {level}/4 — getting damp; consider drying"))
+        # User-facing level 1 (dry) .. 5 (wet); the MQTT index is reversed.
+        level = humidity_level(unit.get("humidity"))
+        pct = humidity_percent(unit)
+        rh = f", {pct}% RH" if pct is not None else ""
+        if level is None:
+            out.append(Check("AMS", f"unit {uid} humidity", "pass",
+                             f"not reported{rh}"))
+        elif level >= 5:
+            out.append(Check("AMS", f"unit {uid} humidity", "fail",
+                             f"level {level}/5{rh} — wet; dry filament before printing"))
+        elif level == 4:
+            out.append(Check("AMS", f"unit {uid} humidity", "warn",
+                             f"level {level}/5{rh} — getting damp; consider drying"))
         else:
-            out.append(Check("AMS", f"unit {uid} humidity",
-                             "pass", f"level {level}/4"))
+            out.append(Check("AMS", f"unit {uid} humidity", "pass",
+                             f"level {level}/5{rh}"))
     return out
 
 
@@ -240,6 +240,19 @@ def format_report(checks: list[Check]) -> str:
 # ----- environment checks (fresh-OS / FRE prerequisites) ------------------
 
 
+def check_signing() -> Check:
+    """LAN print-control signing (X2D/H2D): key, cert id, app-cert expiry,
+    user_id (beambam.signing). Local files only, so it runs in every mode:
+    without it a refused print start reads as a printer problem."""
+    from beambam.signing import signing_status
+    sig = signing_status()
+    if sig.ready:
+        exp = f", app cert valid to {sig.app_cert_expires:%Y-%m-%d}" if sig.app_cert_expires else ""
+        return Check("Control", "Print-control signing", "pass",
+                     f"key + cert id present, user_id from {sig.user_id_source}{exp}")
+    return Check("Control", "Print-control signing", "warn", sig.summary())
+
+
 def check_environment() -> list[Check]:
     """Check the host environment for beambam prerequisites.
 
@@ -291,20 +304,23 @@ def check_environment() -> list[Check]:
                          "no cloud_session.json — run `beambam cloud-login "
                          "--code-only` for the passwordless device-code flow"))
 
-    bs = shutil.which("bambu-studio") or shutil.which("BambuStudio")
-    if not bs:
-        local = Path(__file__).resolve().parent.parent / "bs-bionic" / "build" / "src" / "bambu-studio"
-        if local.is_file():
-            bs = str(local)
+    # Same resolver the slicing commands use (env, Termux build, PATH,
+    # standard install); PATH alone gave a false pass/fail.
+    from beambam.slicer_paths import bambu_studio_bin
+    _found = bambu_studio_bin()
+    bs = str(_found) if _found else None
     if bs:
         out.append(Check("Environment", "Bambu Studio CLI", "pass",
                          f"found at {bs}"))
     else:
         out.append(Check("Environment", "Bambu Studio CLI", "warn",
-                         "no `bambu-studio` in PATH — slicing commands "
+                         "Bambu Studio not found ($BAMBU_STUDIO, PATH, standard "
+                         "install) — slicing commands "
                          "(slice / slice-print / cloud-print-design) will "
                          "fail. Install from https://bambulab.com/en/download "
                          "or build under bs-bionic/."))
+
+    out.append(check_signing())
 
     adb = shutil.which("adb")
     if adb:
@@ -458,6 +474,8 @@ def cmd_doctor(args: argparse.Namespace) -> int:
             with Printer() as printer:
                 state = printer.state(timeout=10.0)
             checks.extend(run_all_checks(state))
+            if not want_env:          # check_environment() already includes it
+                checks.append(check_signing())
         except Exception as e:                              # noqa: BLE001
             # Preserve the legacy contract: tests + callers may grep
             # stderr for the unreachable-printer error before deciding

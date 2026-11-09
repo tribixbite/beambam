@@ -16,35 +16,17 @@ Workflow:
      filament_type baked into the 3MF's project_settings.config (e.g. PLA
      in 3MF must match PLA in the slot, otherwise the printer would refuse
      anyway after the file load).
-  4. Upload the file via x2d_bridge's implicit-FTPS uploader.
-  5. Submit the full Jan-2025+ firmware-required project_file payload via
-     start_print, which handles RSA-SHA256 signing with the
-     publicly-leaked Bambu Connect cert (X2D / H2D / refreshed P1+X1
-     firmwares reject unsigned publishes with err_code 84033543).
+  4. Hand the file and the chosen slots to `beambam print`
+     (beambam.cli.lan.cmd_print), which uploads into the printer's cache/
+     dir, derives bed type/temperature from the 3MF, re-validates every slot
+     against the live AMS, publishes the signed project_file (recovered
+     per-install key, see `beambam key`) and waits for the printer's
+     verdict: exit 0 started, 1 refused, 3 not confirmed.
 
-Why this used to use bambulabs_api and doesn't anymore:
-  bambulabs_api 2.6.6 ships unsigned MQTT and a minimal start_print payload
-  shape that the X2D's command handler validates against and silently
-  drops. We share x2d_bridge.py's mature Creds / X2DClient / start_print /
-  upload_file helpers instead, so this CLI uses the same code paths as the
-  GUI shim's bridge.
-
-Usage:
-    python3 lan_print.py --file rumi_frame.gcode.3mf
-        # Reads ip/code/serial from ~/.x2d/credentials [printer] section.
-
-    python3 lan_print.py --ip 192.168.x.y --code 12345678 --serial 03ABC... \\
-        --file rumi_frame.gcode.3mf
-
-    # Force a specific slot, skip auto-match:
-    python3 lan_print.py ... --slot 3
-
-    # Match by a different keyword:
-    python3 lan_print.py ... --filament-match "PETG-CF"
-
-    # Dry-run: print AMS state + the auto-matched slot, then exit.
-    python3 lan_print.py ... --query-only
+This script exists for its filament/colour slot matching; for a known slot
+list use `beambam print FILE --slot a,b,...` directly.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -55,13 +37,11 @@ import time
 import zipfile
 from pathlib import Path
 
-# Reuse x2d_bridge's signing/connection/upload/start_print path. This
+# Reuse beambam's connection/state helpers. This
 # requires bambu_cert.py (publicly-leaked Bambu Connect signing key) to
 # be importable next to x2d_bridge.py.
 from beambam.config import Creds
-from beambam.ftps import upload_file
 from beambam.mqtt import X2DClient
-from beambam.print_job import start_print
 import preflight_3mf
 
 log = logging.getLogger("lan_print")
@@ -249,6 +229,8 @@ def match_slot(trays: list[dict], *,
 
 
 def main() -> int:
+    from beambam.console import utf8_stdio
+    utf8_stdio()
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     # Printer credentials — match x2d_bridge's flag names so Creds.resolve() works.
@@ -482,38 +464,28 @@ def main() -> int:
                      fi, chosen["slot_index"], chosen.get("type"),
                      chosen.get("color"), chosen.get("info_idx"))
 
-    # Resolve bed_type: explicit --bed-type wins; else read from
-    # Metadata/plate_<N>.json (the per-plate truth); else textured.
-    bed_type = args.bed_type
-    if not bed_type:
-        bed_type = read_3mf_bed_type(args.file, args.plate) or "textured_plate"
-        if bed_type != "textured_plate":
-            log.info("Using bed_type=%r from plate_%d.json", bed_type, args.plate)
-
-    fname = args.file.name
-    log.info("Uploading %s (%d B) via implicit-FTPS…", fname, args.file.stat().st_size)
-    upload_file(creds, args.file, remote_name=fname)
-    log.info("Upload complete")
-
-    log.info("Sending signed start_print(plate=%d, ams_slots=%s, bed=%s, flow_cali=%s)",
-             args.plate, chosen_slots, bed_type, not args.no_flow_cali)
-    try:
-        start_print(
-            client, fname,
-            use_ams=True,
-            ams_slot=chosen_slots if len(chosen_slots) > 1 else chosen_slots[0],
-            flow_cali=not args.no_flow_cali,
-            bed_type=bed_type,
-            local_path=args.file,
-        )
-        log.info("start_print signed-published — printer accepted the command")
-        rc = 0
-    except Exception as e:
-        log.error("start_print failed: %s", e)
-        rc = 2
-
+    # Upload + start through `beambam print` (beambam.cli.lan.cmd_print): it
+    # uploads into cache/ (the only location the X2D firmware's file-verify
+    # accepts; this script used to upload to the FTP root, err 84033544),
+    # derives bed type/temperature from the 3MF's curr_bed_type, re-checks
+    # every slot against the live AMS, refuses a busy printer, and waits
+    # for the printer's verdict instead of assuming success.
     client.disconnect()
-    return rc
+    from beambam.cli.lan import cmd_print
+    log.info("Starting %s with AMS slots %s via beambam print", args.file.name, chosen_slots)
+    if args.plate != 1:
+        # TODO: plate selection — print_job's project_file is fixed to plate_1;
+        # `beambam plate select` writes a single-plate file to print instead.
+        raise SystemExit("--plate other than 1 is not supported by the start path yet; "
+                         "extract the plate with `beambam plate select` first")
+    return cmd_print(argparse.Namespace(
+        ip=creds.ip, code=creds.code, serial=creds.serial, printer=None,
+        file=str(args.file), remote=None, slot=chosen_slots,
+        no_upload=False, no_ams=False, no_bed_level=False,
+        bed_type=args.bed_type or None, bed_temp=None, force=False,
+        flow_cali=not args.no_flow_cali, timelapse=False, vib_cali=False,
+        dry_run=False, max_flush_g=10.0, confirm_timeout=45.0,
+    ))
 
 
 if __name__ == "__main__":
