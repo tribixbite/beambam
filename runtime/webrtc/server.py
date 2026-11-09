@@ -32,13 +32,14 @@ Env vars:
 from __future__ import annotations
 
 import asyncio
+import hmac
 import json
 import logging
 import os
 import sys
 import time
 from pathlib import Path
-from typing import Optional
+from typing import Awaitable, Callable, Optional
 
 import aiohttp
 from aiohttp import web
@@ -53,7 +54,32 @@ from aiortc import (
 import av  # for VideoFrame + MJPEG decode
 from av import VideoFrame
 
+from beambam.http_validate import allowed_host_names, request_guard_error
+from beambam.serve_http_helpers import (
+    _AUTH_COOKIE_NAME,
+    _is_loopback,
+    _parse_cookie,
+)
+
 LOG = logging.getLogger("x2d.webrtc")
+
+# PyAV's decode-error base class. `av.AVError` was removed (PyAV >= 10
+# names it `av.FFmpegError`; 17.x has no AVError at all), so naming it in
+# an `except` raised AttributeError on the first bad frame and killed the
+# track instead of emitting a black frame.
+_AV_DECODE_ERRORS: tuple[type[BaseException], ...] = tuple(
+    e for e in (getattr(av, "FFmpegError", None), getattr(av, "AVError", None))
+    if isinstance(e, type) and issubclass(e, BaseException)
+) + (ValueError,)
+
+# A peer that has not reached "connected" this long after its offer was
+# answered is closed (an abandoned tab, a blocked ICE path); otherwise
+# each one keeps an encoder and a frame-pull task alive forever.
+DEFAULT_PEER_SETUP_TIMEOUT_S = 30.0
+
+# Routes that serve no printer data and must load before any token is
+# known (the viewer page fetches the offer route with the cookie).
+_PUBLIC_PATHS = frozenset({"/", "/cam.webrtc.html", "/cam.webrtc.js"})
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 WEB_DIR = REPO_ROOT / "web"
@@ -111,7 +137,7 @@ class CameraVideoTrack(MediaStreamTrack):
         try:
             packet = av.Packet(jpeg)
             frames = self._codec.decode(packet)
-        except (av.AVError, ValueError) as e:
+        except _AV_DECODE_ERRORS as e:
             LOG.warning("MJPEG decode failed (%d B): %s; emitting black frame",
                         len(jpeg), e)
             frames = []
@@ -133,11 +159,23 @@ class CameraVideoTrack(MediaStreamTrack):
 
 class WebRTCServer:
     def __init__(self, *, camera_url: str, frame_hz: float = DEFAULT_FRAME_HZ,
-                 stun_servers: Optional[list[str]] = None) -> None:
+                 stun_servers: Optional[list[str]] = None,
+                 auth_token: str | None = None,
+                 bind_host: str = "127.0.0.1",
+                 peer_setup_timeout_s: float = DEFAULT_PEER_SETUP_TIMEOUT_S,
+                 ) -> None:
         self.camera_url = camera_url.rstrip("/")
         self.frame_hz = frame_hz
+        # Same policy as the HTTP daemon (_check_bearer): with a token,
+        # every data route needs `Authorization: Bearer` or the x2d_token
+        # cookie; without one, only a loopback bind is served.
+        self.auth_token = auth_token or None
+        self.bind_host = bind_host
+        self._host_allow = allowed_host_names(bind_host)
+        self.peer_setup_timeout_s = peer_setup_timeout_s
         self.store = _LatestFrameStore()
         self.peer_connections: set[RTCPeerConnection] = set()
+        self._timeouts: set[asyncio.Task] = set()
         self._stop = asyncio.Event()
         self._poll_task: asyncio.Task | None = None
         self._http_session: aiohttp.ClientSession | None = None
@@ -161,6 +199,8 @@ class WebRTCServer:
                 pass
         if self._http_session:
             await self._http_session.close()
+        for task in list(self._timeouts):
+            task.cancel()
         # Close all peer connections.
         coros = [pc.close() for pc in list(self.peer_connections)]
         await asyncio.gather(*coros, return_exceptions=True)
@@ -173,8 +213,12 @@ class WebRTCServer:
         backoff = period
         while not self._stop.is_set():
             t0 = time.time()
+            # The camera daemon gates /cam.jpg with the same token.
+            headers = ({"Authorization": f"Bearer {self.auth_token}"}
+                       if self.auth_token else {})
             try:
-                async with self._http_session.get(url) as resp:
+                assert self._http_session is not None
+                async with self._http_session.get(url, headers=headers) as resp:
                     if resp.status == 200:
                         data = await resp.read()
                         if data and len(data) > 100:
@@ -195,14 +239,70 @@ class WebRTCServer:
     # HTTP handlers
     # ------------------------------------------------------------------
 
+    def _auth_error(self, request: web.Request) -> web.Response | None:
+        """401/4xx response for a request that must be refused, else None.
+        Mirrors beambam.serve_http: request guard (Host / Origin /
+        Content-Type) first, then the Bearer-or-cookie check."""
+        guard = request_guard_error(request.method, request.path,
+                                    request.headers, self._host_allow)
+        if guard is not None:
+            status, reason = guard
+            return web.json_response({"error": reason}, status=status)
+        if request.path in _PUBLIC_PATHS:
+            return None
+        if not self.auth_token:
+            if _is_loopback(self.bind_host):
+                return None
+            return web.json_response(
+                {"error": "--auth-token required for non-loopback binds"},
+                status=401, headers={"WWW-Authenticate": 'Bearer realm="x2d"'})
+        presented = ""
+        auth = request.headers.get("Authorization", "")
+        if auth.startswith("Bearer "):
+            presented = auth[len("Bearer "):].strip()
+        if not presented:
+            presented = _parse_cookie(request.headers.get("Cookie", ""),
+                                      _AUTH_COOKIE_NAME)
+        if presented and hmac.compare_digest(presented, self.auth_token):
+            return None
+        return web.json_response(
+            {"error": "unauthorized"}, status=401,
+            headers={"WWW-Authenticate": 'Bearer realm="x2d"'})
+
+    @web.middleware
+    async def _auth_middleware(
+            self, request: web.Request,
+            handler: Callable[[web.Request], Awaitable[web.StreamResponse]],
+    ) -> web.StreamResponse:
+        refused = self._auth_error(request)
+        if refused is not None:
+            return refused
+        return await handler(request)
+
+    async def _expire_if_unconnected(self, pc: RTCPeerConnection) -> None:
+        """Close a peer still in new/connecting after the setup window."""
+        await asyncio.sleep(self.peer_setup_timeout_s)
+        if pc in self.peer_connections and pc.connectionState in (
+                "new", "connecting"):
+            LOG.info("closing peer stuck in %r after %.0fs",
+                     pc.connectionState, self.peer_setup_timeout_s)
+            self.peer_connections.discard(pc)
+            try:
+                await pc.close()
+            except Exception:
+                pass
+
     async def handle_offer(self, request: web.Request) -> web.Response:
         try:
             params = await request.json()
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, UnicodeDecodeError):
             return web.json_response({"error": "invalid JSON body"}, status=400)
-        if "sdp" not in params or "type" not in params:
+        if not isinstance(params, dict) \
+                or not isinstance(params.get("sdp"), str) \
+                or params.get("type") != "offer":
             return web.json_response(
-                {"error": "body must include 'sdp' and 'type'"}, status=400)
+                {"error": "body must be {sdp: str, type: 'offer'}"},
+                status=400)
 
         offer = RTCSessionDescription(sdp=params["sdp"], type=params["type"])
         config = RTCConfiguration(iceServers=[
@@ -226,9 +326,18 @@ class WebRTCServer:
         track = CameraVideoTrack(self.store, self.frame_hz)
         pc.addTrack(track)
 
-        await pc.setRemoteDescription(offer)
-        answer = await pc.createAnswer()
-        await pc.setLocalDescription(answer)
+        try:
+            await pc.setRemoteDescription(offer)
+            answer = await pc.createAnswer()
+            await pc.setLocalDescription(answer)
+        except Exception as e:                   # malformed SDP etc.
+            self.peer_connections.discard(pc)
+            await pc.close()
+            return web.json_response({"error": f"bad offer: {e}"}, status=400)
+        # Keep a reference so the timeout task is not garbage-collected.
+        task = asyncio.create_task(self._expire_if_unconnected(pc))
+        self._timeouts.add(task)
+        task.add_done_callback(self._timeouts.discard)
         return web.json_response({
             "sdp":  pc.localDescription.sdp,
             "type": pc.localDescription.type,
@@ -264,21 +373,26 @@ class WebRTCServer:
         return web.Response(body=path.read_bytes(), content_type=ctype)
 
     def make_app(self) -> web.Application:
-        app = web.Application()
+        app = web.Application(middlewares=[self._auth_middleware])
         app.router.add_get("/healthz", self.handle_health)
         app.router.add_get("/cam.jpg", self.handle_camjpg)
         app.router.add_post("/cam.webrtc/offer", self.handle_offer)
         app.router.add_get("/{name}", self.handle_static)
         # Convenience: hitting the root redirects to the viewer page.
-        app.router.add_get("/", lambda r: web.HTTPFound("/cam.webrtc.html"))
+        app.router.add_get("/", self.handle_root)
         return app
+
+    async def handle_root(self, _request: web.Request) -> web.StreamResponse:
+        raise web.HTTPFound("/cam.webrtc.html")
 
 
 async def serve(*, host: str, port: int, camera_url: str,
                 frame_hz: float = DEFAULT_FRAME_HZ,
-                stun_servers: Optional[list[str]] = None) -> None:
+                stun_servers: Optional[list[str]] = None,
+                auth_token: str | None = None) -> None:
     server = WebRTCServer(camera_url=camera_url, frame_hz=frame_hz,
-                           stun_servers=stun_servers)
+                           stun_servers=stun_servers,
+                           auth_token=auth_token, bind_host=host)
     await server.start_polling()
     app = server.make_app()
     runner = web.AppRunner(app)
@@ -301,13 +415,15 @@ async def serve(*, host: str, port: int, camera_url: str,
 
 def run(*, host: str, port: int, camera_url: str,
         frame_hz: float = DEFAULT_FRAME_HZ,
-        stun_servers: Optional[list[str]] = None) -> int:
+        stun_servers: Optional[list[str]] = None,
+        auth_token: str | None = None) -> int:
     """Synchronous entry point used by ``x2d_bridge.py webrtc``."""
     logging.basicConfig(level=os.environ.get("X2D_WEBRTC_LOG", "WARNING"),
                         format="[%(asctime)s] %(name)s %(levelname)s %(message)s")
     try:
         asyncio.run(serve(host=host, port=port, camera_url=camera_url,
-                           frame_hz=frame_hz, stun_servers=stun_servers))
+                           frame_hz=frame_hz, stun_servers=stun_servers,
+                           auth_token=auth_token))
     except KeyboardInterrupt:
         return 130
     return 0

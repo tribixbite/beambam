@@ -884,7 +884,8 @@ def cmd_webrtc(args: argparse.Namespace) -> int:
     return _run_webrtc(host=host, port=port,
                        camera_url=args.camera_url,
                        frame_hz=float(args.frame_hz),
-                       stun_servers=stun)
+                       stun_servers=stun,
+                       auth_token=getattr(args, "auth_token", "") or None)
 
 
 def cmd_ha_publish(args: argparse.Namespace) -> int:
