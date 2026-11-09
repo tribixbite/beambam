@@ -50,6 +50,44 @@ def test_upload_file_raises_not_exits_on_missing_file(tmp_path: Path) -> None:
         upload_file(Creds(ip="1.2.3.4", code="c", serial="s"), tmp_path / "nope.3mf")
 
 
+def test_upload_file_detects_truncated_transfer(monkeypatch, tmp_path: Path) -> None:
+    """F-33: a STOR the server accepts but truncates is caught by the SIZE
+    read-back, not left for the firmware's opaque file-verify failure."""
+    import beambam.ftps as ftps
+    from beambam.config import Creds
+    src = tmp_path / "f.3mf"
+    src.write_bytes(b"x" * 1000)
+
+    class _FTP:
+        def cwd(self, *a): pass
+        def storbinary(self, *a, **k): pass
+        def size(self, name): return 400          # short — truncated upload
+        def quit(self): pass
+        def close(self): pass
+    monkeypatch.setattr(ftps, "_manual_ftp_tls", lambda creds, timeout=15.0: _FTP())
+    with pytest.raises(OSError, match="size mismatch"):
+        ftps.upload_file(Creds(ip="i", code="c", serial="s"), src, remote_dir="cache")
+
+
+def test_upload_file_tolerates_missing_size(monkeypatch, tmp_path: Path) -> None:
+    """A server without SIZE (error_perm) skips the check rather than failing."""
+    import ftplib
+
+    import beambam.ftps as ftps
+    from beambam.config import Creds
+    src = tmp_path / "f.3mf"
+    src.write_bytes(b"x" * 10)
+
+    class _FTP:
+        def cwd(self, *a): pass
+        def storbinary(self, *a, **k): pass
+        def size(self, name): raise ftplib.error_perm("500 SIZE not understood")
+        def quit(self): pass
+        def close(self): pass
+    monkeypatch.setattr(ftps, "_manual_ftp_tls", lambda creds, timeout=15.0: _FTP())
+    ftps.upload_file(Creds(ip="i", code="c", serial="s"), src)   # no raise
+
+
 def test_download_closes_control_connection_when_transfercmd_raises(monkeypatch, tmp_path: Path) -> None:
     import beambam.ftps as ftps
     from beambam.config import Creds
