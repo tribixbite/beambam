@@ -41,3 +41,26 @@ def test_download_target_trailing_slash_is_a_directory(monkeypatch, tmp_path: Pa
                               ip=None, code=None, serial=None, printer=None, quiet=True)
     dl.cmd_download(args)
     assert captured["local"] == d / "model.gcode.3mf"       # treated as a dir, not a file named "into"
+
+
+def test_upload_file_raises_not_exits_on_missing_file(tmp_path: Path) -> None:
+    from beambam.config import Creds
+    from beambam.ftps import upload_file
+    with pytest.raises(FileNotFoundError):
+        upload_file(Creds(ip="1.2.3.4", code="c", serial="s"), tmp_path / "nope.3mf")
+
+
+def test_download_closes_control_connection_when_transfercmd_raises(monkeypatch, tmp_path: Path) -> None:
+    import beambam.ftps as ftps
+    from beambam.config import Creds
+    closed = {"quit": 0, "close": 0}
+
+    class _FTP:
+        def voidcmd(self, *a): pass
+        def transfercmd(self, *a): raise OSError("data channel refused")
+        def quit(self): closed["quit"] += 1
+        def close(self): closed["close"] += 1
+    monkeypatch.setattr(ftps, "_manual_ftp_tls", lambda creds, timeout=20.0: _FTP())
+    with pytest.raises(OSError):
+        ftps.download_file(Creds(ip="i", code="c", serial="s"), "x", tmp_path / "out")
+    assert closed["quit"] == 1          # control connection was torn down despite the failure

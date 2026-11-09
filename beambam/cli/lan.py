@@ -28,8 +28,15 @@ def cmd_upload(args: argparse.Namespace) -> int:
     from beambam.config import Creds
     from beambam.ftps import upload_file
 
+    import ftplib
+    import ssl
     creds = Creds.resolve(args)
-    upload_file(creds, Path(args.file), remote_name=args.remote)
+    try:
+        upload_file(creds, Path(args.file), remote_name=args.remote)
+    except FileNotFoundError as e:
+        sys.exit(str(e))
+    except (ssl.SSLError, ftplib.Error, OSError, EOFError) as e:
+        sys.exit(f"upload failed: {type(e).__name__}: {e}")
     print(f"uploaded {args.file} -> {creds.ip}:/"
           f"{args.remote or Path(args.file).name}")
     return 0
