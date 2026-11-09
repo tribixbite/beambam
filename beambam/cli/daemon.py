@@ -288,7 +288,9 @@ def cmd_daemon(args: argparse.Namespace) -> int:
                        "web_dir": _WEB_DIR_DEFAULT,
                        "queue_mgr": queue_mgr,
                        "timelapse_rec": timelapse_rec,
-                       "get_hub": get_hub},
+                       "get_hub": get_hub,
+                       "allowed_hosts": list(
+                           getattr(args, "allow_host", None) or [])},
                daemon=True).start()
 
     period = max(1, int(args.interval))

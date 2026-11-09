@@ -317,6 +317,13 @@ def main() -> int:
                         "--http binds non-loopback. Default $X2D_AUTH_TOKEN. "
                         "Loopback binds (127.0.0.1) stay open even without "
                         "a token (single-user local case).")
+    d.add_argument("--allow-host", action="append", default=[],
+                   metavar="NAME", dest="allow_host",
+                   help="Extra host name the HTTP server answers to "
+                        "(repeatable). IP literals, localhost and this "
+                        "machine's own names are always accepted; any "
+                        "other Host header is refused as DNS rebinding. "
+                        "Also read from $X2D_ALLOWED_HOSTS (comma-separated).")
     d.add_argument("--queue", action="store_true",
                    help="Enable the multi-printer print queue (item #55). "
                         "Auto-dispatches the next pending job to a printer "

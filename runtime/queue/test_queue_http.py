@@ -75,6 +75,12 @@ def main() -> int:
         # Manager with a no-op dispatch_cb so jobs stay pending.
         mgr = QueueManager(dispatch_cb=lambda j: True,
                             path=Path(tmp) / "queue.json")
+        # /queue/add only accepts existing .gcode.3mf files.
+        files = {}
+        for stem in ("a", "b", "c"):
+            f = Path(tmp) / f"{stem}.gcode.3mf"
+            f.write_bytes(b"PK fake bundle")
+            files[stem] = str(f)
         threading.Thread(
             target=_serve_http,
             kwargs={
@@ -99,7 +105,7 @@ def main() -> int:
 
         # 2. add 3 jobs
         s, body = _post(base + "/queue/add",
-                        {"printer": "studio", "gcode": "/tmp/a.3mf",
+                        {"printer": "studio", "gcode": files["a"],
                          "slot": 1, "label": "a"})
         check("POST /queue/add #1 returns 200", s == 200, str(s))
         check("add response includes job id",
@@ -107,13 +113,13 @@ def main() -> int:
         a_id = body["job"]["id"]
 
         s, body = _post(base + "/queue/add",
-                        {"printer": "garage", "gcode": "/tmp/b.3mf",
+                        {"printer": "garage", "gcode": files["b"],
                          "slot": 2, "label": "b"})
         check("POST /queue/add #2 returns 200", s == 200, str(s))
         b_id = body["job"]["id"]
 
         s, body = _post(base + "/queue/add",
-                        {"printer": "studio", "gcode": "/tmp/c.3mf",
+                        {"printer": "studio", "gcode": files["c"],
                          "slot": 1, "label": "c"})
         check("POST /queue/add #3 returns 200", s == 200, str(s))
         c_id = body["job"]["id"]
@@ -128,6 +134,21 @@ def main() -> int:
         s, body = _post(base + "/queue/add", {"printer": "studio"})
         check("POST /queue/add without gcode returns 400",
               s == 400, str(s))
+        s, body = _post(base + "/queue/add",
+                        {"printer": "studio",
+                         "gcode": str(Path(tmp) / "queue.json")})
+        check("POST /queue/add of a non-.gcode.3mf returns 400",
+              s == 400, str(body))
+        s, body = _post(base + "/queue/add",
+                        {"printer": "<img src=x onerror=alert(1)>",
+                         "gcode": files["a"]})
+        check("POST /queue/add with an unknown printer returns 400",
+              s == 400, str(body))
+        s, body = _post(base + "/queue/add",
+                        {"printer": "studio", "gcode": files["a"],
+                         "slot": "x"})
+        check("POST /queue/add with slot='x' returns 400",
+              s == 400, str(body))
 
         # 5. POST /queue/move c to head of studio
         s, body = _post(base + "/queue/move",

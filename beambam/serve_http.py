@@ -48,6 +48,20 @@ from beambam.serve_http_helpers import (
     _format_prometheus_metrics,
     _write_access_log,
 )
+from beambam.http_validate import (
+    JSON_MAX_BYTES,
+    BadRequest,
+    allowed_host_names,
+    content_length,
+    get_bool,
+    get_float,
+    get_int,
+    get_optional_int,
+    get_str,
+    is_safe_slug,
+    parse_json_object,
+    request_guard_error,
+)
 from beambam.cli._helpers import _print_cmd, _system_cmd, _camera_cmd
 from beambam.http_cloud import (
     _http_cloud_login,
@@ -72,7 +86,8 @@ def _serve_http(bind: str,
                 web_dir: Path | None = None,
                 queue_mgr=None,
                 timelapse_rec=None,
-                get_hub: Callable[[str], "StateHub | None"] | None = None) -> None:
+                get_hub: Callable[[str], "StateHub | None"] | None = None,
+                allowed_hosts: list[str] | None = None) -> None:
     """Multi-printer HTTP server (item #36).
 
     `get_state` and `get_last_ts` now take a printer name (empty string
@@ -110,6 +125,13 @@ def _serve_http(bind: str,
     `clients` (optional) maps printer name → live X2DClient so the
     POST /control/* routes can publish without re-dialing MQTT each time.
     Without it the control routes return 503.
+
+    Every request passes `beambam.http_validate.request_guard_error`
+    first (Host allow-list against DNS rebinding; for POST: same-origin
+    Origin and a JSON / octet-stream Content-Type against cross-site
+    forgery). `allowed_hosts` adds host names beyond IP literals,
+    localhost and this machine's names. Malformed bodies and fields
+    answer 400 via `BadRequest`.
     """
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
     import urllib.parse
@@ -125,6 +147,7 @@ def _serve_http(bind: str,
         from beambam import _WEB_DIR_DEFAULT
         web_dir = _WEB_DIR_DEFAULT
     clients = clients or {}
+    host_allow = allowed_host_names(host, allowed_hosts)
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *_):  # silence default stderr access log
@@ -301,9 +324,37 @@ def _serve_http(bind: str,
                 # the worker thread terminates.
                 return
 
-        def do_GET(self):
+        # ---- request guard + error funnel ---------------------------
+        def _guard(self) -> bool:
+            """Refuse DNS-rebinding Hosts and cross-site POSTs before any
+            route (including the auth-free ones) runs."""
+            path = urllib.parse.urlparse(self.path).path
+            err = request_guard_error(self.command, path, self.headers,
+                                      host_allow)
+            if err is None:
+                return True
+            status, reason = err
+            self._send_json({"error": reason}, status=status)
+            return False
+
+        def _dispatch(self, handler: Callable[[], None]) -> None:
             self._x2d_start = time.time()
             self._x2d_printer = None
+            self._x2d_authed = None
+            if not self._guard():
+                return
+            try:
+                handler()
+            except BadRequest as e:
+                self._send_json({"error": e.message}, status=e.status)
+
+        def do_GET(self):
+            self._dispatch(self._handle_get)
+
+        def do_POST(self):
+            self._dispatch(self._handle_post)
+
+        def _handle_get(self):
             cookie_token = _parse_cookie(self.headers.get("Cookie", ""),
                                           _AUTH_COOKIE_NAME)
             self._x2d_authed = (auth_token is not None) and (
@@ -472,7 +523,12 @@ def _serve_http(bind: str,
             if path == "/cloud/state":
                 qs = urllib.parse.parse_qs(url.query)
                 serial  = (qs.get("serial") or [""])[0] or None
-                timeout = float((qs.get("timeout") or ["15"])[0])
+                try:
+                    timeout = float((qs.get("timeout") or ["15"])[0])
+                except ValueError:
+                    raise BadRequest("timeout must be a number") from None
+                if not 0.1 <= timeout <= 120.0:
+                    raise BadRequest("timeout must be in 0.1..120 s")
                 code, payload = _http_cloud_state(serial, timeout)
                 self._send_json(payload, status=code); return
             printer = self._parse_printer()
@@ -634,17 +690,35 @@ def _serve_http(bind: str,
                 self.send_response(404)
                 self.end_headers()
 
-        def _read_body_json(self) -> dict | None:
-            length = int(self.headers.get("Content-Length", "0") or "0")
-            if length <= 0:
-                return {}
-            if length > 64 * 1024:
-                return None
-            raw = self.rfile.read(length)
-            try:
-                return json.loads(raw.decode("utf-8"))
-            except (json.JSONDecodeError, UnicodeDecodeError):
-                return None
+        def _json_body(self) -> dict[str, Any]:
+            """The request body as a JSON object ({} when empty). Raises
+            BadRequest for a bad Content-Length, oversize, non-JSON or
+            non-object body."""
+            n = content_length(self.headers, JSON_MAX_BYTES)
+            raw = self.rfile.read(n) if n else b""
+            if len(raw) != n:
+                raise BadRequest(f"short body: expected {n} B, got {len(raw)}")
+            return parse_json_object(raw)
+
+        def _raw_body(self, max_bytes: int, what: str) -> bytes:
+            """A raw (octet) body of 1..max_bytes bytes, fully read."""
+            n = content_length(self.headers, max_bytes)
+            if n <= 0:
+                raise BadRequest(f"expected raw {what} body "
+                                 "(Content-Length > 0)")
+            raw = self.rfile.read(n)
+            if len(raw) != n:
+                raise BadRequest(f"short body: expected {n} B, got {len(raw)}")
+            return raw
+
+        def _require_printer(self, name: str) -> str:
+            """`name` if it is a configured printer, else 400. Job
+            records and UI rows carry this string, so arbitrary text
+            (markup) must never get in."""
+            if name not in names:
+                raise BadRequest(f"unknown printer {name!r}; "
+                                 f"available: {names}")
+            return name
 
         def _send_json(self, payload: dict, status: int = 200) -> None:
             body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
@@ -666,9 +740,7 @@ def _serve_http(bind: str,
                               "payload": payload}
             return 200, {"ok": True, "printer": printer, "payload": payload}
 
-        def do_POST(self):
-            self._x2d_start = time.time()
-            self._x2d_printer = None
+        def _handle_post(self):
             self._x2d_authed = (auth_token is not None) and bool(
                 self.headers.get("Authorization", "").startswith("Bearer "))
             if not _check_bearer(self, auth_token, host):
@@ -677,20 +749,24 @@ def _serve_http(bind: str,
             path = url.path
             # Item #57: AI assistant — POST chat.
             if path == "/assistant/chat":
-                body = self._read_body_json() or {}
-                msg = (body.get("message") or "").strip()
+                body = self._json_body()
+                msg = get_str(body, "message", "", max_len=4000).strip()
                 if not msg:
                     self._send_json({"error":
                         "expected {message: str, provider?: str, history?: [...]}"},
                         status=400); return
+                history = body.get("history") or []
+                if not isinstance(history, list):
+                    raise BadRequest("'history' must be a list")
                 try:
                     from runtime.assistant.router import route as _route
                 except ImportError as e:
                     self._send_json({"error": f"assistant import failed: {e}"},
                                       status=500); return
                 result = _route(msg,
-                                  provider=body.get("provider", "auto"),
-                                  history=body.get("history") or [])
+                                  provider=get_str(body, "provider", "auto",
+                                                   max_len=32),
+                                  history=history)
                 self._send_json({
                     "reply":      result.reply,
                     "provider":   result.provider,
@@ -708,23 +784,13 @@ def _serve_http(bind: str,
                 # JSON. Web UI / HA dashboards use this to surface
                 # weight / time / purge waste / per-filament usage for
                 # a file the user uploaded but hasn't sent to the
-                # printer yet. Content-Type is irrelevant — we treat
-                # the body as octet bytes and write to a tmp file.
-                length = int(self.headers.get("Content-Length", "0") or "0")
-                if length <= 0:
-                    self._send_json(
-                        {"error": "expected raw .gcode.3mf body "
-                                  "(Content-Length > 0)"}, status=400)
-                    return
+                # printer yet. The body is raw octets (the request guard
+                # requires a non-form Content-Type such as
+                # application/octet-stream) written to a tmp file.
                 # Cap body at 64 MiB — Bambu .3mf bundles are typically
                 # 1-20 MiB; anything bigger is almost certainly an
                 # attack or a misuploaded video.
-                if length > 64 * 1024 * 1024:
-                    self._send_json(
-                        {"error": f"body too large ({length} B); cap is "
-                                  "64 MiB"}, status=413)
-                    return
-                raw = self.rfile.read(length)
+                raw = self._raw_body(64 * 1024 * 1024, ".gcode.3mf")
                 import tempfile
                 from dataclasses import asdict
                 from beambam.analyze import analyze_3mf
@@ -752,29 +818,31 @@ def _serve_http(bind: str,
             if tl_match and timelapse_rec is not None:
                 printer = urllib.parse.unquote(tl_match.group(1))
                 job_id  = urllib.parse.unquote(tl_match.group(2))
-                body = self._read_body_json() or {}
-                fps = int(body.get("fps", 30))
+                body = self._json_body()
+                fps = get_int(body, "fps", 30, lo=1, hi=120)
                 result = timelapse_rec.stitch(printer, job_id, fps=fps)
                 self._send_json(result, status=200 if result["ok"] else 500)
                 return
             # Cloud-side POST routes (item #67).
             if path == "/cloud/login":
-                body = self._read_body_json() or {}
+                body = self._json_body()
                 code, resp = _http_cloud_login(
-                    email=body.get("email") or "",
-                    password=body.get("password") or "",
-                    region=body.get("region") or None,
-                    email_code=body.get("email_code") or None,
-                    tfa_code=body.get("tfa_code") or None)
+                    email=get_str(body, "email", ""),
+                    password=get_str(body, "password", ""),
+                    region=get_str(body, "region", "", max_len=16) or None,
+                    email_code=get_str(body, "email_code", "",
+                                       max_len=32) or None,
+                    tfa_code=get_str(body, "tfa_code", "",
+                                     max_len=32) or None)
                 self._send_json(resp, status=code); return
             if path == "/cloud/logout":
                 code, resp = _http_cloud_logout()
                 self._send_json(resp, status=code); return
             if path == "/cloud/publish":
-                body = self._read_body_json() or {}
-                serial = body.get("serial") or ""
+                body = self._json_body()
+                serial = get_str(body, "serial", "", max_len=64)
                 payload = body.get("payload")
-                timeout = float(body.get("timeout", 10.0))
+                timeout = get_float(body, "timeout", 10.0, lo=0.1, hi=120.0)
                 if not serial or not isinstance(payload, dict):
                     self._send_json({"error":
                         "expected {serial: str, payload: dict, timeout?: float}"},
@@ -793,37 +861,51 @@ def _serve_http(bind: str,
                                       status=503)
                     return
                 qverb = path[len("/queue/"):]
-                body = self._read_body_json() or {}
+                body = self._json_body()
                 if qverb == "add":
                     if "gcode" not in body:
                         self._send_json({"error":
                             "expected {gcode, printer, slot?, label?}"},
                             status=400); return
+                    from runtime.queue.manager import (
+                        JobFileError, validate_job_file)
+                    # Dispatch uploads this file verbatim: only an
+                    # existing .gcode.3mf is accepted (never e.g.
+                    # ~/.x2d/credentials).
+                    try:
+                        gcode = validate_job_file(
+                            get_str(body, "gcode", max_len=4096))
+                    except JobFileError as e:
+                        raise BadRequest(str(e)) from None
                     job = queue_mgr.add(
-                        printer=body.get("printer", ""),
-                        gcode=body["gcode"],
-                        slot=int(body.get("slot", 1)),
-                        label=body.get("label", ""))
+                        printer=self._require_printer(
+                            get_str(body, "printer", "", max_len=128)),
+                        gcode=str(gcode),
+                        slot=get_int(body, "slot", 1, lo=1, hi=16),
+                        label=get_str(body, "label", "", max_len=200))
                     self._send_json({"ok": True, "job": job.to_dict()})
                     return
                 elif qverb == "cancel":
-                    job_id = body.get("id", "")
+                    job_id = get_str(body, "id", "", max_len=64)
                     ok = queue_mgr.cancel(job_id)
                     self._send_json({"ok": ok})
                     return
                 elif qverb == "remove":
-                    job_id = body.get("id", "")
+                    job_id = get_str(body, "id", "", max_len=64)
                     ok = queue_mgr.remove(job_id)
                     self._send_json({"ok": ok})
                     return
                 elif qverb == "move":
-                    job_id = body.get("id", "")
+                    job_id = get_str(body, "id", "", max_len=64)
+                    dest = body.get("dest_printer")
                     ok = queue_mgr.move(
                         job_id,
-                        dest_printer=body.get("dest_printer"),
-                        position=(body.get("position")
-                                   if body.get("position") is not None
-                                   else None))
+                        dest_printer=(None if dest is None else
+                                      self._require_printer(get_str(
+                                          body, "dest_printer",
+                                          max_len=128))),
+                        position=get_optional_int(body, "position",
+                                                  lo=0, hi=10_000))
                     self._send_json({"ok": ok})
                     return
                 self._send_json({"error": f"unknown queue verb {qverb!r}",
@@ -896,11 +978,7 @@ def _serve_http(bind: str,
                 self._send_json({"error": f"unknown printer {printer!r}",
                                   "available": names}, status=404)
                 return
-            body = self._read_body_json()
-            if body is None:
-                self._send_json({"error": "body must be JSON ≤64 KiB"},
-                                  status=400)
-                return
+            body = self._json_body()
             if verb == "pause":
                 payload = _print_cmd("pause", param="")
             elif verb == "resume":
@@ -908,39 +986,45 @@ def _serve_http(bind: str,
             elif verb == "stop":
                 payload = _print_cmd("stop", param="")
             elif verb == "light":
-                state = (body or {}).get("state", "")
+                state = body.get("state", "")
                 if state not in ("on", "off", "flashing"):
                     self._send_json({"error":
                         "state must be on/off/flashing"}, status=400)
                     return
                 payload = _system_cmd(
                     "ledctrl", led_node="chamber_light", led_mode=state,
-                    led_on_time=int(body.get("on_time", 500)),
-                    led_off_time=int(body.get("off_time", 500)),
-                    loop_times=int(body.get("loops", 0)),
-                    interval_time=int(body.get("interval", 0)))
+                    led_on_time=get_int(body, "on_time", 500,
+                                        lo=0, hi=60_000),
+                    led_off_time=get_int(body, "off_time", 500,
+                                         lo=0, hi=60_000),
+                    loop_times=get_int(body, "loops", 0, lo=0, hi=10_000),
+                    interval_time=get_int(body, "interval", 0,
+                                          lo=0, hi=60_000))
             elif verb == "temp":
-                target = (body or {}).get("target", "")
+                target = body.get("target", "")
                 value = body.get("value")
                 if target not in ("bed", "nozzle", "chamber") \
+                        or isinstance(value, bool) \
                         or not isinstance(value, (int, float)):
                     self._send_json({"error":
                         "expected target=bed|nozzle|chamber + value=int"},
                                       status=400)
                     return
+                temp = int(get_float(body, "value", lo=0, hi=400))
                 if target == "bed":
-                    payload = _print_cmd("set_bed_temp", temp=int(value))
+                    payload = _print_cmd("set_bed_temp", temp=temp)
                 elif target == "nozzle":
                     payload = _print_cmd(
                         "set_nozzle_temp",
-                        extruder_index=int(body.get("idx", 0)),
-                        target_temp=int(value))
+                        extruder_index=get_int(body, "idx", 0, lo=0, hi=1),
+                        target_temp=temp)
                 else:  # chamber
                     payload = _print_cmd(
-                        "gcode_line", param=f"M141 S{int(value)}\n")
+                        "gcode_line", param=f"M141 S{temp}\n")
             elif verb == "ams_load":
                 slot = body.get("slot")
-                if not isinstance(slot, int) or not 1 <= slot <= 16:
+                if isinstance(slot, bool) or not isinstance(slot, int) \
+                        or not 1 <= slot <= 16:
                     self._send_json({"error":
                         "slot must be int 1..16"}, status=400)
                     return
@@ -948,8 +1032,8 @@ def _serve_http(bind: str,
                 payload = _print_cmd(
                     "ams_change_filament",
                     target=int(slot) - 1,         # 0-indexed in mqtt
-                    curr_temp=int(body.get("curr_temp", 215)),
-                    tar_temp=int(body.get("tar_temp", 215)))
+                    curr_temp=get_int(body, "curr_temp", 215, lo=0, hi=400),
+                    tar_temp=get_int(body, "tar_temp", 215, lo=0, hi=400))
             elif verb == "ams_set":
                 # Push tray_info_idx + nozzle range + color to a single
                 # AMS slot. UI sends raw fields (no profile loading on
@@ -958,33 +1042,37 @@ def _serve_http(bind: str,
                 # NOT the 1..16 UI labeling used by ams_load.
                 from beambam.ams import build_tray_metadata_payload
                 slot = body.get("slot")
-                if not isinstance(slot, int) or not 0 <= slot <= 15:
+                if isinstance(slot, bool) or not isinstance(slot, int) \
+                        or not 0 <= slot <= 15:
                     self._send_json({"error":
                         "slot must be int 0..15"}, status=400)
                     return
                 try:
                     payload = build_tray_metadata_payload(
                         slot,
-                        tray_type=str(body.get("tray_type", "PLA")),
-                        tray_info_idx=str(body.get("tray_info_idx",
-                                                    "GFL99")),
-                        nozzle_temp_min=int(body.get("nozzle_temp_min",
-                                                       190)),
-                        nozzle_temp_max=int(body.get("nozzle_temp_max",
-                                                       240)),
-                        tray_color=(body.get("tray_color") or None),
-                        setting_id=(body.get("setting_id") or None),
+                        tray_type=get_str(body, "tray_type", "PLA",
+                                          max_len=32),
+                        tray_info_idx=get_str(body, "tray_info_idx",
+                                              "GFL99", max_len=32),
+                        nozzle_temp_min=get_int(body, "nozzle_temp_min",
+                                                190, lo=0, hi=400),
+                        nozzle_temp_max=get_int(body, "nozzle_temp_max",
+                                                240, lo=0, hi=400),
+                        tray_color=(get_str(body, "tray_color", "",
+                                            max_len=16) or None),
+                        setting_id=(get_str(body, "setting_id", "",
+                                            max_len=64) or None),
                     )
                 except (ValueError, TypeError) as e:
                     self._send_json({"error": f"bad input: {e}"},
                                       status=400)
                     return
-                if body.get("dry_run"):
+                if get_bool(body, "dry_run"):
                     self._send_json({"ok": True, "dry_run": True,
                                       "payload": payload})
                     return
             elif verb == "gcode":
-                line = (body or {}).get("line", "")
+                line = body.get("line", "")
                 if not isinstance(line, str) or not line.strip():
                     self._send_json({"error":
                         "expected {\"line\": \"<g-code>\"}"}, status=400)
@@ -996,7 +1084,7 @@ def _serve_http(bind: str,
                 # ha-bambulab parity: prompt-sound switch. Bambu's
                 # firmware accepts `print:print_option` with a
                 # `sound_enable` bit; expose as a simple on/off.
-                state = (body or {}).get("state", "")
+                state = body.get("state", "")
                 if state not in ("on", "off", "ON", "OFF", True, False):
                     self._send_json({"error":
                         "state must be on/off"}, status=400)

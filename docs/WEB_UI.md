@@ -75,6 +75,28 @@ x2d_token=<token>` (for EventSource). See [`AUTH` section in this
 doc's source](../runtime/webui/test_auth.py) for the full check
 matrix — 28/28 PASS in CI.
 
+### Cross-site requests and DNS rebinding
+
+An open loopback daemon must not be drivable by whatever web page the
+browser has open, so every request passes a guard
+(`beambam/http_validate.py`) before auth:
+
+* **Host** must be an IP literal, `localhost`, this machine's own
+  name(s), the bind host, or a name added with `--allow-host NAME`
+  (repeatable) / `$X2D_ALLOWED_HOSTS=a,b`. Anything else answers
+  `421` — a DNS-rebinding page arrives with its own domain in `Host`.
+* **POST** must not carry a cross-origin `Origin` (or
+  `Sec-Fetch-Site: cross-site`) → `403`, and must use
+  `Content-Type: application/json` (raw-body routes `/analyze` and
+  `/slice-print`: `application/octet-stream`) → otherwise `415`.
+  Those are types a page cannot send cross-origin without a CORS
+  preflight, which the daemon never grants.
+
+Scripts send the header: `curl -X POST -H 'Content-Type: application/json'
+-d '{}' http://127.0.0.1:8765/control/pause`. Malformed bodies or fields
+(non-numeric `Content-Length`, a JSON array, `"slot": "x"`) answer `400`
+with `{"error": …}`.
+
 ## Mobile
 
 The CSS uses a single-column layout below 720 CSS px (S25 Ultra

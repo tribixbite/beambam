@@ -32,7 +32,9 @@ cancelled→ user removed before dispatch
 # List
 curl http://127.0.0.1:8765/queue
 
-# Add a job
+# Add a job. `gcode` must be an existing *.gcode.3mf on the daemon's
+# machine and `printer` a configured printer name ("" = default);
+# anything else answers 400.
 curl -X POST http://127.0.0.1:8765/queue/add \
     -H 'Content-Type: application/json' \
     -d '{"printer":"studio","gcode":"/path/to/job.gcode.3mf","slot":3,"label":"job1"}'
