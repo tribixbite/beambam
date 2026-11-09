@@ -29,7 +29,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import remix_3mf  # noqa: WPS433
 
 
-FIXTURE = Path(__file__).resolve().parent.parent / "rumi_frame.gcode.3mf"
+# Any sliced X2D .gcode.3mf works; $BEAMBAM_REMIX_FIXTURE overrides the
+# repo-local rumi_frame (git-ignored, so absent on clean clones and CI).
+FIXTURE = Path(os.environ.get("BEAMBAM_REMIX_FIXTURE")
+               or Path(__file__).resolve().parent.parent / "rumi_frame.gcode.3mf")
 TMP_ROOT = Path(os.environ.get("TMPDIR", "/tmp"))
 
 # rumi_frame.gcode.3mf is a local-only artifact (gitignored). Skip the
@@ -65,7 +68,7 @@ def _expect(label: str, got, want) -> bool:
     return True
 
 
-def test_82_extruder_assignment() -> bool:
+def _check_82_extruder_assignment() -> bool:
     with tempfile.TemporaryDirectory(dir=TMP_ROOT) as td:
         path = Path(td) / "remix82.gcode.3mf"
         shutil.copy(FIXTURE, path)
@@ -80,7 +83,7 @@ def test_82_extruder_assignment() -> bool:
         return _expect("#82 single-object extruder", ovr, {2: {"extruder": "2"}})
 
 
-def test_83_remix_overrides() -> bool:
+def _check_83_remix_overrides() -> bool:
     with tempfile.TemporaryDirectory(dir=TMP_ROOT) as td:
         path = Path(td) / "remix83.gcode.3mf"
         shutil.copy(FIXTURE, path)
@@ -102,7 +105,7 @@ def test_83_remix_overrides() -> bool:
         return ok
 
 
-def test_84_persistence_round_trip() -> bool:
+def _check_84_persistence_round_trip() -> bool:
     """Apply overrides, re-open with the CLI, ensure the second --inspect
     pass sees exactly the values the first pass wrote (no zip-rewrite
     corruption / metadata loss / encoding mangling)."""
@@ -135,7 +138,7 @@ def test_84_persistence_round_trip() -> bool:
         return ok
 
 
-def test_84_reset_then_set() -> bool:
+def _check_84_reset_then_set() -> bool:
     """--reset wipes overrides, then a fresh --extruder writes a clean
     state. Combinable in one invocation."""
     with tempfile.TemporaryDirectory(dir=TMP_ROOT) as td:
@@ -161,15 +164,36 @@ def test_84_reset_then_set() -> bool:
         return ok
 
 
+# pytest entry points: the _check_* helpers return bools so `main()` can run
+# them standalone; these wrappers make a False an actual test failure (the
+# bool-returning test_* functions used to pass whatever they returned).
+
+
+def test_82_extruder_assignment() -> None:
+    assert _check_82_extruder_assignment()
+
+
+def test_83_remix_overrides() -> None:
+    assert _check_83_remix_overrides()
+
+
+def test_84_persistence_round_trip() -> None:
+    assert _check_84_persistence_round_trip()
+
+
+def test_84_reset_then_set() -> None:
+    assert _check_84_reset_then_set()
+
+
 def main() -> int:
     if not FIXTURE.exists():
         print(f"FIXTURE not found: {FIXTURE}", file=sys.stderr)
         return 1
     tests = [
-        test_82_extruder_assignment,
-        test_83_remix_overrides,
-        test_84_persistence_round_trip,
-        test_84_reset_then_set,
+        _check_82_extruder_assignment,
+        _check_83_remix_overrides,
+        _check_84_persistence_round_trip,
+        _check_84_reset_then_set,
     ]
     passed = sum(1 for t in tests if t())
     print(f"\n{passed}/{len(tests)} passed")
