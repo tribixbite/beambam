@@ -89,6 +89,9 @@ dev = [
     # (runtime/ha/test_*.py — they spin up an amqtt broker on a free
     # port so paho clients can publish + verify without a real broker).
     "amqtt>=0.11",
+    # Renders the HA entity templates in tests/test_ha_discovery.py with
+    # the same engine Home Assistant uses (skipped when absent).
+    "jinja2>=3.1",
 ]
 
 [project.urls]

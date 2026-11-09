@@ -873,37 +873,50 @@ def cmd_ha_publish(args: argparse.Namespace) -> int:
     publisher errors out, the others stay up."""
     import logging
     import os
+    import re
     import signal as _signal
     from threading import Event
     from beambam.config import Creds
 
     try:
-        from runtime.ha.publisher import HAPublisher
+        from runtime.ha.publisher import HAPublisher, fetch_serial_from_daemon
     except ImportError as e:
         print(f"[x2d-bridge] HA publisher import failed: {e}\n"
               "  Required: paho-mqtt (already a bridge dep).",
               file=sys.stderr)
         return 2
 
-    # Build the work list: one entry per printer.
-    if args.printer:
-        targets = [(args.printer, args.device_serial)]
-    else:
-        names = Creds.list_names() or [""]
-        targets = []
-        for name in names:
+    # The printer serial is the HA identity (unique_ids, topics, device
+    # identifiers). Resolve it the same way however `ha` is started —
+    # --device-serial, then the credentials file, then the daemon's own
+    # state (print.upgrade_state.sn) — and never fall back to the printer
+    # name, which used to give a second set of entities after a restart
+    # with/without --printer.
+    def _resolve_serial(name: str) -> str:
+        try:
+            serial = Creds.resolve(argparse.Namespace(
+                ip=None, code=None, serial=None, printer=(name or None))).serial
+        except SystemExit:
             serial = ""
-            try:
-                ns = argparse.Namespace(ip=None, code=None,
-                                         serial=None,
-                                         printer=(name or None))
-                creds = Creds.resolve(ns)
-                serial = creds.serial
-            except SystemExit:
-                pass
+        return serial or fetch_serial_from_daemon(
+            args.daemon_url, name, args.daemon_token or None)
+
+    names = [args.printer] if args.printer else (Creds.list_names() or [""])
+    if args.device_serial and len(names) > 1:
+        print("[x2d-ha] --device-serial needs --printer when several printers "
+              "are configured", file=sys.stderr)
+        return 2
+    targets: list[tuple[str, str]] = []
+    failed: list[tuple[str, str]] = []
+    for name in names:
+        serial = args.device_serial or _resolve_serial(name)
+        if serial:
             targets.append((name, serial))
-    if args.device_serial and len(targets) == 1:
-        targets = [(targets[0][0], args.device_serial)]
+        else:
+            failed.append((name, "serial unknown"))
+            print(f"[x2d-ha] {name or '<default>'}: cannot resolve the printer "
+                  "serial (credentials file and daemon /state both lack it); "
+                  "pass --device-serial", file=sys.stderr)
 
     host_part, _, port_part = args.broker.rpartition(":")
     host = host_part or args.broker
@@ -914,7 +927,6 @@ def cmd_ha_publish(args: argparse.Namespace) -> int:
         format="[%(asctime)s] %(name)s %(levelname)s %(message)s")
 
     publishers: list = []
-    failed: list[tuple[str, str]] = []
     for name, serial in targets:
         try:
             pub = HAPublisher(
@@ -925,8 +937,14 @@ def cmd_ha_publish(args: argparse.Namespace) -> int:
                 daemon_token=args.daemon_token or None,
                 discovery_prefix=args.discovery_prefix,
                 printer_name=name or "",
-                device_serial=serial or name or "default",
-                device_model=args.device_model)
+                device_serial=serial,
+                device_model=args.device_model,
+                birth_topic=args.ha_status_topic,
+                configuration_url=args.configuration_url or None,
+                # Device id that versions before 1.6 used when started
+                # by name; its retained configs get cleared.
+                legacy_device_ids=(
+                    "x2d_" + re.sub(r"[^A-Za-z0-9_]", "_", name or "default"),))
             pub.start()
             publishers.append(pub)
             print(f"[x2d-ha] {name or '<default>'}: started "

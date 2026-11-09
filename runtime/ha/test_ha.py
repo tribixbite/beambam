@@ -36,6 +36,11 @@ from amqtt.broker import Broker
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT))
+# Windows consoles and pipes default to cp1252; the PASS/FAIL lines carry
+# arrows and degree signs, which would raise UnicodeEncodeError there.
+for _stream in (sys.stdout, sys.stderr):
+    if hasattr(_stream, "reconfigure"):
+        _stream.reconfigure(encoding="utf-8", errors="replace")
 
 from beambam import _WEB_DIR_DEFAULT
 from beambam.serve_http import _serve_http
@@ -217,7 +222,6 @@ def main() -> int:
 
     broker_port = _free_port()
     daemon_port = _free_port()
-    broker_url  = f"127.0.0.1:{broker_port}"
     daemon_url  = f"http://127.0.0.1:{daemon_port}"
 
     print(f"[ha-test] broker=:{broker_port}  daemon=:{daemon_port}")
