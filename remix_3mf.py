@@ -8,10 +8,20 @@ This is the CLI companion to BambuStudio's per-object override panel
 `<object id="...">` block. The slicer reads these as per-object
 overrides on top of the global preset at re-slice time.
 
+NOTE on `extruder`:
+  In Bambu's model_settings.config the object `extruder` value is the
+  1-based *filament* index, NOT a physical nozzle. On a dual-nozzle
+  machine (X2D) the nozzle that filament prints from is decided by the
+  project's `filament_map` (filament -> nozzle), set in the slicer. So
+  `--extruder 2` means "print this object with filament 2", and which
+  nozzle that is depends on filament_map. It is not a direct left/right
+  selector.
+
 Why this exists:
-  * BambuStudio's UI route for assigning the X2D's right (auxiliary)
-    extruder to an object as a primary (not just support) is buried
-    in the Object List right-click ("Change Extruder"). This CLI
+  * BambuStudio's UI route for assigning an object to a particular
+    filament (and, via filament_map, the X2D's auxiliary nozzle) as a
+    primary — not just support — is buried in the Object List
+    right-click ("Change Extruder"/"Change Filament"). This CLI
     surfaces it for batch + headless workflows.
   * On-the-fly remix without re-importing: rewrite shells/infill/
     layer-height per object then re-open in BambuStudio (or send
@@ -42,11 +52,13 @@ Usage:
 
 The .gcode.3mf is rewritten in-place (atomic via temp + rename) unless
 you pass --out NEW_PATH. The Metadata/plate_<N>.gcode files are NOT
-re-generated — re-slice in BambuStudio (or `bambu-studio --slice
-<file>`) after remixing if the print needs a fresh gcode. For
-extruder-only changes that the printer applies at runtime via
-filament_map (X2D firmware re-routes filament source per ams_mapping2)
-no re-slice is needed.
+re-generated. These per-object overrides are *slicer inputs*: they only
+take effect when the file is re-sliced. If you remix a sliced
+`.gcode.3mf` and send it straight to the printer, the printer runs the
+OLD, unchanged G-code and your overrides are ignored. After remixing a
+sliced file, re-slice it in BambuStudio (or `bambu-studio --slice
+<file>`) before printing. This tool prints a warning when it edits a
+file that already contains plate_<N>.gcode.
 
 Exit codes:
     0  rewrote (or inspected) successfully
@@ -95,8 +107,9 @@ KNOWN_OBJECT_OVERRIDES = frozenset({
 })
 
 
-def _open_3mf(path: Path) -> tuple[zipfile.ZipFile, dict[str, bytes]]:
-    """Read every member of the 3MF into memory so we can rewrite it."""
+def _open_3mf(path: Path) -> tuple[None, dict[str, bytes]]:
+    """Read every member of the 3MF into memory so we can rewrite it. The
+    archive is closed on return (members are bytes), hence the None handle."""
     with zipfile.ZipFile(path, "r") as zf:
         members = {info.filename: zf.read(info.filename) for info in zf.infolist()}
     return None, members
@@ -285,15 +298,15 @@ def main() -> int:
     ap.add_argument("--inspect", action="store_true",
                     help="Print every object's current metadata + per-part "
                          "overrides, then exit (no write).")
-    ap.add_argument("--extruder", type=int,
-                    help="Assign every object to this extruder (1=left, "
-                         "2=right). For X2D this is the primary mechanism "
-                         "to use the AUX nozzle as a body extruder, not "
-                         "just for support material.")
+    ap.add_argument("--extruder", "--filament", type=int, dest="extruder",
+                    help="Assign every object to this 1-based FILAMENT index "
+                         "(model_settings.config 'extruder' is the filament, "
+                         "not the nozzle). On the X2D the nozzle comes from the "
+                         "project's filament_map. Takes effect only on re-slice.")
     ap.add_argument("--object", action="append", default=[],
-                    metavar="OBJ_ID:EXTRUDER",
+                    metavar="OBJ_ID:FILAMENT",
                     help="Per-object override, e.g. '2:2' to send object "
-                         "id 2 to extruder 2. Stack multiple --object "
+                         "id 2 to filament 2. Stack multiple --object "
                          "flags for multi-object prints.")
     ap.add_argument("--wall-loops", type=int)
     ap.add_argument("--sparse-infill", help="Density %% (int 0..100)")
@@ -329,6 +342,17 @@ def main() -> int:
 
     rewrites = cmd_apply(args, root)
     print(f"applied {rewrites} override(s)")
+
+    # These overrides are slicer inputs. If the file is already sliced
+    # (carries plate_<N>.gcode), its embedded G-code is now stale: a printer
+    # fed this file runs the OLD gcode and ignores the overrides. Warn loudly.
+    has_gcode = any(re.fullmatch(r"Metadata/plate_\d+\.gcode", name)
+                    for name in members)
+    if has_gcode and rewrites:
+        print("WARNING: this is a sliced .gcode.3mf — the embedded plate_*.gcode "
+              "was NOT regenerated. Re-slice (bambu-studio --slice) before "
+              "printing, or the printer will run the old G-code.",
+              file=sys.stderr)
 
     # Serialise the updated config back into the member dict.
     new_xml = ET.tostring(root, xml_declaration=True, encoding="UTF-8")
