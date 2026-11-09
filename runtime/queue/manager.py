@@ -73,10 +73,44 @@ _START_GRACE_S = 15 * 60.0
 
 # Cross-process lock file tuning: the lock is held for milliseconds
 # (reload + modify + rewrite), so a lock older than `_LOCK_STALE_S` was
-# left behind by a crashed process and is broken.
+# left behind by a crashed process and is broken. The stale age MUST be
+# shorter than the wait timeout: it used to be 30 s against a 10 s timeout,
+# so for ~30 s after a crash every waiter (the daemon starting up, HTTP
+# /queue*, the paho thread feeding on_state) gave up with TimeoutError.
+# A lock whose recorded holder process no longer exists is broken at once.
 _LOCK_TIMEOUT_S = 10.0
-_LOCK_STALE_S = 30.0
+_LOCK_STALE_S = 5.0
 _LOCK_POLL_S = 0.02
+
+
+def _holder_is_gone(pid: int) -> bool:
+    """True only when process `pid` certainly does not exist. Any doubt
+    (access denied, unreadable state) is "alive", so a live holder's lock
+    is never broken early — the age rule still applies then."""
+    if pid <= 0 or pid == os.getpid():
+        return False
+    if os.name == "nt":
+        import ctypes
+        from ctypes import wintypes
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.OpenProcess.restype = wintypes.HANDLE
+        handle = kernel32.OpenProcess(0x1000, False, pid)   # QUERY_LIMITED_INFORMATION
+        if not handle:
+            return ctypes.get_last_error() == 87             # ERROR_INVALID_PARAMETER: no such pid
+        try:
+            code = wintypes.DWORD()
+            if not kernel32.GetExitCodeProcess(handle, ctypes.byref(code)):
+                return False
+            return code.value != 259                          # exited (not STILL_ACTIVE)
+        finally:
+            kernel32.CloseHandle(handle)
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return True
+    except OSError:
+        return False
+    return False
 
 
 @dataclasses.dataclass
@@ -231,11 +265,17 @@ class _QueueFileLock:
     def _break_if_stale(self) -> None:
         try:
             age = time.time() - self.path.stat().st_mtime
+            raw = self.path.read_text(encoding="ascii", errors="ignore").strip()
         except OSError:
             return                      # vanished between open and stat
-        if age > self.stale_s:
-            LOG.warning("breaking stale queue lock %s (%.0fs old)",
-                        self.path, age)
+        try:
+            holder = int(raw.splitlines()[0]) if raw else 0
+        except ValueError:
+            holder = 0
+        gone = holder > 0 and _holder_is_gone(holder)
+        if gone or age > self.stale_s:
+            LOG.warning("breaking stale queue lock %s (%.0fs old, holder pid %s%s)",
+                        self.path, age, holder or "?", " gone" if gone else "")
             with contextlib.suppress(OSError):
                 self.path.unlink()
 

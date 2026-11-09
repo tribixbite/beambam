@@ -463,6 +463,10 @@ def _serve_http(bind: str,
                 handler()
             except BadRequest as e:
                 self._send_json({"error": e.message}, status=e.status)
+            except TimeoutError as e:
+                # e.g. the queue's cross-process lock is held: answer a
+                # retryable 503 instead of dropping the connection unanswered.
+                self._send_json({"error": f"temporarily unavailable: {e}"}, status=503)
 
         def do_GET(self):
             self._dispatch(self._handle_get)

@@ -355,3 +355,31 @@ def test_fanout_consumer_exception_does_not_stop_others(capsys):
     fo(_report("IDLE"))
     assert len(good.seen) == 1
     assert "bad consumer" in capsys.readouterr().err
+
+
+def test_fresh_lock_from_a_dead_process_does_not_block(tmp_path):
+    """A daemon restarted right after a crash must not wait out the lock:
+    a lock whose holder pid no longer exists is broken at once (it used to
+    raise TimeoutError after 10 s because only locks older than 30 s were
+    treated as stale)."""
+    import subprocess
+    p = subprocess.Popen([sys.executable, "-c", "pass"])
+    p.wait()                                   # a pid that has certainly exited
+    path = tmp_path / "q.json"
+    path.with_name("q.json.lock").write_text(f"{p.pid}\n")
+    t0 = time.monotonic()
+    qm = QueueManager(dispatch_cb=lambda _j: False, path=path)
+    qm.add(printer="", gcode="/x/a.gcode.3mf")
+    assert time.monotonic() - t0 < 3.0
+    assert len(qm.list()) == 1
+
+
+def test_fresh_lock_of_a_live_holder_is_respected(tmp_path):
+    """A lock held by a live process (here: ours) is not broken early."""
+    import os
+    lock = QM._QueueFileLock(tmp_path / "q.json.lock", timeout_s=0.3, stale_s=60)
+    (tmp_path / "q.json.lock").write_text(f"{os.getppid()}\n")
+    with pytest.raises(TimeoutError):
+        with lock:
+            pass
+    assert QM._LOCK_STALE_S < QM._LOCK_TIMEOUT_S
