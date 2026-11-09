@@ -45,6 +45,28 @@ def test_run_bambu_cli_stops_a_process_that_hangs_after_result(tmp_path: Path) -
     assert rc == 0 and (out / "result.json").is_file()
 
 
+def test_run_bambu_cli_keeps_relative_paths_valid(tmp_path: Path, monkeypatch) -> None:
+    """The CLI runs with cwd = out_dir, so relative paths from the caller must
+    be made absolute first (`-o out/x.gcode.3mf` used to write into out/out/)."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "in.3mf").write_bytes(b"x")
+    script = tmp_path / "fake_bs.py"
+    script.write_text(
+        "import json, sys, os\n"
+        "json.dump({'argv': sys.argv[1:], 'cwd': os.getcwd()}, open('argv.json', 'w'))\n",
+        encoding="utf-8")
+    rc = sp.run_bambu_cli(
+        [sys.executable, "fake_bs.py", "--outputdir", "out", "--export-3mf", "x.gcode.3mf",
+         "in.3mf"], Path("out"), timeout=30)
+    assert rc == 0
+    import json as _json
+    seen = _json.loads((tmp_path / "out" / "argv.json").read_text())
+    assert seen["argv"][1] == str((tmp_path / "out").resolve())      # --outputdir absolute
+    assert seen["argv"][3] == "x.gcode.3mf"                          # export name untouched
+    assert seen["argv"][4] == str((tmp_path / "in.3mf").resolve())   # input absolute
+    assert not (tmp_path / "out" / "out").exists()
+
+
 def test_graft_reduces_a_multi_part_template() -> None:
     import x2d_slice as xs
     wrapper = (b'<model><resources><object id="3" type="model"><components>'

@@ -121,6 +121,32 @@ def _result_complete(out_dir: Path) -> bool:
     return isinstance(data, dict) and "return_code" in data
 
 
+def _absolutize_args(cmd: list[str]) -> list[str]:
+    """Make the path arguments of a Bambu Studio command absolute.
+
+    run_bambu_cli starts the CLI with its CWD set to the output directory, so
+    a relative path built by the caller (relative to the caller's CWD) would
+    be resolved against the wrong directory: `-o out/x.gcode.3mf` made the
+    slicer write into `out/out/`. `--outputdir`'s value is always made
+    absolute; any other non-flag argument is made absolute when it names an
+    existing file or directory (each part of a `;`-joined list likewise).
+    `--export-3mf`'s value is left alone: the CLI resolves it against
+    --outputdir."""
+    out: list[str] = []
+    prev = ""
+    for arg in cmd:
+        if prev == "--outputdir":
+            arg = str(Path(arg).resolve())
+        elif prev != "--export-3mf" and arg and not arg.startswith("-"):
+            parts = arg.split(";")
+            fixed = [str(Path(p).resolve()) if p and not Path(p).is_absolute()
+                     and Path(p).exists() else p for p in parts]
+            arg = ";".join(fixed)
+        out.append(arg)
+        prev = arg if arg.startswith("-") else ""
+    return out
+
+
 def run_bambu_cli(cmd: list[str], out_dir: Path, *, env: dict[str, str] | None = None,
                   timeout: float = 1800.0, exit_grace: float = 20.0) -> int:
     """Run a Bambu Studio CLI command; return its exit code.
@@ -130,7 +156,9 @@ def run_bambu_cli(cmd: list[str], out_dir: Path, *, env: dict[str, str] | None =
     code from result.json is returned (the hang-at-exit is after all output is written).
     Raises TimeoutError after `timeout` seconds without a result.
     """
+    out_dir = out_dir.resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
+    cmd = _absolutize_args(cmd)             # paths stay valid after the cwd change
     stale = out_dir / "result.json"
     try:
         stale.unlink()                      # never read a previous run's verdict
