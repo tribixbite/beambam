@@ -120,6 +120,7 @@ def cmd_daemon(args: argparse.Namespace) -> int:
     from beambam.print_job import (
         _derive_print_params_from_3mf,
         _validate_ams_slot,
+        resolve_plate_idx,
         start_print,
     )
     from beambam.state_hub import StateHub
@@ -193,8 +194,12 @@ def cmd_daemon(args: argparse.Namespace) -> int:
             try:
                 with _dispatch_lock:
                     creds = cli.creds
+                    # cache/: start_print points the printer at
+                    # ftp:///cache/<name>; a root upload fails the
+                    # firmware's file verify (err 84033544).
                     upload_file(creds, Path(job.gcode),
-                                  remote_name=Path(job.gcode).name)
+                                remote_name=Path(job.gcode).name,
+                                remote_dir="cache")
                     # Per code-review #2: queue dispatch must validate
                     # AMS state at dispatch time — a job enqueued an
                     # hour ago may target a slot whose spool was
@@ -207,9 +212,12 @@ def cmd_daemon(args: argparse.Namespace) -> int:
                     live = cli.request_state(timeout=15.0)
                     _validate_ams_slot(live, int(job.slot), derived,
                                         force=False)
+                    # Plate 1, or the sole plate of a `plate select` file
+                    # (refuses an ambiguous multi-plate file).
                     start_print(cli, queued_3mf.name,
                                 use_ams=True,
                                 ams_slot=int(job.slot),
+                                plate_idx=resolve_plate_idx(queued_3mf, None),
                                 local_path=queued_3mf)
                 LOG_QUEUE.info(
                     "queue dispatched %s → %s slot %d",

@@ -845,7 +845,9 @@ def _op_start_local_print(h: _ConnHandler, args: dict) -> dict:
         raise _OpError(-14, f"file not found: {filename}")
     remote = local.name
     try:
-        upload_file(creds, local, remote_name=remote)
+        # cache/: start_print below points the printer at ftp:///cache/<name>;
+        # a root upload fails the firmware's file verify (err 84033544).
+        upload_file(creds, local, remote_name=remote, remote_dir="cache")
     except Exception as e:
         raise _OpError(-20, f"FTPS upload failed: {e}") from e
     sess = h.server._printers.get(dev_id)

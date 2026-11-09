@@ -25,10 +25,12 @@ on:
       dry_run:
         description: "Skip the upload step (test the build only)"
         type: boolean
-        # Default TRUE: a careless manual run builds but does NOT publish.
-        # Real publishing happens on `release: published` (which runs the
-        # tag/version check below). To publish from a manual run, untick
-        # this deliberately.
+        # Default TRUE: a manual run builds but does NOT publish. Publishing
+        # happens only on `release: published`, which carries the tag the
+        # version check below needs. A manual run has no release tag, so
+        # unticking this does not publish either: the build step refuses
+        # ("refusing to publish without a release tag"). Publish by creating
+        # a GitHub release.
         default: true
 
 permissions:

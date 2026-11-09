@@ -473,14 +473,11 @@ def main() -> int:
     client.disconnect()
     from beambam.cli.lan import cmd_print
     log.info("Starting %s with AMS slots %s via beambam print", args.file.name, chosen_slots)
-    if args.plate != 1:
-        # TODO: plate selection — print_job's project_file is fixed to plate_1;
-        # `beambam plate select` writes a single-plate file to print instead.
-        raise SystemExit("--plate other than 1 is not supported by the start path yet; "
-                         "extract the plate with `beambam plate select` first")
+    # cmd_print threads the plate into the project_file param + md5 (and
+    # refuses a plate the file does not contain).
     return cmd_print(argparse.Namespace(
         ip=creds.ip, code=creds.code, serial=creds.serial, printer=None,
-        file=str(args.file), remote=None, slot=chosen_slots,
+        file=str(args.file), remote=None, slot=chosen_slots, plate=args.plate,
         no_upload=False, no_ams=False, no_bed_level=False,
         bed_type=args.bed_type or None, bed_temp=None, force=False,
         flow_cali=not args.no_flow_cali, timelapse=False, vib_cali=False,

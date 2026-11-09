@@ -101,7 +101,7 @@ def test_login_next_redirect_stays_on_origin(tmp_path):
     got = dict(zip(map(str, cases), json.loads(out)))
     origin = "http://127.0.0.1:8765/"
     assert got["/index.html?printer=lab#x"][1] == origin + "index.html?printer=lab#x"
-    for evil in ("//evil.example/x", "/\evil.example",
+    for evil in ("//evil.example/x", "/\\evil.example",
                  "https://evil.example/", "javascript:alert(1)", "", "None",
                  "index.html"):
         assert got[evil][0] == "/index.html", (evil, got[evil])
