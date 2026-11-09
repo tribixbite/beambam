@@ -39,9 +39,9 @@ from beambam import mqtt as _mqtt
 from beambam.paths import config_path
 
 
-from beambam.signing import SIGNATURE_REJECTED, signing_status  # noqa: E402
-# How long a control verb waits for the printer's reply (`--reply-timeout`).
-REPLY_TIMEOUT_S = 8.0
+from beambam.commands import DEFAULT_REPLY_TIMEOUT_S as REPLY_TIMEOUT_S  # noqa: E402
+# How long a control verb waits for the printer's reply (`--reply-timeout`):
+# REPLY_TIMEOUT_S, imported from beambam.commands.
 
 
 def _publish_one(args: argparse.Namespace, payload: dict) -> int:
@@ -65,8 +65,7 @@ def _publish_one(args: argparse.Namespace, payload: dict) -> int:
     or `beambam.config.Creds.resolve` (for credential override) —
     both reach the publish path because we resolve the attributes at
     call time, not at module-load."""
-    from beambam.print_job import _publish_signed_or_legacy
-    from beambam.state import command_reply
+    from beambam.commands import refusal_message, send_command
 
     creds = _config.Creds.resolve(args)
     cli = _mqtt.X2DClient(creds)
@@ -74,17 +73,8 @@ def _publish_one(args: argparse.Namespace, payload: dict) -> int:
     family = next(iter(payload))
     command = str(payload[family].get("command", ""))
     wait = float(getattr(args, "reply_timeout", REPLY_TIMEOUT_S) or 0)
-    reply = None
     try:
-        since = cli.message_seq if hasattr(cli, "message_seq") else 0
-        if family == "print":
-            _publish_signed_or_legacy(cli, payload)
-        else:
-            cli.publish(payload)
-        if wait > 0 and command and hasattr(cli, "wait_for"):
-            msg = cli.wait_for(lambda m: command_reply(m, family, command) is not None,
-                               wait, since=since)
-            reply = command_reply(msg, family, command) if msg else None
+        reply = send_command(cli, payload, timeout=wait)
     finally:
         cli.disconnect()
     print(json.dumps(payload, indent=2))
@@ -95,13 +85,7 @@ def _publish_one(args: argparse.Namespace, payload: dict) -> int:
     if reply.ok:
         print(f"[{family}.{command}] printer acknowledged", file=sys.stderr)
         return 0
-    hint = ""
-    if reply.err_code in SIGNATURE_REJECTED:
-        hint = " — signature rejected: " + signing_status().summary()
-        if signing_status().ready:
-            hint += " (inputs look current; the key may belong to another Handy install)"
-    print(f"[{family}.{command}] printer REFUSED: err_code {reply.err_code}"
-          f"{f' ({reply.reason})' if reply.reason else ''}{hint}", file=sys.stderr)
+    print(f"[{family}.{command}] printer REFUSED: {refusal_message(reply)}", file=sys.stderr)
     return 1
 
 
@@ -379,15 +363,9 @@ def cmd_fod_check(args: argparse.Namespace) -> int:
 def cmd_ams_unload(args: argparse.Namespace) -> int:
     """MachineObject::command_ams_change_filament with !load —
     DeviceManager.cpp:1537. `target=255` is the unload sentinel."""
-    from beambam.cli._helpers import _print_cmd
-    payload = _print_cmd(
-        "ams_change_filament",
-        curr_temp=int(args.curr_temp),
-        tar_temp=int(args.tar_temp),
-        ams_id=int(args.ams),
-        target=255,
-        slot_id=255,
-    )
+    from beambam.commands import ams_unload_payload
+    payload = ams_unload_payload(int(args.ams), curr_temp=int(args.curr_temp),
+                                 tar_temp=int(args.tar_temp))
     return _publish(args, payload)
 
 
@@ -396,19 +374,9 @@ def cmd_ams_load(args: argparse.Namespace) -> int:
     DeviceManager.cpp:1537. `target` is the global tray id
     (ams_id*4 + slot_id), with a special case for ams_id=0 / slot=0
     where the firmware expects bare ams_id, not 0."""
-    from beambam.cli._helpers import _print_cmd
-    ams_id = int(args.ams)
-    slot_id = int(args.slot)
-    tray_id = ams_id * 4 + slot_id
-    target = ams_id if tray_id == 0 else tray_id
-    payload = _print_cmd(
-        "ams_change_filament",
-        curr_temp=int(args.curr_temp),
-        tar_temp=int(args.tar_temp),
-        ams_id=ams_id,
-        target=target,
-        slot_id=slot_id,
-    )
+    from beambam.commands import ams_load_payload
+    payload = ams_load_payload(int(args.ams), int(args.slot), curr_temp=int(args.curr_temp),
+                               tar_temp=int(args.tar_temp))
     return _publish(args, payload)
 
 
