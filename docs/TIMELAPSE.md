@@ -10,11 +10,11 @@ into an MP4 you can play inline.
 
 ```bash
 # camera daemon serves /cam.jpg on :8766
-python3.12 x2d_bridge.py camera --bind 127.0.0.1:8766 &
+beambam camera --bind 127.0.0.1:8766 &
 
 # bridge daemon proxies /snapshot.jpg from the camera and runs the
 # auto-timelapse on every printer
-python3.12 x2d_bridge.py daemon --http :8765 \
+beambam daemon --http :8765 \
     --timelapse \
     --timelapse-interval 30
 ```

@@ -201,7 +201,7 @@ def cmd_cloud_printers(args: argparse.Namespace) -> int:
     import cloud_client
     cli = cloud_client.CloudClient.load_or_anonymous()
     if cli.session.empty:
-        print("not logged in — run `x2d_bridge.py cloud-login` first",
+        print("not logged in — run `beambam cloud-login` first",
               file=sys.stderr)
         return 1
     try:
@@ -476,7 +476,7 @@ def cmd_cloud_history(args: argparse.Namespace) -> int:
     import cloud_client
     cli = cloud_client.CloudClient.load_or_anonymous()
     if cli.session.empty:
-        print("not logged in — run `x2d_bridge.py cloud-login` first",
+        print("not logged in — run `beambam cloud-login` first",
               file=sys.stderr)
         return 1
     try:
@@ -907,7 +907,7 @@ def _cloud_publish_payload(serial: str, payload: dict,
     import cloud_client
     cli = cloud_client.CloudClient.load_or_anonymous()
     if cli.session.empty:
-        print("not logged in — run `x2d_bridge.py cloud-login` first",
+        print("not logged in — run `beambam cloud-login` first",
               file=sys.stderr)
         return 1
     topic_request = f"device/{serial}/request"
@@ -1106,7 +1106,7 @@ def cmd_cloud_get_access_code(args: argparse.Namespace) -> int:
 
     cli = cloud_client.CloudClient.load_or_anonymous()
     if cli.session.empty:
-        print("not logged in — run `x2d_bridge.py cloud-login` first",
+        print("not logged in — run `beambam cloud-login` first",
               file=sys.stderr)
         return 1
     serial = _resolve_cloud_serial(args)
@@ -1396,7 +1396,7 @@ def cmd_cloud_print(args: argparse.Namespace) -> int:
 
     cli = cloud_client.CloudClient.load_or_anonymous()
     if cli.session.empty:
-        print("not logged in — run `x2d_bridge.py cloud-login` first",
+        print("not logged in — run `beambam cloud-login` first",
               file=sys.stderr)
         return 1
 
@@ -1512,7 +1512,7 @@ def cmd_cloud_publish(args: argparse.Namespace) -> int:
 
     cli = cloud_client.CloudClient.load_or_anonymous()
     if cli.session.empty:
-        print("not logged in — run `x2d_bridge.py cloud-login` first",
+        print("not logged in — run `beambam cloud-login` first",
               file=sys.stderr)
         return 1
     serial = args.serial or os.environ.get("X2D_SERIAL")
@@ -2132,7 +2132,7 @@ def cmd_cloud_state(args: argparse.Namespace) -> int:
 
     cli = cloud_client.CloudClient.load_or_anonymous()
     if cli.session.empty:
-        print("not logged in — run `x2d_bridge.py cloud-login` first",
+        print("not logged in — run `beambam cloud-login` first",
               file=sys.stderr)
         return 1
     serial = args.serial or os.environ.get("X2D_SERIAL")

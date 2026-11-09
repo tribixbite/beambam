@@ -1,7 +1,5 @@
-"""beambam.cli — CLI handlers being migrated out of x2d_bridge.py.
-
-Phase 5 of `docs/BRIDGE_SPLIT_PLAN.md`. Each sub-package groups related
-handlers:
+"""beambam.cli — the `beambam` command. `main()` here builds the argparse
+tree and dispatches; the handlers live in sub-packages by topic:
 
   beambam.cli.cloud   — every `cmd_cloud_*` handler + Printables /
                         MakerWorld search variants
@@ -12,19 +10,14 @@ handlers:
   beambam.cli.info    — read-only status + utility (status/health/watch
                         /tail/notify/printers/fetch/analyze/fcm-harvest
                         /help)
-  beambam.cli.lan     — LAN file-mover (upload/files)
-  beambam.cli.daemon  — long-running services (webrtc, ha-publish)
+  beambam.cli.lan     — LAN file-mover + print (upload/files/print/slice-print)
+  beambam.cli.daemon  — long-running services (serve, webrtc, ha-publish)
 
-Handlers in this package expose two things to x2d_bridge's `main()`:
-
-  add_subparser(subparsers, root_parser=None) -> None
-      Register the subparser(s) the module owns.
-  (each `cmd_*` is also importable directly for tests.)
-
-x2d_bridge.py imports `add_subparser` from each module and calls it
-inside `main()`. The bridge stays the single argparse-orchestration
-point until Phase 5e collapses `main()` into `beambam/cli/__init__.py`
-too.
+Each module exposes `add_subparser(subparsers, root_parser=None)` which
+`main()` calls to register its subparsers; every `cmd_*` is importable
+directly for tests. (The original single-file `x2d_bridge.py` was removed
+in v1.5.0; `x2d_bridge` survives only as a console-script alias of
+`beambam` for the network-plugin shim.)
 """
 from __future__ import annotations
 

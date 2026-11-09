@@ -30,7 +30,7 @@ serial = 03ABC123XXXXXXX     # serial sticker / About page
 Verify it talks to the printer (no GUI needed):
 
 ```bash
-~/x2d/helpers/x2d_bridge.py status | head     # one-shot push, prints JSON
+~/x2d/helpers/beambam status | head     # one-shot push, prints JSON
 ```
 
 If you see a JSON dump with `mc_print` keys, you're connected.
@@ -101,13 +101,13 @@ Look for lines like `[serve] ssdp listening on udp/2021` and
 ~/x2d/bin/bambu-studio --slice 0 -o out.gcode.3mf model.stl
 
 # 2. Upload + start print in one shot
-~/x2d/helpers/x2d_bridge.py print out.gcode.3mf
+~/x2d/helpers/beambam print out.gcode.3mf
 ```
 
 ## Print-control shortcuts (live MQTT publishes)
 
 ```bash
-x=~/x2d/helpers/x2d_bridge.py
+x=~/x2d/helpers/beambam
 
 # State
 $x status                   # one-shot pushall + dump
@@ -151,7 +151,7 @@ $x camera --proto local --skip-check     # alternate LVL_Local TLS:6000
 
 ```bash
 # Long-running JSON daemon + HTTP endpoint for Home Assistant / Grafana
-x2d_bridge.py daemon --http :8765
+beambam daemon --http :8765
 
 # Health-check (200 if recent push, 503 after --max-staleness)
 curl -s http://127.0.0.1:8765/healthz | jq .
@@ -172,8 +172,8 @@ the LAN, you **must** set a bearer token:
 
 ```bash
 export X2D_AUTH_TOKEN=$(openssl rand -hex 32)
-x2d_bridge.py daemon --http 0.0.0.0:8765
-x2d_bridge.py camera --bind 0.0.0.0:8766
+beambam daemon --http 0.0.0.0:8765
+beambam camera --bind 0.0.0.0:8766
 
 # From another box on the LAN:
 curl -H "Authorization: Bearer $X2D_AUTH_TOKEN" http://<phone-ip>:8765/healthz
@@ -188,9 +188,9 @@ Only needed if you want the GUI's user-account dropdown / cloud-synced
 presets to populate. LAN-only flow doesn't touch this.
 
 ```bash
-x2d_bridge.py cloud-login --email me@example.com --password '…'
-x2d_bridge.py cloud-status
-x2d_bridge.py cloud-logout
+beambam cloud-login --email me@example.com --password '…'
+beambam cloud-status
+beambam cloud-logout
 ```
 
 Tokens persist at `~/.x2d/cloud_session.json` (chmod 600), refreshed
@@ -202,7 +202,7 @@ automatically when within 5 min of expiry.
 |---|---|---|
 | GUI never opens | `pgrep bambu-studio` | rerun `run_gui.sh` from a Termux shell, watch stderr |
 | GUI opens but Device tab is blank | preset selected? | confirm `presets.printer` starts with "Bambu Lab" in `~/.config/BambuStudioInternal/BambuStudio.conf`, or `rm ~/.x2d/.ssdp_seeded` and relaunch — the auto-pop will re-fire |
-| Green WiFi icon never appears | bridge alive? | `tail -f ~/.x2d/bridge.log` ; if blank, kill any stale `x2d_bridge.py serve` and re-run launcher |
+| Green WiFi icon never appears | bridge alive? | `tail -f ~/.x2d/bridge.log` ; if blank, kill any stale `beambam serve` and re-run launcher |
 | `status` hangs | wrong IP / wrong access code | re-check Settings → Network on the printer |
 | `gcode/pause/resume` returns "verify failed" | leaked cert outdated | update from upstream repo (`cd ~/x2d && git pull`) |
 | Camera 503 forever | LAN-mode liveview is OFF on the printer | flip it on at the printer touchscreen: Settings → Network → Liveview |
@@ -214,7 +214,7 @@ automatically when within 5 min of expiry.
 | Where | What |
 |---|---|
 | `~/x2d/run_gui.sh` | GUI launcher (the one command you actually run) |
-| `~/x2d/helpers/x2d_bridge.py` | LAN client + daemon + RPC server CLI |
+| `~/x2d/helpers/beambam` | LAN client + daemon + RPC server CLI |
 | `~/.x2d/credentials` | per-printer ip/code/serial (chmod 600) |
 | `~/.x2d/cloud_session.json` | optional Bambu cloud tokens (chmod 600) |
 | `~/.x2d/bridge.sock` | Unix socket the shim talks to |

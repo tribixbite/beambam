@@ -22,7 +22,7 @@ files in `web/` totalling ~22 KB.
 ## Start
 
 ```bash
-python3.12 x2d_bridge.py daemon \
+beambam daemon \
     --http       0.0.0.0:8765 \
     --queue \
     --timelapse \

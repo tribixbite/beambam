@@ -27,16 +27,16 @@ the empty string in API responses. You can mix `[printer]` plus
 
 ## What runs against multiple printers
 
-* **`x2d_bridge.py daemon`** — spawns one X2DClient per section, all
+* **`beambam daemon`** — spawns one X2DClient per section, all
   sharing one HTTP server on `--http`. State, /state.events, /metrics,
   /healthz, /control/* are all `?printer=NAME` routed.
-* **`x2d_bridge.py status` / `pause` / etc.** — pass `--printer NAME`
+* **`beambam status` / `pause` / etc.** — pass `--printer NAME`
   (or set `X2D_PRINTER`) to target a specific section.
-* **`x2d_bridge.py ha-publish`** — without `--printer`, spawns one
+* **`beambam ha-publish`** — without `--printer`, spawns one
   HAPublisher thread per section in the same process; each gets its
   own HA Device with namespaced topics. Failures are isolated
   per-printer.
-* **`x2d_bridge.py serve`** (the `libbambu_networking.so` shim
+* **`beambam serve`** (the `libbambu_networking.so` shim
   endpoint) — registers each printer with `DeviceManager::on_machine_alive`
   so the BambuStudio GUI's Device-tab dropdown lists all of them.
 * **Web UI** — printer dropdown in the header re-targets every card.
@@ -66,7 +66,7 @@ If you don't want to write the credentials file by hand, the bridge's
 and shows you what's on the LAN:
 
 ```bash
-python3.12 x2d_bridge.py serve --debug 2>&1 | grep ssdp
+beambam serve --debug 2>&1 | grep ssdp
 ```
 
 (Then add the matching `[printer:NAME]` section with the discovered
