@@ -319,6 +319,7 @@ X2D_EXPECTED = {
     "firmware": "",                     # update: '' is ignored by HA
     "bed_set": "0",
     "chamber_set": "0",
+    "nozzle_set": "0",                  # right nozzle (extruder index 0) target
 }
 
 
@@ -392,6 +393,11 @@ class TestTemplates:
         assert render(ents["left_nozzle_temp"].value_template, state) == "218"
         assert render(ents["left_nozzle_target"].value_template, state) == "220"
         assert render(ents["stage"].value_template, state) == "running"
+        # The slider reads back extruder index 0 (right), what /control/temp sets.
+        state["print"]["device"]["extruder"]["info"][0]["temp"] = (215 << 16) | 120
+        assert render(ents["nozzle_set"].value_template, state) == "215"
+        assert ents["nozzle_set"].name == "Right nozzle setpoint"
+        assert _by_key("P1S")["nozzle_set"].name == "Nozzle setpoint"
 
     def test_firmware_update_payload(self, render: Callable[[str, dict[str, Any]], str]) -> None:
         state = _x2d_state()

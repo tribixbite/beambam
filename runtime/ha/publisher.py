@@ -535,12 +535,6 @@ CONTROL_ENTITIES: list[Entity] = [
            "°C", "temperature", "", "mdi:thermometer",
            extra={"command_topic": "__BASE__/temp/bed/set",
                   "min": 0, "max": 110, "step": 1, "mode": "slider"}),
-    Entity("number", "nozzle_set", "Nozzle setpoint",
-           # Applies to the active nozzle on two-nozzle printers.
-           _num(f"{PR}.nozzle_target_temper"),
-           "°C", "temperature", "", "mdi:printer-3d-nozzle-heat",
-           extra={"command_topic": "__BASE__/temp/nozzle/set",
-                  "min": 0, "max": 320, "step": 1, "mode": "slider"}),
     Entity("number", "chamber_set", "Chamber setpoint",
            _packed_temp(("ctc", "info", "temp"), target=True,
                         fallback="chamber_target_temper"),
@@ -560,6 +554,29 @@ CONTROL_ENTITIES: list[Entity] = [
            extra={"command_topic": "__BASE__/sound/set",
                   "state_on": "on", "state_off": "off", **_ON_OFF}),
 ]
+
+
+def nozzle_setpoint_entity(model: str) -> Entity:
+    """Nozzle temperature slider.
+
+    The daemon's POST /control/temp sends ``set_nozzle_temp`` with
+    ``extruder_index`` 0 unless told otherwise. On two-nozzle printers
+    index 0 is the right nozzle (``extruder.info`` id 0, as in
+    ha-bambulab), so the slider is labelled and read back as the right
+    nozzle there.
+
+    # TODO: a left-nozzle slider needs the publisher to pass "idx": 1;
+    # not added because the command cannot be verified without changing
+    # printer state.
+    """
+    dual = model_key(model) in DUAL_NOZZLE_MODELS
+    return Entity("number", "nozzle_set",
+                  "Right nozzle setpoint" if dual else "Nozzle setpoint",
+                  _extruder_temp(0, target=True) if dual
+                  else _num(f"{PR}.nozzle_target_temper"),
+                  "°C", "temperature", "", "mdi:printer-3d-nozzle-heat",
+                  extra={"command_topic": "__BASE__/temp/nozzle/set",
+                         "min": 0, "max": 320, "step": 1, "mode": "slider"})
 
 
 def camera_entity(_snapshot_url: str, base_topic: str) -> Entity:
@@ -608,6 +625,7 @@ def build_entities(model: str, base_topic: str, *,
         out += ams_unit_entities(unit)
     out += ext_spool_entities(model)
     out += CONTROL_ENTITIES
+    out.append(nozzle_setpoint_entity(model))
     out += [camera_entity(snapshot_url, base_topic), mqtt_camera_entity(base_topic)]
     return out
 
