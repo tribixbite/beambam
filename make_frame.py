@@ -45,7 +45,45 @@ DEFAULT_H = 1.2
 DEFAULT_DEBOSS_DEPTH = 0.6  # mm of the 1.2 mm stock removed by text glyphs
 DEFAULT_CARD_LAYER = 0.4    # mm-thick base spanning the inner opening to hold a card
 DEFAULT_PX_MM = 0.1
-DEFAULT_FONT = "/data/data/com.termux/files/usr/share/fonts/TTF/DejaVuSans-Bold.ttf"
+def _default_font() -> str:
+    """A bold TrueType font that exists on this machine.
+
+    $BEAMBAM_FONT wins; then PIL's bundled DejaVuSans-Bold (always present
+    where Pillow is), then the usual per-OS locations. The old value was a
+    hardcoded Termux path, so `beambam frame` failed everywhere else.
+    """
+    import os
+    env = os.environ.get("BEAMBAM_FONT")
+    if env:
+        return env
+    try:
+        import PIL
+        bundled = Path(PIL.__file__).parent / "fonts" / "DejaVuSans-Bold.ttf"
+        if bundled.is_file():
+            return str(bundled)
+    except Exception:
+        pass
+    windows = [os.path.join(os.environ.get("WINDIR", r"C:\Windows"), "Fonts", f)
+               for f in ("arialbd.ttf", "segoeuib.ttf", "DejaVuSans-Bold.ttf")]
+    macos = ["/System/Library/Fonts/Supplemental/Arial Bold.ttf", "/Library/Fonts/Arial Bold.ttf"]
+    unix = [
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",            # Debian/Ubuntu
+        "/usr/share/fonts/TTF/DejaVuSans-Bold.ttf",                        # Arch
+        "/data/data/com.termux/files/usr/share/fonts/TTF/DejaVuSans-Bold.ttf",  # Termux
+    ]
+    if os.name == "nt":
+        ordered = windows + unix
+    elif sys.platform == "darwin":
+        ordered = macos + unix
+    else:
+        ordered = unix + macos
+    for c in ordered:
+        if Path(c).is_file():
+            return c
+    return ordered[0]
+
+
+DEFAULT_FONT = _default_font()
 
 
 def parse_args() -> argparse.Namespace:

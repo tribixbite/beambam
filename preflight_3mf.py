@@ -196,6 +196,12 @@ def validate(path: Path, *, want_printer: str | None = None,
         zf.close()
         return res
     res.summary["plates"] = plates
+    # Every plate needs its .gcode.md5 sidecar; the firmware's file-verify
+    # compares it against the uploaded gcode (a missing one = err 84033544).
+    for plate in plates:
+        if plate not in md5s:
+            res.add("error", "missing-plate-md5",
+                    f"Metadata/plate_{plate}.gcode has no plate_{plate}.gcode.md5 sidecar")
 
     # 3. project_settings.config — printer metadata
     cfg = _read_json(zf, "Metadata/project_settings.config") or {}

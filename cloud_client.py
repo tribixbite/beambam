@@ -1149,7 +1149,9 @@ class CloudClient:
         #   Date + "\n" + CanonicalizedOSSHeaders + CanonicalizedResource
         # where CanonicalizedOSSHeaders includes lowercase x-oss-* headers
         # sorted by header name; for STS, x-oss-security-token is required.
-        import hmac as _hmac, hashlib as _hashlib, base64 as _base64
+        import base64 as _base64
+        import hashlib as _hashlib
+        import hmac as _hmac
         from email.utils import formatdate as _formatdate
         if not all(k in token for k in ("accessKeyId", "accessKeySecret",
                                         "bucket", "fileSavePath")):

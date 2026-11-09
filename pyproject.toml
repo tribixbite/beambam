@@ -135,6 +135,7 @@ packages = ["beambam", "runtime"]
 "lan_upload.py" = "lan_upload.py"
 "x2d_slice.py" = "x2d_slice.py"
 "inject_thumbnails.py" = "inject_thumbnails.py"
+"make_frame.py" = "make_frame.py"
 "remix_3mf.py" = "remix_3mf.py"
 "preflight_3mf.py" = "preflight_3mf.py"
 "resolve_profile.py" = "resolve_profile.py"
@@ -163,6 +164,7 @@ include = [
     "/lan_upload.py",
     "/x2d_slice.py",
     "/inject_thumbnails.py",
+    "/make_frame.py",
     "/remix_3mf.py",
     "/preflight_3mf.py",
     "/resolve_profile.py",
@@ -194,6 +196,10 @@ exclude = [
 [tool.ruff]
 line-length = 100
 target-version = "py310"
+# Device-provisioning tooling (Frida/capstone scripts for `beambam key`) and
+# the site OG-image generator are auxiliary scratch scripts with intentional
+# one-liner style; lint the mainline package + shipped helpers, not these.
+extend-exclude = ["runtime/handy_extract", "site", "runtime/bambu_extract"]
 
 [tool.ruff.lint]
 # Lean ruleset for the beambam package. Stricter codes (B/UP/I/RUF) flag

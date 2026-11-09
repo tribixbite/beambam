@@ -125,7 +125,7 @@ def _validate(printer_section: str, timeout: float, json_out: bool, silent: bool
             if isinstance(err, int) and err != 0:
                 err_code = err
                 err_stage = "command_err"
-        except TimeoutError as e:
+        except TimeoutError:
             err_stage = "timeout"
             err_code = 84033543  # the verify-failed code firmware uses
             if not silent and not json_out:

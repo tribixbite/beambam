@@ -354,7 +354,7 @@ def main() -> int:
     ]:
         try:
             results[name] = fn()
-        except Exception as e:
+        except Exception:
             import traceback
             traceback.print_exc()
             results[name] = False
