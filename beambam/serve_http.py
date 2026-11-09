@@ -79,6 +79,17 @@ from beambam.http_cloud import (
 # server with an explicit web_dir don't need the bridge import.
 
 
+# How long POST /control/* waits for the printer's reply. Kept under the
+# Home Assistant publisher's 5 s HTTP timeout; the printer normally
+# answers within a second.
+CONTROL_REPLY_TIMEOUT_S = 4.0
+
+# /control verbs whose command the firmware always answers (print job
+# control + AMS load); silence there is an error (504). Other verbs may
+# legitimately go unanswered (202).
+_CONTROL_VERBS_THAT_REPLY = frozenset({"pause", "resume", "stop", "ams_load"})
+
+
 def _slice_print_argv(model: Path, *, printer: str, slot: int | None,
                       bed_type: str, no_ams: bool) -> list[str]:
     """argv for the `beambam slice-print` child of POST /slice-print.
@@ -825,17 +836,57 @@ def _serve_http(bind: str,
             self.end_headers()
             self.wfile.write(body)
 
-        def _publish_via_client(self, printer: str, payload: dict) -> tuple[int, dict]:
+        def _publish_via_client(self, printer: str, payload: dict, *,
+                                expect_reply: bool) -> tuple[int, dict]:
+            """Send one control command the way the CLI does
+            (beambam.commands.send_command: print.* signed with the
+            recovered key, which X2D/H2D firmware requires) and answer
+            with the printer's verdict:
+
+              200  printer acknowledged (`verified: true`)
+              409  printer refused — err_code / reason / readable cause
+              504  no reply within CONTROL_REPLY_TIMEOUT_S for a command
+                   the firmware always answers (`expect_reply`)
+              202  sent, no reply, for a command that may not answer
+              502  publish itself failed
+              503  no live client for this printer
+
+            A client that cannot observe replies (no `wait_for`, e.g. a
+            test double) gets 200 with `verified: false`.
+            """
             cli = (clients or {}).get(printer)
             if cli is None:
                 return 503, {"error": "no live MQTT client for printer "
                               f"{printer!r}; run with --http on the daemon"}
+            from beambam.commands import refusal_message, send_command
+            family = next(iter(payload))
+            command = str(payload[family].get("command", ""))
+            can_wait = callable(getattr(cli, "wait_for", None))
             try:
-                cli.publish(payload)
+                reply = send_command(
+                    cli, payload,
+                    timeout=CONTROL_REPLY_TIMEOUT_S if can_wait else 0)
             except Exception as e:
-                return 502, {"error": f"publish failed: {e}",
-                              "payload": payload}
-            return 200, {"ok": True, "printer": printer, "payload": payload}
+                return 502, {"ok": False, "error": f"publish failed: {e}",
+                              "printer": printer, "payload": payload}
+            base = {"printer": printer, "payload": payload}
+            if reply is None:
+                if not can_wait:
+                    return 200, {"ok": True, "verified": False, **base}
+                if expect_reply:
+                    return 504, {"ok": False, "verified": False,
+                                 "error": f"{family}.{command} sent; the "
+                                          "printer did not answer within "
+                                          f"{CONTROL_REPLY_TIMEOUT_S:g} s",
+                                 **base}
+                return 202, {"ok": True, "verified": False, **base}
+            verdict = {"err_code": reply.err_code, "reason": reply.reason,
+                       "sequence_id": reply.sequence_id}
+            if reply.ok:
+                return 200, {"ok": True, "verified": True,
+                             "reply": verdict, **base}
+            return 409, {"ok": False, "verified": True,
+                         "error": refusal_message(reply), **verdict, **base}
 
         def _handle_post(self):
             self._x2d_authed = (auth_token is not None) and bool(
@@ -1116,10 +1167,15 @@ def _serve_http(bind: str,
                     self._send_json({"error":
                         "slot must be int 1..16"}, status=400)
                     return
-                # MachineObject::command_ams_change_filament — DeviceManager.cpp:1700
-                payload = _print_cmd(
-                    "ams_change_filament",
-                    target=int(slot) - 1,         # 0-indexed in mqtt
+                # The UI labels trays 1..16; the printer wants the AMS
+                # unit + tray. Same builder as `beambam ams-load` (Bambu
+                # Studio's command_ams_change_filament shape: ams_id,
+                # slot_id, target with the tray-0 special case) instead
+                # of the old bare target=slot-1.
+                from beambam.commands import ams_load_payload
+                global_slot = int(slot) - 1
+                payload = ams_load_payload(
+                    global_slot // 4, global_slot % 4,
                     curr_temp=get_int(body, "curr_temp", 215, lo=0, hi=400),
                     tar_temp=get_int(body, "tar_temp", 215, lo=0, hi=400))
             elif verb == "ams_set":
@@ -1187,7 +1243,9 @@ def _serve_http(bind: str,
                                                 "ams_set", "gcode", "sound"]},
                                   status=404)
                 return
-            status, resp = self._publish_via_client(printer, payload)
+            status, resp = self._publish_via_client(
+                printer, payload,
+                expect_reply=verb in _CONTROL_VERBS_THAT_REPLY)
             self._send_json(resp, status=status)
 
     server = ThreadingHTTPServer((host, port), Handler)

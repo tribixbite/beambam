@@ -97,6 +97,21 @@ Scripts send the header: `curl -X POST -H 'Content-Type: application/json'
 (non-numeric `Content-Length`, a JSON array, `"slot": "x"`) answer `400`
 with `{"error": …}`.
 
+### Control results
+
+`POST /control/*` sends exactly like the CLI (`beambam.commands.send_command`:
+`print.*` signed with the recovered key that X2D/H2D firmware requires) and
+waits up to 4 s for the printer's answer:
+
+| status | meaning |
+|---|---|
+| `200` | printer acknowledged (`verified: true`, `reply.err_code`) |
+| `409` | printer refused: `err_code`, `reason`, readable `error` (incl. signing cause) |
+| `504` | pause / resume / stop / ams_load sent but the printer never answered |
+| `202` | light / temp / gcode / sound / ams_set sent, no answer (may be normal) |
+| `502` | the MQTT publish itself failed |
+| `503` | no live client for that printer |
+
 ## Mobile
 
 The CSS uses a single-column layout below 720 CSS px (S25 Ultra
