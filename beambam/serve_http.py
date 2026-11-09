@@ -25,11 +25,13 @@ import io
 import json
 import logging
 import os
+import subprocess
 import sys
 import tempfile
+import threading
 import time
 import zipfile
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from threading import Event, Thread
 from typing import TYPE_CHECKING, Any, Callable
@@ -75,6 +77,108 @@ from beambam.http_cloud import (
 # _WEB_DIR_DEFAULT lives in x2d_bridge.py until Phase 5e.5 (main() move);
 # lazy-imported inside _serve_http so the test fixtures that build a
 # server with an explicit web_dir don't need the bridge import.
+
+
+def _slice_print_argv(model: Path, *, printer: str, slot: int | None,
+                      bed_type: str, no_ams: bool) -> list[str]:
+    """argv for the `beambam slice-print` child of POST /slice-print.
+
+    Runs the real CLI module with this interpreter. (The route used to
+    spawn ``python serve_http.py slice-print``, which only defines
+    functions and exits 0 without doing anything, behind a 202.)
+    `slice-print` defines its own --printer, so it follows the
+    subcommand; flags left unset keep the CLI's defaults.
+    """
+    argv = [sys.executable, "-m", "beambam.cli", "slice-print", str(model),
+            "--bed-type", bed_type]
+    if printer:
+        argv += ["--printer", printer]
+    if slot is not None:
+        argv += ["--slot", str(slot)]
+    if no_ams:
+        argv.append("--no-ams")
+    return argv
+
+
+@dataclass
+class SliceJob:
+    """One `slice-print` child spawned by this daemon."""
+    pid: int
+    proc: "subprocess.Popen[bytes]"
+    log_path: Path
+    model: Path
+    started: float
+
+    def status(self) -> dict[str, Any]:
+        rc = self.proc.poll()
+        return {
+            "pid":       self.pid,
+            "state":     "running" if rc is None else "exited",
+            "exit_code": rc,
+            "ok_exit":   None if rc is None else rc == 0,
+            "started":   self.started,
+            "model":     str(self.model),
+            "log":       str(self.log_path),
+            "log_tail":  _tail_text(self.log_path),
+        }
+
+
+def _tail_text(path: Path, max_bytes: int = 4096) -> str:
+    """Last `max_bytes` of a log file, decoded leniently ("" if absent)."""
+    try:
+        with path.open("rb") as f:
+            f.seek(0, os.SEEK_END)
+            size = f.tell()
+            f.seek(max(0, size - max_bytes))
+            return f.read().decode("utf-8", errors="replace")
+    except OSError:
+        return ""
+
+
+class SliceJobRegistry:
+    """The slice-print children this server spawned, keyed by PID.
+
+    Only these PIDs are reported by GET /slice-print/jobs/<pid> (the
+    route used to report on ANY pid via /proc, which also does not exist
+    on Windows). Finished jobs beyond `keep_finished` are dropped,
+    oldest first, so the registry cannot grow without bound.
+    """
+
+    def __init__(self, keep_finished: int = 50) -> None:
+        self._jobs: dict[int, SliceJob] = {}
+        self._lock = threading.Lock()
+        self._keep = keep_finished
+
+    def spawn(self, argv: list[str], *, log_path: Path,
+              model: Path) -> SliceJob:
+        # Run from the directory that contains this `beambam` package so
+        # `-m beambam.cli` resolves to the same code as the daemon (a
+        # source checkout is not necessarily on the child's sys.path).
+        pkg_parent = Path(__file__).resolve().parents[1]
+        # The child gets its own duplicate of the log handle; the
+        # parent's copy is closed as soon as Popen returns so long-lived
+        # daemons do not leak one handle per upload.
+        with open(log_path, "wb") as log:
+            proc = subprocess.Popen(argv, stdout=log,
+                                    stderr=subprocess.STDOUT,
+                                    stdin=subprocess.DEVNULL,
+                                    cwd=str(pkg_parent), close_fds=True)
+        job = SliceJob(pid=proc.pid, proc=proc, log_path=log_path,
+                       model=model, started=time.time())
+        with self._lock:
+            self._jobs[job.pid] = job
+            self._prune()
+        return job
+
+    def get(self, pid: int) -> SliceJob | None:
+        with self._lock:
+            return self._jobs.get(pid)
+
+    def _prune(self) -> None:
+        finished = [j for j in self._jobs.values() if j.proc.poll() is not None]
+        finished.sort(key=lambda j: j.started)
+        for j in finished[:max(0, len(finished) - self._keep)]:
+            self._jobs.pop(j.pid, None)
 
 def _serve_http(bind: str,
                 get_state: Callable[[str], dict | None],
@@ -148,6 +252,7 @@ def _serve_http(bind: str,
         web_dir = _WEB_DIR_DEFAULT
     clients = clients or {}
     host_allow = allowed_host_names(host, allowed_hosts)
+    slice_jobs = SliceJobRegistry()
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *_):  # silence default stderr access log
@@ -593,39 +698,21 @@ def _serve_http(bind: str,
                 self.end_headers()
                 self.wfile.write(body)
             elif path.startswith("/slice-print/jobs/"):
-                # GET status of a spawned slice-print job.
-                # Looks at the upload dir's <stem>.log file + the PID's
-                # process status. Returns running / done(rc) / orphaned.
+                # GET status of a slice-print job THIS daemon spawned
+                # (Popen.poll — portable, no /proc). Any other PID is
+                # 404: the route never reports on processes it does not
+                # own.
                 pid_str = path[len("/slice-print/jobs/"):]
                 if not pid_str.isdigit():
-                    self.send_response(400); self.end_headers(); return
-                pid = int(pid_str)
-                # Process state via /proc (Linux only — Termux is Linux).
-                state = "unknown"
-                exit_code: int | None = None
-                proc_stat = Path(f"/proc/{pid}/stat")
-                if proc_stat.is_file():
-                    try:
-                        st = proc_stat.read_text().split()
-                        # state field is the 3rd token; R/S = running/sleep,
-                        # Z = zombie (already exited; parent is HTTP daemon
-                        # so it will reap when waitpid is called).
-                        state = "running" if st[2] in ("R", "S", "D") else "exited"
-                    except Exception:
-                        state = "unknown"
-                else:
-                    state = "exited"
-                # The full slice log lives at the `log` path returned in the
-                # spawn response; we can't bind pid -> log here without extra
-                # bookkeeping, so callers read it directly (hint below).
-                self._send_json({
-                    "ok":        True,
-                    "pid":       pid,
-                    "state":     state,
-                    "exit_code": exit_code,
-                    "log_hint":  ("Read the `log` path returned at spawn "
-                                  "time for full output."),
-                }, status=200)
+                    raise BadRequest("job id must be the numeric pid "
+                                     "returned by POST /slice-print")
+                job = slice_jobs.get(int(pid_str))
+                if job is None:
+                    self._send_json({"error": f"no slice-print job "
+                                     f"{pid_str} spawned by this daemon"},
+                                    status=404)
+                    return
+                self._send_json({"ok": True, **job.status()}, status=200)
                 return
             elif path == "/ams":
                 # Surface the AMS sub-tree of the printer's last cached
@@ -921,54 +1008,44 @@ def _serve_http(bind: str,
                 fname = re.sub(r"[^a-zA-Z0-9._-]", "_", fname)[:120]
                 if not fname.lower().endswith((".stl", ".3mf", ".step", ".obj")):
                     fname += ".stl"
-                cl = int(self.headers.get("Content-Length", 0))
-                if cl <= 0 or cl > 200 * 1024 * 1024:
-                    self._send_json({"error":
-                        "Content-Length must be 1..200 MiB"}, status=400)
-                    return
-                body = self.rfile.read(cl)
-                if len(body) != cl:
-                    self._send_json({"error":
-                        "short read; expected %d, got %d" % (cl, len(body))},
-                                      status=400); return
+                # Header-driven kwargs — every header is optional; all
+                # are validated BEFORE the upload is written or a
+                # process spawned.
+                printer_name = self._require_printer(
+                    self.headers.get("X-Printer") or self._parse_printer())
+                slot_hdr = (self.headers.get("X-Slot") or "").strip()
+                if slot_hdr and not (slot_hdr.isdigit()
+                                     and 0 <= int(slot_hdr) <= 15):
+                    raise BadRequest("X-Slot must be an integer 0..15")
+                bed_type = (self.headers.get("X-Bed-Type") or "auto").strip()
+                if not re.fullmatch(r"[A-Za-z0-9_.-]{1,40}", bed_type):
+                    raise BadRequest(f"bad X-Bed-Type {bed_type!r}")
+                no_ams = (self.headers.get("X-No-AMS") or "").lower() in (
+                    "1", "true", "yes", "on")
+                body = self._raw_body(200 * 1024 * 1024, "model")
                 upload_dir = config_path("uploads")
                 upload_dir.mkdir(parents=True, exist_ok=True)
                 stamped = f"{int(time.time())}_{fname}"
                 stl_path = upload_dir / stamped
                 stl_path.write_bytes(body)
-                # Header-driven kwargs — every header is optional.
-                printer_name = (self.headers.get("X-Printer")
-                                 or self._parse_printer())
-                slot = int(self.headers.get("X-Slot") or 1)
-                bed_type = self.headers.get("X-Bed-Type") or "auto"
-                no_ams = (self.headers.get("X-No-AMS") or "").lower() in (
-                    "1", "true", "yes", "on")
-                # Resolve our own argv0 to allow distro/dev installs.
-                cmd_argv = [sys.executable, str(Path(__file__).resolve()),
-                            "slice-print", str(stl_path),
-                            "--printer", printer_name,
-                            "--slot",    str(slot),
-                            "--bed-type", bed_type]
-                if no_ams:
-                    cmd_argv.append("--no-ams")
+                cmd_argv = _slice_print_argv(
+                    stl_path, printer=printer_name,
+                    slot=int(slot_hdr) if slot_hdr else None,
+                    bed_type=bed_type, no_ams=no_ams)
                 log_path = upload_dir / (stl_path.stem + ".log")
-                import subprocess as _sp
                 try:
-                    proc = _sp.Popen(
-                        cmd_argv,
-                        stdout=open(log_path, "wb"),
-                        stderr=_sp.STDOUT,
-                        close_fds=True)
+                    job = slice_jobs.spawn(cmd_argv, log_path=log_path,
+                                           model=stl_path)
                 except OSError as e:
                     self._send_json({"error": f"spawn failed: {e}"},
                                       status=500); return
                 self._send_json({
                     "ok":     True,
-                    "job_id": proc.pid,
+                    "job_id": job.pid,
                     "stl":    str(stl_path),
                     "log":    str(log_path),
                     "status": "spawned",
-                    "poll":   f"/slice-print/jobs/{proc.pid}",
+                    "poll":   f"/slice-print/jobs/{job.pid}",
                 }, status=202)
                 return
             verb = path[len("/control/"):]
