@@ -1115,8 +1115,19 @@ class CloudClient:
         if token is None:
             token = self.cloud_get_upload_token(count=1)
 
-        # Shape A — presigned URL. Just PUT to it.
-        if isinstance(token, dict) and token.get("url") and "Signature" in token.get("url", ""):
+        # Shape A — presigned URL. Just PUT to it. A presigned URL carries its
+        # signature in the query string; the parameter name differs by signing
+        # version (OSS V1 "Signature", V4 "x-oss-signature"), so match either
+        # case-insensitively rather than only V1. The decisive test, though, is
+        # that shape A has a `url` and *no* STS credentials — shape B always
+        # carries accessKeyId/accessKeySecret.
+        _is_presigned = (
+            isinstance(token, dict)
+            and token.get("url")
+            and not token.get("accessKeyId")
+            and not token.get("accessKeySecret")
+        )
+        if _is_presigned:
             put_url = token["url"]
             file_save_path = token.get("fileName") or token.get("fileSavePath") or path.name
             req = urllib.request.Request(
