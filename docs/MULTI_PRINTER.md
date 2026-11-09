@@ -60,6 +60,31 @@ curl -N http://127.0.0.1:8765/state.events?printer=garage
 curl http://127.0.0.1:8765/metrics | grep printer=
 ```
 
+## Print-control signing is per printer
+
+LAN print control (`pause`/`resume`/`stop`/`gcode`, and the X2D/H2D
+start-print `url_enc`) is signed with a per-install key recovered by
+`beambam key`, plus the printer's device cert from `beambam device-cert`.
+These secrets are **keyed by serial** so a second printer never signs
+with the first one's key or encrypts its file to the wrong device:
+
+```
+~/.x2d/
+  printer_sign_key.pem          # legacy global (still read as a fallback)
+  <serial-A>/printer_sign_key.pem
+  <serial-A>/printer_cert_id.txt
+  <serial-A>/printer_device_cert.pem
+  <serial-B>/printer_sign_key.pem
+  ...
+```
+
+`beambam key` / `beambam device-cert` write into `~/.x2d/<serial>/`
+(resolved from the target printer's credentials); the signing path reads
+`~/.x2d/<serial>/<file>` first and falls back to the global file, so an
+existing single-printer install keeps working unchanged. Run each
+setup command once per printer, e.g.
+`beambam device-cert --printer garage` then `beambam key --printer garage`.
+
 ## SSDP auto-discovery
 
 If you don't want to write the credentials file by hand, the bridge's
