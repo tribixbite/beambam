@@ -1166,11 +1166,21 @@ def main() -> int:
     ha.add_argument("--printer", default="",
                     help="Printer name (matches --printer on daemon)")
     ha.add_argument("--device-serial", default="",
-                    help="HA device identifier (defaults to printer's serial)")
+                    help="Printer serial used as the HA device identifier "
+                         "(default: from the credentials file, else from "
+                         "the daemon's state)")
     ha.add_argument("--device-model", default="X2D",
-                    help="Model string for HA device card (default X2D)")
+                    help="Printer model, e.g. X2D, H2D, X1C, P1S (default X2D); "
+                         "selects dual-nozzle and door entities")
     ha.add_argument("--discovery-prefix", default="homeassistant",
                     help="HA discovery topic prefix (default homeassistant)")
+    ha.add_argument("--ha-status-topic", default="homeassistant/status",
+                    help="HA birth-message topic; discovery is republished "
+                         "when HA sends 'online' there (default "
+                         "homeassistant/status)")
+    ha.add_argument("--configuration-url", default="",
+                    help="URL shown as the device's 'Visit' link in HA "
+                         "(default: --daemon-url unless it is loopback)")
     ha.set_defaults(fn=cmd_ha_publish)
 
     from beambam.frame import add_subparser as _frame_subparser
