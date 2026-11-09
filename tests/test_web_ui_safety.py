@@ -80,23 +80,31 @@ def test_login_next_redirect_stays_on_origin(tmp_path):
     fn = _extract_function(LOGIN_JS, "safeNext")
     cases = ["/index.html?printer=lab#x", "//evil.example/x", "/\\evil.example",
              "https://evil.example/", "javascript:alert(1)", "", None,
-             "/%2F%2Fevil.example", "index.html", "/\t/evil.example"]
+             "/%2F%2Fevil.example", "index.html", "/\t/evil.example",
+             # dot-segment resolution yields a `//` pathname (bypassed the old fix)
+             "/.//evil.example", "/..//evil.example", "/%2e//evil.example",
+             "/a/..//evil.example"]
     script = tmp_path / "t.js"
+    # Report where the browser would actually go: safeNext's result resolved
+    # the way `location.href = result` resolves it.
     script.write_text(
         "const location = { origin: 'http://127.0.0.1:8765' };\n"
         f"{fn}\n"
         f"const cases = {json.dumps(cases)};\n"
-        "console.log(JSON.stringify(cases.map(safeNext)));\n",
+        "console.log(JSON.stringify(cases.map((c) => {\n"
+        "  const r = safeNext(c);\n"
+        "  return [r, new URL(r, 'http://127.0.0.1:8765/login.html').href];\n"
+        "})));\n",
         encoding="utf-8")
     out = subprocess.run(["node", str(script)], capture_output=True,
                          text=True, timeout=30, check=True).stdout
     got = dict(zip(map(str, cases), json.loads(out)))
-    assert got["/index.html?printer=lab#x"] == "/index.html?printer=lab#x"
-    assert got["/%2F%2Fevil.example"] == "/%2F%2Fevil.example"
-    for evil in ("//evil.example/x", "/\\evil.example",
+    origin = "http://127.0.0.1:8765/"
+    assert got["/index.html?printer=lab#x"][1] == origin + "index.html?printer=lab#x"
+    for evil in ("//evil.example/x", "/\evil.example",
                  "https://evil.example/", "javascript:alert(1)", "", "None",
                  "index.html"):
-        assert got[evil] == "/index.html", (evil, got[evil])
-    # Whatever survives must be a same-origin path, never protocol-relative.
-    for v in got.values():
-        assert v.startswith("/") and not v.startswith("//")
+        assert got[evil][0] == "/index.html", (evil, got[evil])
+    # Every navigation target stays on our origin, whatever the input.
+    for case, (_ret, target) in got.items():
+        assert target.startswith(origin), (case, target)

@@ -17,7 +17,11 @@
   // Post-login redirect target from ?next=, restricted to this origin.
   // `startsWith("/")` alone let `//evil.example` and `/\evil.example`
   // through (protocol-relative URLs) — an open redirect off the login
-  // page. Resolve against our origin and keep only same-origin paths.
+  // page. Resolve against our origin and keep only same-origin URLs.
+  // Return the ABSOLUTE href: returning `pathname + search + hash` was still
+  // open, because dot-segment resolution can produce a pathname starting
+  // with `//` (`/.//evil.example` -> `//evil.example`), which location.href
+  // treats as protocol-relative. An absolute URL on our origin cannot leave it.
   function safeNext(next) {
     const fallback = "/index.html";
     if (!next || next[0] !== "/" || next[1] === "/" || next[1] === "\\") {
@@ -26,7 +30,7 @@
     try {
       const u = new URL(next, location.origin);
       if (u.origin !== location.origin) return fallback;
-      return u.pathname + u.search + u.hash;
+      return u.href;
     } catch (e) {
       return fallback;
     }
