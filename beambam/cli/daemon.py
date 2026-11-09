@@ -709,9 +709,22 @@ def cmd_camera(args: argparse.Namespace) -> int:
     # Tiny HTTP server. Two endpoints:
     #   /cam.mjpeg  → multipart/x-mixed-replace (browser-renderable)
     #   /cam.jpg    → single latest JPEG
+    # Same DNS-rebinding guard as the main daemon: without it a web page on
+    # an attacker's domain that resolves to 127.0.0.1 could read the camera
+    # feed (open when no --auth-token is set). IP-literal Hosts are always
+    # accepted, so 127.0.0.1:8766 / a LAN IP keep working.
+    # The allowed set is filled in once the bind host is parsed (below).
+    from beambam.http_validate import allowed_host_names, request_guard_error
+    cam_host_allow: set[str] = set()
+
     class CameraHandler(http.server.BaseHTTPRequestHandler):
         def log_message(self, *_): return
         def do_GET(self):  # noqa: N802
+            err = request_guard_error("GET", urlsplit(self.path).path,
+                                      self.headers, frozenset(cam_host_allow))
+            if err is not None:
+                self.send_error(err[0], err[1])
+                return
             if not _check_bearer(self, args.auth_token or None, host):
                 return
             # Route on the path alone: browsers add ?t=<ms> cache
@@ -852,11 +865,16 @@ def cmd_camera(args: argparse.Namespace) -> int:
     class ThreadingServer(socketserver.ThreadingMixIn,
                           http.server.HTTPServer):
         daemon_threads = True
-        allow_reuse_address = True
+        # On Windows SO_REUSEADDR lets a second proxy bind a port that is
+        # already in use, with no error; requests then reach either one (stale
+        # camera proxies piled up on 8766 that way). Keep it for POSIX only,
+        # where it just allows rebinding during TIME_WAIT.
+        allow_reuse_address = sys.platform != "win32"
 
     host, _, port = args.bind.rpartition(":")
     host = host or "127.0.0.1"
     port = int(port)
+    cam_host_allow.update(allowed_host_names(host, getattr(args, "allow_host", None) or []))
     server = ThreadingServer((host, port), CameraHandler)
 
     def _stop(signum, frame):  # noqa: ARG001

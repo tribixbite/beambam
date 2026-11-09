@@ -1252,7 +1252,13 @@ def _serve_http(bind: str,
                 expect_reply=verb in _CONTROL_VERBS_THAT_REPLY)
             self._send_json(resp, status=status)
 
-    server = ThreadingHTTPServer((host, port), Handler)
+    class _Server(ThreadingHTTPServer):
+        # ThreadingHTTPServer sets SO_REUSEADDR; on Windows that lets a second
+        # daemon bind a port already in use with no error, and requests then
+        # reach either process (an old daemon "comes back"). POSIX keeps it.
+        allow_reuse_address = sys.platform != "win32"
+
+    server = _Server((host, port), Handler)
     auth_state = "auth required" if auth_token else \
                  ("OPEN — loopback only" if _is_loopback(host) else "OPEN — exposed; pass --auth-token to require Bearer")
     print(f"[x2d-bridge] HTTP listening on http://{host}:{port}/state "
