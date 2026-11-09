@@ -48,6 +48,9 @@ __all__ = [
     "credentials_path",
     "load_env_files",
     "parse_env_text",
+    "serial_dir",
+    "signing_path",
+    "signing_write_path",
 ]
 
 # Only these prefixes are imported from .env files (see module docstring).
@@ -63,6 +66,44 @@ def config_dir() -> Path:
 def config_path(*parts: str) -> Path:
     """A path inside :func:`config_dir`, e.g. ``config_path("queue.json")``."""
     return config_dir().joinpath(*parts)
+
+
+def _sanitize_serial(serial: str | None) -> str:
+    """A filesystem-safe form of a printer serial for use as a subdir name."""
+    import re
+    return re.sub(r"[^A-Za-z0-9_-]", "_", (serial or "").strip())
+
+
+def serial_dir(serial: str | None) -> Path:
+    """The per-printer state subdirectory ``<config dir>/<serial>`` (not
+    created here). Empty/None serial falls back to the config dir itself."""
+    s = _sanitize_serial(serial)
+    return config_path(s) if s else config_dir()
+
+
+def signing_path(name: str, serial: str | None = None) -> Path:
+    """Resolve a per-printer signing file (``printer_sign_key.pem``,
+    ``printer_cert_id.txt``, ``printer_device_cert.pem``, ``printer_app_cert.pem``).
+
+    Keying these by serial is what makes >1 printer safe: printer B must not
+    be handed printer A's device cert / signing key / cert id (F-03). We look
+    for ``<config dir>/<serial>/<name>`` first and fall back to the historical
+    global ``<config dir>/<name>`` when the per-serial file is absent, so every
+    existing single-printer install keeps working untouched."""
+    s = _sanitize_serial(serial)
+    if s:
+        per = config_path(s, name)
+        if per.exists():
+            return per
+    return config_path(name)
+
+
+def signing_write_path(name: str, serial: str | None = None) -> Path:
+    """Where to WRITE a per-printer signing file. With a serial, writes into
+    ``<config dir>/<serial>/`` (created by the caller) so the install becomes
+    multi-printer-safe going forward; without one, the global path (legacy)."""
+    s = _sanitize_serial(serial)
+    return config_path(s, name) if s else config_path(name)
 
 
 def credentials_path() -> Path:

@@ -58,3 +58,25 @@ def test_ready_with_session_user_id(home: Path) -> None:
     (home / "cloud_session.json").write_text(json.dumps({"user_id": "777"}))
     st = signing_status(NOW)
     assert st.ready and st.user_id_source == "cloud_session.json"
+
+
+def test_signing_status_is_per_serial(home: Path) -> None:
+    """With a serial, signing_status reads the per-serial key/cert id and falls
+    back to the global files (F-03)."""
+    # Global files present: a serial with no per-serial dir still sees them.
+    (home / "printer_sign_key.pem").write_text("k")
+    (home / "printer_cert_id.txt").write_text("c")
+    st = signing_status(NOW, serial="SN-A")
+    assert st.key and st.cert_id
+    # A per-serial dir that is EMPTY does not hide the global fallback.
+    (home / "SN-B").mkdir()
+    st_b = signing_status(NOW, serial="SN-B")
+    assert st_b.key and st_b.cert_id
+    # A serial whose own dir has its own key uses it even if globals are absent.
+    for g in ("printer_sign_key.pem", "printer_cert_id.txt"):
+        (home / g).unlink()
+    (home / "SN-C").mkdir()
+    (home / "SN-C" / "printer_sign_key.pem").write_text("k")
+    (home / "SN-C" / "printer_cert_id.txt").write_text("c")
+    assert signing_status(NOW, serial="SN-C").key
+    assert not signing_status(NOW, serial="SN-A").key    # A has nothing now

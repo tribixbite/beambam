@@ -150,7 +150,7 @@ def cmd_print(args: argparse.Namespace) -> int:
         return _dry_run_report(local, float(getattr(args, "max_flush_g", 10.0)))
 
     creds = Creds.resolve(args)
-    signing = signing_status()
+    signing = signing_status(serial=creds.serial)
     if not signing.ready:
         # Not fatal (older firmware takes the legacy signature), but on an
         # X2D/H2D this is why a start would be refused: say so up front.
@@ -217,7 +217,7 @@ def cmd_print(args: argparse.Namespace) -> int:
         if verdict == "refused":
             sys.stderr.write(f"[print] printer REFUSED the job: {detail}\n")
             if any(str(code) in detail for code in SIGNATURE_REJECTED):
-                sys.stderr.write(f"[print] signature rejected: {signing_status().summary()}\n")
+                sys.stderr.write(f"[print] signature rejected: {signing_status(serial=creds.serial).summary()}\n")
             return 1
         sys.stderr.write(
             f"[print] sent, but the printer did not confirm within {wait_s:g} s "

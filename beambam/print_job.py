@@ -29,7 +29,7 @@ import time
 import zipfile as _zf
 from pathlib import Path
 from typing import TYPE_CHECKING
-from beambam.paths import config_path
+from beambam.paths import _sanitize_serial, config_path, signing_path
 
 if TYPE_CHECKING:
     from beambam.mqtt import X2DClient
@@ -101,9 +101,14 @@ def _publish_signed_or_legacy(client: "X2DClient", payload: dict) -> None:
     the raw wire — the only signature the printer accepts for print control. The
     legacy `X2DClient.publish` path signs with the leaked Bambu Connect cert,
     which the firmware rejects for `print.*` (err 84033545). Falls back to it
-    only when the recovered key is absent (older firmware)."""
-    key_path = config_path("printer_sign_key.pem")
-    cid_path = config_path("printer_cert_id.txt")
+    only when the recovered key is absent (older firmware).
+
+    The key + cert id are resolved per printer serial (`<config dir>/<serial>/`)
+    with a fallback to the global files, so a second printer never signs with
+    the first one's key (F-03)."""
+    serial = getattr(getattr(client, "creds", None), "serial", None)
+    key_path = signing_path("printer_sign_key.pem", serial)
+    cid_path = signing_path("printer_cert_id.txt", serial)
     # Take the signed-raw path only when the recovered key is present AND the
     # client exposes a real paho `.client` (raw publish). Test/simulate clients
     # capture via their high-level `publish()` and have no `.client`.
@@ -149,8 +154,9 @@ def request_auto_nozzle_mapping(client: "X2DClient", group_info: list[dict], *,
     """
     import json
     import time
-    key_path = config_path("printer_sign_key.pem")
-    cid_path = config_path("printer_cert_id.txt")
+    serial = getattr(getattr(client, "creds", None), "serial", None)
+    key_path = signing_path("printer_sign_key.pem", serial)
+    cid_path = signing_path("printer_cert_id.txt", serial)
     if not (key_path.is_file() and cid_path.is_file()
             and getattr(client, "client", None) is not None):
         return None
@@ -485,6 +491,18 @@ def _validate_ams_slot(state: dict, ams_global_slot: int,
 _DEVICE_CERT_PATH = config_path("printer_device_cert.pem")
 
 
+def _resolve_device_cert(serial: str | None) -> Path:
+    """The device cert to encrypt `url_enc` to. Prefer the per-serial file
+    (`<config dir>/<serial>/printer_device_cert.pem`) so printer B is never
+    encrypted to printer A's key; fall back to the global `_DEVICE_CERT_PATH`
+    (which is also the test seam) when no per-serial cert is present (F-03)."""
+    if serial:
+        per = config_path(_sanitize_serial(serial), "printer_device_cert.pem")
+        if per.is_file():
+            return per
+    return _DEVICE_CERT_PATH
+
+
 def _device_url_enc(url: str, device_cert_path: Path | None = None) -> str:
     """Encrypt a file URL for the project_file `url_enc` field.
 
@@ -676,7 +694,8 @@ def start_print(client: "X2DClient", gcode_filename: str, *,
     # handed it over). Captured from a real BS desktop LAN print + verified live
     # (printer accepts with err_code 0 and starts). The legacy shape below is for
     # pre-auth-control firmware.
-    if _DEVICE_CERT_PATH.is_file():
+    dev_cert = _resolve_device_cert(getattr(client.creds, "serial", None))
+    if dev_cert.is_file():
         if not md5_hex:
             # The firmware's file-verify compares this md5 with the plate
             # G-code inside the uploaded file; an empty one is a certain
@@ -688,7 +707,8 @@ def start_print(client: "X2DClient", gcode_filename: str, *,
             gcode_filename, md5_hex, ams_slots=ams_mapping_legacy,
             bed_type=bed_type, use_ams=use_ams, timelapse=timelapse,
             bed_levelling=bed_levelling, flow_cali=flow_cali,
-            vibration_cali=vibration_cali, plate_idx=plate_idx)
+            vibration_cali=vibration_cali, plate_idx=plate_idx,
+            device_cert_path=dev_cert)
         _publish_signed_or_legacy(client, {"print": x2d_body})
         return
 

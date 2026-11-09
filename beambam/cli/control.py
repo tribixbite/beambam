@@ -550,12 +550,21 @@ def cmd_key(args: argparse.Namespace) -> int:
                       file=sys.stderr)
             return 1
         print(f"[key] using the only connected adb device: {adb}", file=sys.stderr)
-    cert = getattr(args, "cert", None) or str(config_path("printer_app_cert.pem"))
+    # Key the recovered signing material by printer serial so a second printer
+    # never overwrites the first one's key/cert_id (F-03). The read path
+    # (beambam.paths.signing_path) prefers the per-serial file and falls back to
+    # the legacy global one, so existing single-printer installs are unaffected.
+    from beambam.paths import signing_path, signing_write_path
+    printer_serial = _config.Creds.resolve(args).serial or os.environ.get("X2D_SERIAL", "")
+    cert = (getattr(args, "cert", None)
+            or str(signing_path("printer_app_cert.pem", printer_serial)))
     if not Path(cert).is_file():
         print(f"[key] app cert not found at {cert} (capture security."
               f"app_cert_install, or pass --cert)", file=sys.stderr)
         return 1
-    out = str(config_path("printer_sign_key.pem"))
+    key_out = signing_write_path("printer_sign_key.pem", printer_serial)
+    key_out.parent.mkdir(parents=True, exist_ok=True)
+    out = str(key_out)
     # Poll a short window: the key only appears after Handy connects+signs, so a
     # few retries let the user open the Devices tab while this runs. Override with
     # `--wait <seconds>`.
@@ -583,10 +592,11 @@ def cmd_key(args: argparse.Namespace) -> int:
         from beambam.cloud_control import mqtt_sign
         serial_hex = format(
             x509.load_pem_x509_certificate(Path(cert).read_bytes()).serial_number, "x")
-        printer_serial = _config.Creds.resolve(args).serial or os.environ.get("X2D_SERIAL", "")
         cid = mqtt_sign.make_cert_id(serial_hex, printer_serial.replace("GLOF", ""))
-        config_path("printer_cert_id.txt").write_text(cid)
-        print(f"[key] OK → {out}\n[key] cert_id → {config_path('printer_cert_id.txt')}")
+        cid_out = signing_write_path("printer_cert_id.txt", printer_serial)
+        cid_out.parent.mkdir(parents=True, exist_ok=True)
+        cid_out.write_text(cid)
+        print(f"[key] OK → {out}\n[key] cert_id → {cid_out}")
     except Exception as e:                                # noqa: BLE001
         print(f"[key] key saved, but cert_id write failed: {e}", file=sys.stderr)
     return 0
@@ -599,11 +609,18 @@ def cmd_device_cert(args: argparse.Namespace) -> int:
     `security.app_cert_install` (gated only by the access code), then caches the
     leaf at ~/.x2d/printer_device_cert.pem. One-time setup, like `beambam key`."""
     from beambam.device_cert import fetch_device_cert
+    from beambam.paths import signing_path, signing_write_path
     creds = _config.Creds.resolve(args)
+    # Cache the device cert per serial so printer B's url_enc is never
+    # encrypted to printer A's key (F-03); read falls back to the global file.
+    out_path = signing_write_path("printer_device_cert.pem", creds.serial)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    cid_read = signing_path("printer_cert_id.txt", creds.serial)
     cli = _mqtt.X2DClient(creds)
     cli.connect()
     try:
-        out = fetch_device_cert(cli, cn=getattr(args, "cn", None))
+        out = fetch_device_cert(cli, out_path=out_path, cert_id_path=cid_read,
+                                cn=getattr(args, "cn", None))
     except Exception as e:                                # noqa: BLE001
         print(f"[device-cert] failed: {e}", file=sys.stderr)
         return 1

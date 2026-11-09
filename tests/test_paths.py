@@ -115,3 +115,29 @@ def test_named_section_beats_env_vars(clean_env: Path, monkeypatch: pytest.Monke
     # Explicit flags still win over the named section.
     b2 = Creds.resolve(argparse.Namespace(ip="10.0.0.9", code=None, serial=None, printer="b"))
     assert b2.ip == "10.0.0.9" and b2.code == "bbbb"
+
+
+def test_signing_path_prefers_per_serial_then_global(clean_env: Path) -> None:
+    cfg = clean_env / "home" / ".x2d"
+    cfg.mkdir(parents=True)
+    # No files yet -> resolves to the global path (back-compat).
+    assert paths.signing_path("printer_sign_key.pem", "SN-A") == cfg / "printer_sign_key.pem"
+    # A global file exists but no per-serial one -> global.
+    (cfg / "printer_sign_key.pem").write_text("global")
+    assert paths.signing_path("printer_sign_key.pem", "SN-A") == cfg / "printer_sign_key.pem"
+    # A per-serial file exists -> it wins.
+    (cfg / "SN-A").mkdir()
+    (cfg / "SN-A" / "printer_sign_key.pem").write_text("per-serial")
+    assert paths.signing_path("printer_sign_key.pem", "SN-A") == cfg / "SN-A" / "printer_sign_key.pem"
+    # A different serial with no per-serial file falls back to global.
+    assert paths.signing_path("printer_sign_key.pem", "SN-B") == cfg / "printer_sign_key.pem"
+    # No serial -> global.
+    assert paths.signing_path("printer_sign_key.pem", None) == cfg / "printer_sign_key.pem"
+
+
+def test_signing_write_path_and_serial_dir(clean_env: Path) -> None:
+    cfg = clean_env / "home" / ".x2d"
+    assert paths.signing_write_path("printer_cert_id.txt", "SN-A") == cfg / "SN-A" / "printer_cert_id.txt"
+    assert paths.signing_write_path("printer_cert_id.txt", "") == cfg / "printer_cert_id.txt"
+    # Serials are sanitised for use as a directory name.
+    assert paths.serial_dir("00M/09:A") == cfg / "00M_09_A"
