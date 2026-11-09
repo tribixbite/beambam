@@ -60,8 +60,10 @@ def test_parse_env_text_forms() -> None:
 
 def test_load_env_files_prefix_filter_and_precedence(clean_env: Path,
                                                      monkeypatch: pytest.MonkeyPatch) -> None:
-    (clean_env / "work" / ".env").write_text(
-        "X2D_IP=10.0.0.1\nOPENAI_API_KEY=leak\nX2D_CODE=fromcwd\n", encoding="utf-8")
+    explicit = clean_env / "project.env"
+    explicit.write_text(
+        "X2D_IP=10.0.0.1\nOPENAI_API_KEY=leak\nX2D_CODE=fromexplicit\n", encoding="utf-8")
+    monkeypatch.setenv("BEAMBAM_ENV_FILE", str(explicit))
     cfg = clean_env / "home" / ".x2d"
     cfg.mkdir()
     (cfg / ".env").write_text("X2D_CODE=fromcfg\nX2D_SERIAL=SER\n", encoding="utf-8")
@@ -69,18 +71,31 @@ def test_load_env_files_prefix_filter_and_precedence(clean_env: Path,
 
     read = paths.load_env_files()
 
-    assert [p.name for p in read] == [".env", ".env"]
+    assert [p.name for p in read] == ["project.env", ".env"]
     assert os.environ["X2D_IP"] == "already-set"     # real env wins
-    assert os.environ["X2D_CODE"] == "fromcwd"       # first file wins
+    assert os.environ["X2D_CODE"] == "fromexplicit"  # first file wins
     assert os.environ["X2D_SERIAL"] == "SER"
     assert os.environ.get("OPENAI_API_KEY") != "leak"   # foreign keys never imported
 
 
-def test_beambam_home_from_cwd_env_moves_config_env(clean_env: Path) -> None:
+def test_cwd_env_is_not_read_automatically(clean_env: Path) -> None:
+    """A .env in whatever directory beambam runs from must not redirect the
+    printer (its access code would go to that host) or swap the slicer binary."""
+    (clean_env / "work" / ".env").write_text(
+        "X2D_IP=6.6.6.6\nX2D_BS_BIN=C:/Windows/System32/notepad.exe\n", encoding="utf-8")
+    read = paths.load_env_files()
+    assert read == []
+    assert "X2D_IP" not in os.environ and "X2D_BS_BIN" not in os.environ
+
+
+def test_beambam_home_from_env_file_moves_config_env(clean_env: Path,
+                                                     monkeypatch: pytest.MonkeyPatch) -> None:
     other = clean_env / "elsewhere"
     other.mkdir()
     (other / ".env").write_text("X2D_SERIAL=from-elsewhere\n", encoding="utf-8")
-    (clean_env / "work" / ".env").write_text(f"BEAMBAM_HOME={other}\n", encoding="utf-8")
+    explicit = clean_env / "project.env"
+    explicit.write_text(f"BEAMBAM_HOME={other}\n", encoding="utf-8")
+    monkeypatch.setenv("BEAMBAM_ENV_FILE", str(explicit))
 
     paths.load_env_files()
 
@@ -88,7 +103,9 @@ def test_beambam_home_from_cwd_env_moves_config_env(clean_env: Path) -> None:
 
 
 def test_creds_resolve_reads_env_file_values(clean_env: Path) -> None:
-    (clean_env / "work" / ".env").write_text(
+    cfg = clean_env / "home" / ".x2d"
+    cfg.mkdir()
+    (cfg / ".env").write_text(
         "X2D_IP=192.168.9.9\nX2D_CODE=87654321\nX2D_SERIAL=0309XX\n", encoding="utf-8")
     paths.load_env_files()
     creds = Creds.resolve(argparse.Namespace(ip=None, code=None, serial=None, printer=None))

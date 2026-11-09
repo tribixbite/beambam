@@ -21,12 +21,17 @@ never overriding a variable that is already set. Files read, first hit
 wins per key:
 
 1. ``$BEAMBAM_ENV_FILE`` (explicit path), if set
-2. ``./.env`` in the current working directory
-3. ``<config dir>/.env``
+2. ``<config dir>/.env``
+
+A ``.env`` in the current directory is NOT read automatically: running
+beambam inside some cloned project must not let that project's ``.env``
+point ``X2D_IP`` at another host (which would then receive your printer's
+access code) or swap ``X2D_BS_BIN`` for another program. To use a
+project-local file, opt in with ``BEAMBAM_ENV_FILE=./.env``.
 
 So a printer can be configured with no INI at all::
 
-    # ~/.x2d/.env   (or a project-local .env, git-ignored)
+    # ~/.x2d/.env   (or any file named by $BEAMBAM_ENV_FILE)
     X2D_IP=192.168.1.42
     X2D_CODE=12345678
     X2D_SERIAL=0309DA000000000
@@ -153,7 +158,6 @@ def _candidate_env_files() -> list[Path]:
     explicit = os.environ.get("BEAMBAM_ENV_FILE")
     if explicit:
         files.append(Path(explicit).expanduser())
-    files.append(Path.cwd() / ".env")
     files.append(config_path(".env"))
     return files
 
@@ -162,8 +166,8 @@ def load_env_files(files: list[Path] | None = None) -> list[Path]:
     """Copy beambam's keys from .env files into ``os.environ``.
 
     Existing environment variables always win; among files the first one
-    that defines a key wins. ``BEAMBAM_HOME`` set in ``./.env`` is honoured
-    when locating ``<config dir>/.env`` (the dir is re-evaluated per file).
+    that defines a key wins. ``BEAMBAM_HOME`` set in the ``$BEAMBAM_ENV_FILE``
+    file is honoured when locating ``<config dir>/.env`` (re-evaluated per file).
     Returns the files that were actually read. Never raises on a bad or
     unreadable file — configuration problems surface later as the normal
     "credentials missing" error, which names every source.
@@ -177,7 +181,7 @@ def load_env_files(files: list[Path] | None = None) -> list[Path]:
                 break
             path = pending.pop(0)
         else:
-            # Recompute each round so BEAMBAM_HOME from ./.env moves the
+            # Recompute each round so BEAMBAM_HOME from $BEAMBAM_ENV_FILE moves the
             # config-dir .env lookup.
             remaining = [p for p in _candidate_env_files() if p.resolve() not in seen]
             if not remaining:
