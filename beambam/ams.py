@@ -70,15 +70,36 @@ def _tray_state_label(s: int) -> str:
     return _TRAY_STATE.get(s, f"state={s}")
 
 
-def _humidity_bar(level: str) -> str:
-    """Convert humidity '0'..'4' to a 5-cell bar (4 = wet, 0 = dry).
-    Lower numbers print fewer fill blocks."""
+def humidity_level(raw: Any) -> int | None:
+    """Bambu's user-facing AMS humidity level, 1 (dry) .. 5 (wet).
+
+    The MQTT `humidity` field is an index running the OTHER way (1 = wet,
+    5 = dry); Bambu Studio and Handy show `6 - index` (ha-bambulab
+    definitions.py does the same). beambam used to print the raw index,
+    so a damp AMS (index 2, ~40 % RH) looked nearly dry. None when the
+    value is missing or outside 1..5."""
     try:
-        n = int(level)
+        idx = int(raw)
     except (TypeError, ValueError):
+        return None
+    return 6 - idx if 1 <= idx <= 5 else None
+
+
+def humidity_percent(unit: dict[str, Any]) -> int | None:
+    """Measured relative humidity (%) where the AMS reports it (`humidity_raw`)."""
+    try:
+        return int(unit["humidity_raw"])
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def _humidity_bar(raw: Any) -> str:
+    """5-cell bar for the MQTT humidity index: one filled cell per
+    user-facing level (1 = dry .. 5 = wet), '?' when unknown."""
+    level = humidity_level(raw)
+    if level is None:
         return "?"
-    n = max(0, min(4, n))
-    return "▓" * n + "░" * (4 - n)
+    return "▓" * level + "░" * (5 - level)
 
 
 # ----- formatting ---------------------------------------------------------
@@ -94,6 +115,9 @@ def format_status(ams_block: dict[str, Any], *, color: bool = True) -> str:
     for unit in units:
         uid = unit.get("id", "?")
         humidity = _humidity_bar(unit.get("humidity", "?"))
+        pct = humidity_percent(unit)
+        if pct is not None:
+            humidity += f" {pct}%"
         temp = unit.get("temp", "?")
         lines.append(f"AMS {uid}  humidity {humidity}  temp {temp}°C  "
                      f"version {unit.get('info', '?')}")

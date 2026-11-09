@@ -65,13 +65,21 @@ def test_hex_to_rgb_too_short_returns_default():
     assert _hex_to_rgb("123") == (128, 128, 128)
 
 
-def test_humidity_bar_clamps_to_0_4():
-    assert _humidity_bar("0") == "░░░░"
-    assert _humidity_bar("2") == "▓▓░░"
-    assert _humidity_bar("4") == "▓▓▓▓"
-    assert _humidity_bar("5") == "▓▓▓▓"             # clamped
-    assert _humidity_bar("-1") == "░░░░"            # clamped
+def test_humidity_bar_shows_user_facing_level():
+    # MQTT index 5 = dry (level 1), 1 = wet (level 5): Bambu shows 6 - index.
+    assert _humidity_bar("5") == "▓░░░░"
+    assert _humidity_bar("2") == "▓▓▓▓░"
+    assert _humidity_bar("1") == "▓▓▓▓▓"
+    assert _humidity_bar("0") == "?"                # outside 1..5
+    assert _humidity_bar("-1") == "?"
     assert _humidity_bar("?") == "?"                # non-int
+
+
+def test_humidity_level_and_percent():
+    from beambam.ams import humidity_level, humidity_percent
+    assert [humidity_level(i) for i in (1, 2, 3, 4, 5)] == [5, 4, 3, 2, 1]
+    assert humidity_percent({"humidity_raw": "40"}) == 40
+    assert humidity_percent({}) is None
 
 
 def test_tray_state_label_known():

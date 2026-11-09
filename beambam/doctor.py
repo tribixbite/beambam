@@ -74,25 +74,25 @@ def decode_hms(code: str) -> str:
 def check_ams_humidity(state: dict[str, Any]) -> list[Check]:
     out = []
     units = state.get("print", {}).get("ams", {}).get("ams", []) or []
+    from beambam.ams import humidity_level, humidity_percent
     for unit in units:
         uid = unit.get("id", "?")
-        humidity = unit.get("humidity", "0")
-        try:
-            level = int(humidity)
-        except (TypeError, ValueError):
-            level = 0
-        if level >= 4:
-            out.append(Check("AMS", f"unit {uid} humidity",
-                             "fail",
-                             f"level {level}/4 — very wet; dry filament "
-                             f"before printing"))
-        elif level == 3:
-            out.append(Check("AMS", f"unit {uid} humidity",
-                             "warn",
-                             f"level {level}/4 — getting damp; consider drying"))
+        # User-facing level 1 (dry) .. 5 (wet); the MQTT index is reversed.
+        level = humidity_level(unit.get("humidity"))
+        pct = humidity_percent(unit)
+        rh = f", {pct}% RH" if pct is not None else ""
+        if level is None:
+            out.append(Check("AMS", f"unit {uid} humidity", "pass",
+                             f"not reported{rh}"))
+        elif level >= 5:
+            out.append(Check("AMS", f"unit {uid} humidity", "fail",
+                             f"level {level}/5{rh} — wet; dry filament before printing"))
+        elif level == 4:
+            out.append(Check("AMS", f"unit {uid} humidity", "warn",
+                             f"level {level}/5{rh} — getting damp; consider drying"))
         else:
-            out.append(Check("AMS", f"unit {uid} humidity",
-                             "pass", f"level {level}/4"))
+            out.append(Check("AMS", f"unit {uid} humidity", "pass",
+                             f"level {level}/5{rh}"))
     return out
 
 

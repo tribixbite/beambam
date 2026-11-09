@@ -225,13 +225,14 @@ def test_doctor_summary_counts_match_checks():
 
 
 def test_doctor_returns_warn_when_ams_humidity_is_high():
-    """level 3 humidity should be flagged as warn; worst summary
-    bumps from pass to warn so HA can fire a single binary_sensor."""
+    """A damp AMS (MQTT index 2 = user-facing level 4) is flagged as warn;
+    worst summary bumps from pass to warn so HA can fire a single
+    binary_sensor."""
     states = {
         "": {
             "print": {
                 "ams": {"ams": [
-                    {"id": 0, "humidity": "3", "tray": []},
+                    {"id": 0, "humidity": "2", "tray": []},
                 ]},
                 "hms": [],
                 "nozzle_temper": 220.0,
