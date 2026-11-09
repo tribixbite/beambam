@@ -34,7 +34,9 @@ curl http://127.0.0.1:8765/queue
 
 # Add a job. `gcode` must be an existing *.gcode.3mf on the daemon's
 # machine and `printer` a configured printer name ("" = default);
-# anything else answers 400.
+# anything else answers 400. `slot` is the GLOBAL AMS slot, 0-based:
+# unit*4 + tray, 0..15 (same as `beambam print --slot`; default 0).
+# Queue files from before this convention (1..16) are re-based on load.
 curl -X POST http://127.0.0.1:8765/queue/add \
     -H 'Content-Type: application/json' \
     -d '{"printer":"studio","gcode":"/path/to/job.gcode.3mf","slot":3,"label":"job1"}'

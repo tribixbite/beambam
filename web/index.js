@@ -593,7 +593,10 @@
     const gcode = $qGcode.value.trim();
     if (!gcode) return;
     const printer = $qPrinter.value || "";
-    const slot    = parseInt($qSlot.value, 10) || 1;
+    // Global AMS slot, 0-based (unit*4 + tray); `|| 1` used to turn the
+    // valid slot 0 into 1.
+    const parsed  = parseInt($qSlot.value, 10);
+    const slot    = Number.isFinite(parsed) ? parsed : 0;
     const label   = gcode.split("/").pop();
     const r = await fetch("/queue/add", {
       method: "POST",

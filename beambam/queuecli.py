@@ -198,8 +198,11 @@ def add_subparser(sub: "argparse._SubParsersAction") -> argparse.ArgumentParser:
     ad.add_argument("file", help="Local .gcode.3mf to enqueue")
     ad.add_argument("--printer", help="Printer section name "
                                        "(default: empty = default printer)")
-    ad.add_argument("--slot", type=int, default=1,
-                    help="AMS slot 1..16 (default 1)")
+    ad.add_argument("--slot", type=int, default=0,
+                    choices=range(16), metavar="SLOT",
+                    help="Global AMS slot, 0-based: unit*4 + tray, 0..15 "
+                         "(same as `beambam print --slot`; default 0 = "
+                         "first tray of the first AMS)")
     ad.add_argument("--label", help="Display label (default: filename)")
     ad.add_argument("--json", dest="json_out", action="store_true")
     ad.set_defaults(fn=cmd_add)

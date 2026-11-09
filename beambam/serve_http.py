@@ -977,7 +977,9 @@ def _serve_http(bind: str,
                         printer=self._require_printer(
                             get_str(body, "printer", "", max_len=128)),
                         gcode=str(gcode),
-                        slot=get_int(body, "slot", 1, lo=1, hi=16),
+                        # Global AMS slot, 0-based (unit*4 + tray),
+                        # as `beambam print --slot` / start_print.
+                        slot=get_int(body, "slot", 0, lo=0, hi=15),
                         label=get_str(body, "label", "", max_len=200))
                     self._send_json({"ok": True, "job": job.to_dict()})
                     return

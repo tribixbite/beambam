@@ -84,7 +84,11 @@ class Job:
     id:        str
     printer:   str           # name of [printer:NAME] (or "" for default)
     gcode:     str           # local path to .gcode.3mf
-    slot:      int = 1       # AMS slot 1..16
+    # Global AMS slot, 0-based: unit*4 + tray (0..15) — the same
+    # convention as `beambam print --slot`, start_print and
+    # _validate_ams_slot. (Queue files written before `slot_base`
+    # existed stored 1..16; see from_dict.)
+    slot:      int = 0
     status:    str = "pending"  # pending|running|done|failed|cancelled
     enqueued:  float = 0.0
     started:   float = 0.0
@@ -94,13 +98,24 @@ class Job:
     # True once the printer reported an active gcode_state after this
     # job was dispatched; only then can an idle report mean "finished".
     seen_active: bool = False
+    # Index base of `slot` as stored. Always SLOT_BASE (0) once written
+    # by this version; a record without the field is a 1-based legacy
+    # entry and is converted on load.
+    slot_base: int = 0
 
     def to_dict(self) -> dict:
         return dataclasses.asdict(self)
 
     @classmethod
     def from_dict(cls, d: dict) -> "Job":
-        return cls(**{k: d[k] for k in d if k in cls.__dataclass_fields__})
+        fields = {k: d[k] for k in d if k in cls.__dataclass_fields__}
+        if "slot_base" not in d:
+            # Legacy record: the queue used to take slots 1..16 and pass
+            # them unchanged to the 0-based print path, so slot 1 printed
+            # from the SECOND tray. Re-base to what the user meant.
+            fields["slot"] = max(0, int(fields.get("slot", 1)) - 1)
+        fields["slot_base"] = 0
+        return cls(**fields)
 
 
 class JobFileError(ValueError):
@@ -329,8 +344,12 @@ class QueueManager:
         return next((j for j in self._jobs if j.id == job_id), None)
 
     # ----- public API --------------------------------------------------
-    def add(self, *, printer: str, gcode: str, slot: int = 1,
+    def add(self, *, printer: str, gcode: str, slot: int = 0,
             label: str = "") -> Job:
+        """Enqueue `gcode` for `printer` on global AMS slot `slot`
+        (0-based, unit*4 + tray, 0..15)."""
+        if not 0 <= int(slot) <= 15:
+            raise ValueError(f"slot must be a global AMS slot 0..15, got {slot}")
         with self._txn():
             job = Job(
                 id=uuid.uuid4().hex,

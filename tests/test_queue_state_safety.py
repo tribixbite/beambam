@@ -213,6 +213,52 @@ def test_stale_lock_file_is_broken(tmp_path, monkeypatch):
     assert len(qm.list()) == 1
 
 
+# --- slot convention (0-based global slot) --------------------------------------
+
+def test_dispatched_slot_is_the_zero_based_global_slot(tmp_path):
+    """The queue's slot goes to start_print/_validate_ams_slot unchanged,
+    which take 0..15: slot 0 must reach the dispatcher as 0 (it used to
+    be entered as 1..16 and printed from the next tray)."""
+    rec = _Recorder()
+    qm = QueueManager(dispatch_cb=rec, path=tmp_path / "q.json")
+    qm.add(printer="", gcode="/x/a.gcode.3mf", slot=0)
+    qm.on_state("", _report("IDLE"))
+    assert rec.jobs[0].slot == 0
+    with pytest.raises(ValueError):
+        qm.add(printer="", gcode="/x/a.gcode.3mf", slot=16)
+
+
+def test_legacy_one_based_slots_are_migrated(tmp_path):
+    import json as _json
+    path = tmp_path / "q.json"
+    path.write_text(_json.dumps({"jobs": [
+        {"id": "a", "printer": "", "gcode": "/x/a.gcode.3mf", "slot": 1,
+         "status": "pending"},
+        {"id": "b", "printer": "", "gcode": "/x/b.gcode.3mf", "slot": 16,
+         "status": "pending"},
+    ]}))
+    qm = QueueManager(dispatch_cb=_Recorder(), path=path)
+    assert [j.slot for j in qm.list()] == [0, 15]
+    # Rewritten records carry slot_base and are not converted again.
+    qm.add(printer="", gcode="/x/c.gcode.3mf", slot=4)
+    stored = _json.loads(path.read_text())["jobs"]
+    assert [(j["slot"], j["slot_base"]) for j in stored] == \
+        [(0, 0), (15, 0), (4, 0)]
+    assert [j.slot for j in QueueManager(dispatch_cb=_Recorder(),
+                                         path=path).list()] == [0, 15, 4]
+
+
+def test_queue_cli_slot_is_zero_based(tmp_path, monkeypatch):
+    import argparse
+    from beambam.queuecli import add_subparser
+    p = argparse.ArgumentParser()
+    add_subparser(p.add_subparsers(dest="cmd"))
+    assert p.parse_args(["queue", "add", "f.gcode.3mf"]).slot == 0
+    assert p.parse_args(["queue", "add", "f.gcode.3mf", "--slot", "15"]).slot == 15
+    with pytest.raises(SystemExit):
+        p.parse_args(["queue", "add", "f.gcode.3mf", "--slot", "16"])
+
+
 # --- job file validation ------------------------------------------------------
 
 def test_validate_job_file_accepts_existing_gcode_3mf(tmp_path):
