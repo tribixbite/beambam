@@ -283,3 +283,72 @@ def test_single_colour_gcode_is_exact_not_estimate(tmp_path: Path):
         z.writestr("Metadata/plate_1.gcode", b"; total layer number: 6\nM73 L1\nM73 L2\n")
     t = analyze_3mf(path).totals
     assert t["flush_source"] == "gcode" and t["flush_volume_g"] == 0.0 and t["filament_changes"] == 0
+
+
+# ---------------------------------------------------------------------------
+# Prime tower and same-nozzle purges (review: a tower-dominated X2D slice
+# reported purge 0 g because Bambu writes L0 and prints the purge/prime into
+# the tower)
+# ---------------------------------------------------------------------------
+
+_TOWER_GCODE = b"""; total layer number: 2
+; filament_density: 1.27,1.50
+M83
+M620 S0A H0 B
+M73 L1
+; FEATURE: Outer wall
+G1 X1 Y1 E5.0
+; FEATURE: Prime tower
+G1 X2 Y2 E10.0
+G1 E-0.8
+G1 E0.8
+G1 X3 Y3 E2.0
+M620 S1A B H-1
+M620.10 A0 F299 L0 H0.4 T270 P255 S1
+M620.10 A1 F299 L0 H0.4 T270 P255 S1
+T1 H-1
+M73 L2
+; FEATURE: Prime tower
+G1 X4 Y4 E4.0
+; FEATURE: Inner wall
+G1 X5 Y5 E3.0
+"""
+
+
+def _tower_3mf(path: Path, filament_maps: str | None) -> Path:
+    meta = (f'<metadata key="filament_maps" value="{filament_maps}"/>'
+            if filament_maps is not None else "")
+    slice_info = _SYNTH_SLICE_INFO.replace(
+        b'<metadata key="weight" value="3.0"/>',
+        b'<metadata key="weight" value="3.0"/>' + meta.encode())
+    with zipfile.ZipFile(path, "w") as z:
+        z.writestr("Metadata/slice_info.config", slice_info)
+        z.writestr("Metadata/plate_1.gcode", _TOWER_GCODE)
+    return path
+
+
+def test_prime_tower_is_measured_net_per_filament(tmp_path: Path):
+    t = analyze_3mf(_tower_3mf(tmp_path / "t.gcode.3mf", "1 2")).totals
+    # Filament 1 in the tower: 10 - 0.8 + 0.8 + 2 = 12 mm (net: an un-retract
+    # is not new material); filament 2: 4 mm. Walls are not tower.
+    assert t["prime_tower_length_mm"] == pytest.approx(16.0)
+    expected = (12.0 * 1.27 + 4.0 * 1.50) * 2.4053 / 1000
+    assert t["prime_tower_g"] == pytest.approx(expected)
+    assert t["flush_volume_g"] == 0.0                       # L0 everywhere
+    assert t["waste_g"] == pytest.approx(expected)          # purge + tower
+    assert t["nozzle_swaps"] == 0                           # other nozzle took over
+
+
+def test_same_nozzle_change_counts_as_purging_even_with_l0(tmp_path: Path):
+    """Both filaments on nozzle 1: the L0 change still purges (into the tower)."""
+    t = analyze_3mf(_tower_3mf(tmp_path / "s.gcode.3mf", "1 1")).totals
+    assert t["nozzle_swaps"] == 1 and t["filament_changes"] == 1
+
+
+def test_dry_run_reports_tower_and_gates_on_max_waste(tmp_path: Path, capsys):
+    from beambam.cli.lan import _dry_run_report
+    f = _tower_3mf(tmp_path / "d.gcode.3mf", "1 2")
+    assert _dry_run_report(f, 10.0) == 0                    # purge 0 g passes --max-flush-g
+    assert "prime tower" in capsys.readouterr().err
+    assert _dry_run_report(f, 10.0, max_waste_g=0.01) == 2  # but not a waste cap
+    assert "--max-waste-g" in capsys.readouterr().err

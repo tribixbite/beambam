@@ -289,6 +289,7 @@ class _GcodeChange:
     layer: int            # 0-based layer, matching slice_info layer_ranges
     filament: int         # 1-based filament id
     flush_length_mm: float
+    previous: int = 0     # 1-based filament loaded before this change (0 = unknown)
 
 
 def _parse_gcode_events(gcode_bytes: bytes) -> dict[str, Any]:
@@ -298,8 +299,18 @@ def _parse_gcode_events(gcode_bytes: bytes) -> dict[str, Any]:
     filament change with `M620 S<k>A` (k 0-based; 255+ = unload sentinels)
     followed by `M620.10 A1 ... L<len>`, whose L is the purge length in mm
     of filament the firmware extrudes for that change (0 when the other
-    nozzle takes over instead of purging). Loads before the first layer
-    marker belong to the start G-code's initial load and are not changes.
+    nozzle takes over instead of purging, AND when the purge is printed
+    into the prime tower instead). Loads before the first layer marker
+    belong to the start G-code's initial load and are not changes.
+
+    It also measures the prime tower: the NET filament extruded inside
+    `; FEATURE: Prime tower` (older slicers: "Wipe tower") sections, per
+    active filament. Net, not positive-only: an un-retract re-primes the
+    nozzle and is not new material (summing positives overstated a tower by
+    17 %). The tower is waste the M620.10 lengths do not show: on a 2-colour
+    X2D slice with one filament per nozzle, all 160 changes were `L0` (the
+    other nozzle takes over) yet the tower was 16.6 g of 20.7 g extruded
+    (the slicer's own per-filament weights: 20.9 g).
     """
     text = gcode_bytes.decode("utf-8", errors="replace")
     header_layers = re.search(r"(?m)^; total layer number: (\d+)", text)
@@ -309,27 +320,78 @@ def _parse_gcode_events(gcode_bytes: bytes) -> dict[str, Any]:
     changes: list[_GcodeChange] = []
     layer = -1
     pending: _GcodeChange | None = None
+    active = 0                       # 1-based filament currently loaded (0 = none yet)
+    in_tower = False
+    relative_e = True                # Bambu emits M83; M82/G92 handled anyway
+    last_e = 0.0
+    tower_mm: dict[int, float] = {}
     for line in text.splitlines():
-        if line.startswith("M73 L"):
+        if line.startswith("; FEATURE:"):
+            feature = line[len("; FEATURE:"):].strip().lower()
+            in_tower = "prime tower" in feature or "wipe tower" in feature
+        elif line.startswith("M73 L"):
             m = re.match(r"M73 L(\d+)", line)
             if m:
                 layer = int(m.group(1)) - 1
         elif line.startswith("M620 S"):
             m = re.match(r"M620 S(\d+)A", line)
-            if m and layer >= 0 and int(m.group(1)) < 255:
-                pending = _GcodeChange(layer=layer, filament=int(m.group(1)) + 1,
-                                       flush_length_mm=0.0)
-                changes.append(pending)
+            if m and int(m.group(1)) < 255:
+                new = int(m.group(1)) + 1
+                if layer >= 0:
+                    pending = _GcodeChange(layer=layer, filament=new,
+                                           flush_length_mm=0.0, previous=active)
+                    changes.append(pending)
+                active = new
         elif line.startswith("M620.10 A1") and pending is not None:
             m = re.search(r" L([\d.]+)", line)
             if m:
                 pending.flush_length_mm = float(m.group(1))
             pending = None
+        elif line.startswith("M83"):
+            relative_e = True
+        elif line.startswith("M82"):
+            relative_e = False
+        elif line.startswith("G92"):
+            m = re.search(r" E(-?[\d.]+)", line)
+            if m:
+                last_e = float(m.group(1))
+        elif line.startswith(("G1 ", "G0 ", "G2 ", "G3 ")) and " E" in line:
+            m = re.search(r" E(-?[\d.]+)", line.split(";", 1)[0])
+            if m:
+                e = float(m.group(1))
+                delta = e if relative_e else e - last_e
+                if not relative_e:
+                    last_e = e
+                if in_tower and active:
+                    tower_mm[active] = tower_mm.get(active, 0.0) + delta
     return {
         "layer_count": int(header_layers.group(1)) if header_layers else None,
         "densities": densities,
         "changes": changes,
+        # A retract at a section's end can leave a small negative remainder.
+        "prime_tower_mm": {f: max(mm, 0.0) for f, mm in tower_mm.items()},
     }
+
+
+def _filament_nozzles(filament_maps: str) -> list[int]:
+    """`filament_maps` from slice_info ("1 2" / "1,1"): the nozzle (1-based)
+    each filament prints from, in filament order. [] when absent."""
+    return [int(x) for x in re.split(r"[\s,]+", filament_maps.strip()) if x.isdigit()]
+
+
+def _change_purges(c: _GcodeChange, nozzles: list[int]) -> bool:
+    """Whether a filament change purges. A commanded purge (L > 0) always
+    does. Otherwise it purges when the outgoing filament is on the SAME
+    nozzle (Bambu then prints the purge into the prime tower and writes L0);
+    a change the other nozzle takes over does not. Without a filament map
+    the commanded length is all there is to go on (L0 = no purge)."""
+    if c.flush_length_mm > 0:
+        return True
+    if not nozzles or not c.previous or c.previous == c.filament:
+        return False
+    def nozzle(f: int) -> int:
+        return nozzles[f - 1] if 0 < f <= len(nozzles) else 1
+    return nozzle(c.previous) == nozzle(c.filament)
 
 
 def _density(densities: list[float], filament: int) -> float:
@@ -352,13 +414,17 @@ def _phase_note(filaments: list[int], flushes: int) -> str:
 
 def _phases_from_gcode(layer_filament: list[tuple[int, int, list[int]]],
                        changes: list[_GcodeChange],
-                       densities: list[float]) -> tuple[list[Phase], int]:
-    """Exact phases: every change is attributed to the layer it happens in."""
+                       densities: list[float],
+                       nozzles: list[int] | None = None) -> tuple[list[Phase], int]:
+    """Exact phases: every change is attributed to the layer it happens in.
+    `real_flushes` counts changes that purge (see `_change_purges`); the
+    flush length/grams are the commanded M620.10 purge only (prime-tower
+    purge is reported separately as `prime_tower_g`)."""
     phases: list[Phase] = []
     flushes_total = 0
     for start, end, filaments in sorted(layer_filament, key=lambda x: x[0]):
         here = [c for c in changes if start <= c.layer <= end]
-        purging = [c for c in here if c.flush_length_mm > 0]
+        purging = [c for c in here if _change_purges(c, nozzles or [])]
         length = sum(c.flush_length_mm for c in purging)
         flushes_total += len(purging)
         phases.append(Phase(
@@ -482,13 +548,21 @@ def _generate_hints(report: Report) -> list[str]:
         mins = int(report.plate["predicted_seconds"]) // 60
         report.plate["predicted_human"] = f"{mins // 60}h {mins % 60}min" if mins >= 60 else f"{mins} min"
 
-    if report.totals.get("flush_volume_g", 0) > 6.0:
+    t = report.totals
+    if t.get("waste_g", t.get("flush_volume_g", 0)) > 6.0:
         hints.append(
-            f"Total purge volume ≈{report.totals['flush_volume_mm']:.0f} mm³ "
-            f"(~{report.totals.get('flush_volume_g', 0):.1f} g) — non-trivial cost. "
+            f"Waste ≈{t.get('waste_g', 0):.1f} g (purge {t.get('flush_volume_g', 0):.1f} g "
+            f"+ prime tower {t.get('prime_tower_g', 0):.1f} g) — non-trivial cost. "
             f"Check that filament_map_mode is 'Auto For Flush' (slicer picks the "
             f"minimum-flush assignment) rather than a manual override."
         )
+    nozzles = _filament_nozzles(report.plate.get("filament_maps", "") or "")
+    if (report.printer.get("nozzle_count", 0) >= 2 and len(set(nozzles)) == 1
+            and len(nozzles) >= 2 and t.get("nozzle_swaps", 0) > 0):
+        hints.append(
+            f"All {len(nozzles)} filaments are mapped to nozzle {nozzles[0]}, so every "
+            f"colour change purges ({t.get('nozzle_swaps')} here). On a dual-nozzle "
+            f"printer, putting two of them on different nozzles removes those purges.")
 
     return hints
 
@@ -568,9 +642,15 @@ def analyze_3mf(path: Path) -> Report:
 
     densities: list[float] = ev.get("densities") or []
     changes: list[_GcodeChange] = ev.get("changes") or []
+    nozzles = _filament_nozzles(si["plate_meta"].get("filament_maps", ""))
+    tower_mm_by_fil: dict[int, float] = ev.get("prime_tower_mm") or {}
+    tower_length = sum(tower_mm_by_fil.values())
+    tower_g = sum(mm * FILAMENT_AREA_MM2 * _density(densities, fil) / 1000.0
+                  for fil, mm in tower_mm_by_fil.items())
     if ev:
         # The plate G-code exists: it is the truth even with zero changes.
-        phases, swaps_total = _phases_from_gcode(si["layer_filament_lists"], changes, densities)
+        phases, swaps_total = _phases_from_gcode(si["layer_filament_lists"], changes,
+                                                 densities, nozzles)
         flush_source = "gcode"
         flush_length = sum(c.flush_length_mm for c in changes)
         flush_g = sum(_change_grams(c, densities) for c in changes)
@@ -606,6 +686,13 @@ def analyze_3mf(path: Path) -> Report:
         # "gcode" = read from the plate G-code (exact); "estimate" = flush
         # matrix times a proportional guess of where the swaps fall.
         "flush_source": flush_source,
+        # Filament printed into the prime tower (measured from the G-code;
+        # 0 without a G-code). With a tower, same-nozzle purges go there and
+        # the M620.10 purge above reads 0, so judge waste by `waste_g`.
+        "prime_tower_length_mm": tower_length,
+        "prime_tower_g": tower_g,
+        # Everything that is not the model: commanded purge + prime tower.
+        "waste_g": flush_g + tower_g,
     }
 
     report.hints = _generate_hints(report)
@@ -672,6 +759,9 @@ def format_report(r: Report) -> str:
     lines.append(f"  purge: {t.get('flush_length_mm', 0):.0f} mm of filament "
                  f"= {t.get('flush_volume_mm3', 0):.0f} mm³ "
                  f"≈ {t.get('flush_volume_g', 0):.2f} g  ({t.get('flush_source')})")
+    lines.append(f"  prime tower: {t.get('prime_tower_length_mm', 0):.0f} mm "
+                 f"≈ {t.get('prime_tower_g', 0):.2f} g   "
+                 f"waste (purge + tower): {t.get('waste_g', 0):.2f} g")
 
     if r.warnings:
         lines.append(_h("Slicer warnings"))

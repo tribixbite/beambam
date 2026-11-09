@@ -147,7 +147,9 @@ def cmd_print(args: argparse.Namespace) -> int:
     # report the purge and refuse when it is over --max-flush-g. No
     # credentials, network or FTPS needed.
     if getattr(args, "dry_run", False):
-        return _dry_run_report(local, float(getattr(args, "max_flush_g", 10.0)))
+        waste_cap = getattr(args, "max_waste_g", None)
+        return _dry_run_report(local, float(getattr(args, "max_flush_g", 10.0)),
+                               float(waste_cap) if waste_cap is not None else None)
 
     creds = Creds.resolve(args)
     signing = signing_status(serial=creds.serial)
@@ -250,22 +252,35 @@ def cmd_print(args: argparse.Namespace) -> int:
 from beambam.print_job import BUSY_STATES, STARTED_STATES, await_print_start  # noqa: E402,F401
 
 
-def _dry_run_report(local: Path, max_g: float) -> int:
-    """`print --dry-run` tail: show beambam's analysis, gate on purge grams."""
+def _dry_run_report(local: Path, max_g: float, max_waste_g: float | None = None) -> int:
+    """`print --dry-run` tail: show beambam's analysis, gate on purge grams
+    (`--max-flush-g`) and, when given, on all waste (`--max-waste-g`: purge +
+    prime tower). The tower is always reported: with one is printed, the
+    purge alone can read ~0 while the tower is most of the filament."""
     from beambam.analyze import analyze_3mf, format_report
     report = analyze_3mf(local)
     print(format_report(report))
-    flush_g = float(report.totals.get("flush_volume_g", 0.0))
+    t = report.totals
+    flush_g = float(t.get("flush_volume_g", 0.0))
+    tower_g = float(t.get("prime_tower_g", 0.0))
+    waste_g = float(t.get("waste_g", flush_g + tower_g))
+    detail = f"(prime tower {tower_g:.1f} g; total waste {waste_g:.1f} g)"
     if flush_g > max_g:
         sys.stderr.write(
             f"\n[print --dry-run] REFUSED: predicted purge "
-            f"{flush_g:.1f} g exceeds --max-flush-g {max_g:.1f} g. "
+            f"{flush_g:.1f} g exceeds --max-flush-g {max_g:.1f} g {detail}. "
             f"Re-slice with fewer color swaps OR raise the "
             f"threshold.\n")
         return 2
+    if max_waste_g is not None and waste_g > max_waste_g:
+        sys.stderr.write(
+            f"\n[print --dry-run] REFUSED: predicted waste {waste_g:.1f} g "
+            f"(purge {flush_g:.1f} g + prime tower {tower_g:.1f} g) exceeds "
+            f"--max-waste-g {max_waste_g:.1f} g.\n")
+        return 2
     sys.stderr.write(
         f"\n[print --dry-run] OK: offline checks passed; predicted purge "
-        f"{flush_g:.1f} g <= --max-flush-g {max_g:.1f} g\n")
+        f"{flush_g:.1f} g <= --max-flush-g {max_g:.1f} g {detail}\n")
     return 0
 
 

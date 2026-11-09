@@ -285,7 +285,15 @@ def main() -> int:
                          "will accept. Default 10g — typical for a 4-color "
                          "swap-heavy print. Bigger plates with many color "
                          "transitions can blow past this fast; raise it if "
-                         "you knowingly want a high-flush print.")
+                         "you knowingly want a high-flush print. This is the "
+                         "purge the G-code commands (M620.10); filament "
+                         "printed into the prime tower is reported beside it "
+                         "and gated by --max-waste-g.")
+    pr.add_argument("--max-waste-g", type=float, default=None,
+                    help="With --dry-run, also refuse when purge + prime tower "
+                         "exceeds this many grams (off by default). With a "
+                         "prime tower the purge can read ~0 while the tower "
+                         "is most of the filament.")
     pr.set_defaults(fn=cmd_print)
 
     d = sub.add_parser("boo", aliases=["daemon"],
