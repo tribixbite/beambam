@@ -196,7 +196,10 @@ class _QueueFileLock:
         while True:
             try:
                 fd = os.open(self.path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-            except FileExistsError:
+            except (FileExistsError, PermissionError):
+                # Windows answers EACCES (PermissionError) instead of
+                # EEXIST while the previous holder's unlink is still
+                # pending; both mean "someone holds it, retry".
                 self._break_if_stale()
                 if time.monotonic() >= deadline:
                     raise TimeoutError(
