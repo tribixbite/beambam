@@ -260,9 +260,12 @@ class X2DClient:
         # paho calls this on any drop (clean or lost). Clear _connected so
         # publish()'s is_connected() check reconnects, and count real drops
         # (rc 0 = our own disconnect()). The signature differs across paho
-        # CallbackAPIVersion revisions, so take *args.
+        # CallbackAPIVersion revisions, so take *args: VERSION2 (what this
+        # client uses) passes (disconnect_flags, reason_code, properties), so
+        # the code is args[1]; VERSION1 passes (rc,). Reading args[0] under
+        # VERSION2 got the DisconnectFlags object and never counted a drop.
         self._connected.clear()
-        rc = args[0] if args else 0
+        rc = args[1] if len(args) >= 2 else (args[0] if args else 0)
         try:
             rc = int(rc.value) if hasattr(rc, "value") else int(rc)
         except (TypeError, ValueError):

@@ -353,10 +353,16 @@ def _select_or_skip(args: argparse.Namespace, *, mode: str) -> int:
         return 1
 
     dst.parent.mkdir(parents=True, exist_ok=True)
-    if keep is not None:
-        filter_3mf(src, dst, keep=keep)
-    else:
-        filter_3mf(src, dst, drop=drop)
+    try:
+        if keep is not None:
+            filter_3mf(src, dst, keep=keep)
+        else:
+            filter_3mf(src, dst, drop=drop)
+    except ValueError as e:
+        # e.g. --out names the input file (with --force): filter_3mf refuses
+        # to overwrite the file it is reading; say so instead of a traceback.
+        print(f"plate {mode}: {e}", file=sys.stderr)
+        return 1
     new_plates = read_plates(dst)
     if mode == "select":
         action = f"selected plate {target}"

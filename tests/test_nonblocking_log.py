@@ -36,3 +36,14 @@ def test_log_calls_return_while_stream_is_stuck() -> None:
     while not stream.lines and time.monotonic() < deadline:
         time.sleep(0.01)
     assert stream.lines[0] == "[camera] line 0\n"
+
+
+def test_drain_writes_queued_lines_before_returning() -> None:
+    """Lines logged right before exit must reach the stream (atexit drains)."""
+    import io
+    from beambam.pipe_reader import NonBlockingLog
+    buf = io.StringIO()
+    log = NonBlockingLog(stream=buf)
+    log("ffmpeg not installed")
+    assert log.drain(timeout=2.0)
+    assert buf.getvalue() == "ffmpeg not installed\n"

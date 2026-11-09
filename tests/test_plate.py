@@ -330,3 +330,15 @@ def test_subparser_wires_three_actions():
                        "--force"])
     assert ns.fn is cmd_plate_skip
     assert ns.force is True
+
+
+def test_cmd_plate_select_onto_itself_is_a_clean_refusal(tmp_path, capsys):
+    """--out naming the input (with --force) is refused with a message, not a
+    ValueError traceback from filter_3mf."""
+    src = tmp_path / "two.gcode.3mf"
+    _build_two_plate_3mf(src)
+    before = src.read_bytes()
+    rc = cmd_plate_select(_args(file=str(src), plate=1, out=str(src), force=True))
+    assert rc == 1
+    assert "same file" in capsys.readouterr().err
+    assert src.read_bytes() == before          # input untouched

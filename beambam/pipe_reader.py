@@ -133,6 +133,20 @@ class NonBlockingLog:
         self.dropped = 0
         self._thread = threading.Thread(target=self._run, name="nonblocking-log", daemon=True)
         self._thread.start()
+        # The writer is a daemon thread, so lines queued just before exit (an
+        # error printed before `return 2`) were lost. Give it a bounded moment
+        # to finish at exit; bounded so a blocked stderr still cannot hang us.
+        import atexit
+        atexit.register(self.drain)
+
+    def drain(self, timeout: float = 1.0) -> bool:
+        """Wait up to `timeout` s for every queued line to be written.
+        Returns True if the queue emptied in time."""
+        import time
+        deadline = time.monotonic() + timeout
+        while self._q.unfinished_tasks and time.monotonic() < deadline:
+            time.sleep(0.01)
+        return not self._q.unfinished_tasks
 
     def __call__(self, *parts: object, sep: str = " ", end: str = "\n",
                  file: object = None, flush: bool = False) -> None:  # noqa: ARG002
@@ -149,3 +163,5 @@ class NonBlockingLog:
                 self._stream.flush()
             except (OSError, ValueError):
                 pass     # closed / broken stderr: nothing useful to do
+            finally:
+                self._q.task_done()

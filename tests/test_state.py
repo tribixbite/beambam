@@ -109,3 +109,23 @@ def test_on_disconnect_clears_connected_flag(tmp_path, monkeypatch) -> None:
     c._connected.set()
     c._on_disconnect(None, None, type("RC", (), {"value": 7})())
     assert not c._connected.is_set()
+
+
+def test_on_disconnect_counts_real_paho_v2_drops(tmp_path, monkeypatch) -> None:
+    """paho 2.x CallbackAPIVersion.VERSION2 passes (flags, reason_code, props);
+    a lost connection must be counted, our own disconnect must not."""
+    from paho.mqtt.client import DisconnectFlags
+    from paho.mqtt.packettypes import PacketTypes
+    from paho.mqtt.reasoncodes import ReasonCode
+    import beambam.mqtt as bm
+    monkeypatch.setattr(X2DClient, "_TS_DIR", tmp_path)
+    counted: list[str] = []
+    monkeypatch.setattr(bm, "metric_inc", lambda serial, name: counted.append(name))
+    c = _client()
+    flags = DisconnectFlags(is_disconnect_packet_from_server=False)
+    c._connected.set()
+    c._on_disconnect(None, None, flags, ReasonCode(PacketTypes.DISCONNECT, "Unspecified error"), None)
+    assert not c._connected.is_set() and counted == ["mqtt_disconnects_total"]
+    c._connected.set()
+    c._on_disconnect(None, None, flags, ReasonCode(PacketTypes.DISCONNECT, "Normal disconnection"), None)
+    assert not c._connected.is_set() and counted == ["mqtt_disconnects_total"]   # clean: not counted
