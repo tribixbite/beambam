@@ -75,6 +75,43 @@ x2d_token=<token>` (for EventSource). See [`AUTH` section in this
 doc's source](../runtime/webui/test_auth.py) for the full check
 matrix — 28/28 PASS in CI.
 
+### Cross-site requests and DNS rebinding
+
+An open loopback daemon must not be drivable by whatever web page the
+browser has open, so every request passes a guard
+(`beambam/http_validate.py`) before auth:
+
+* **Host** must be an IP literal, `localhost`, this machine's own
+  name(s), the bind host, or a name added with `--allow-host NAME`
+  (repeatable) / `$X2D_ALLOWED_HOSTS=a,b`. Anything else answers
+  `421` — a DNS-rebinding page arrives with its own domain in `Host`.
+* **POST** must not carry a cross-origin `Origin` (or
+  `Sec-Fetch-Site: cross-site`) → `403`, and must use
+  `Content-Type: application/json` (raw-body routes `/analyze` and
+  `/slice-print`: `application/octet-stream`) → otherwise `415`.
+  Those are types a page cannot send cross-origin without a CORS
+  preflight, which the daemon never grants.
+
+Scripts send the header: `curl -X POST -H 'Content-Type: application/json'
+-d '{}' http://127.0.0.1:8765/control/pause`. Malformed bodies or fields
+(non-numeric `Content-Length`, a JSON array, `"slot": "x"`) answer `400`
+with `{"error": …}`.
+
+### Control results
+
+`POST /control/*` sends exactly like the CLI (`beambam.commands.send_command`:
+`print.*` signed with the recovered key that X2D/H2D firmware requires) and
+waits up to 4 s for the printer's answer:
+
+| status | meaning |
+|---|---|
+| `200` | printer acknowledged (`verified: true`, `reply.err_code`) |
+| `409` | printer refused: `err_code`, `reason`, readable `error` (incl. signing cause) |
+| `504` | pause / resume / stop / ams_load sent but the printer never answered |
+| `202` | light / temp / gcode / sound / ams_set sent, no answer (may be normal) |
+| `502` | the MQTT publish itself failed |
+| `503` | no live client for that printer |
+
 ## Mobile
 
 The CSS uses a single-column layout below 720 CSS px (S25 Ultra

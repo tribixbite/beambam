@@ -42,8 +42,11 @@
       <h2>Camera</h2>
       <div class="camera-tabs">
         <button class="tab active" data-mode="snapshot">snapshot</button>
-        <button class="tab" data-mode="hls">HLS</button>
-        <button class="tab" data-mode="webrtc">WebRTC</button>
+        <!-- HLS / WebRTC are served by the camera and webrtc daemons, not
+             this one (they answered 404 here); hidden until the daemon
+             proxies them. See the TODO(camera) in index.js. -->
+        <button class="tab" data-mode="hls" hidden>HLS</button>
+        <button class="tab" data-mode="webrtc" hidden>WebRTC</button>
       </div>
       <div class="camera-frame">
         <img id="cam-img" alt="chamber camera">
@@ -165,7 +168,7 @@
       <div class="queue-add">
         <input id="queue-gcode" type="text" placeholder=".gcode.3mf path">
         <select id="queue-printer"></select>
-        <input id="queue-slot" type="number" min="1" max="16" value="1" title="AMS slot">
+        <input id="queue-slot" type="number" min="0" max="15" value="0" inputmode="numeric" title="Global AMS slot: unit×4 + tray, 0..15 (0 = first tray of the first AMS)">
         <button id="queue-add-btn">enqueue</button>
       </div>
       <div class="muted small">Drag a job to reorder; tap × to cancel.</div>

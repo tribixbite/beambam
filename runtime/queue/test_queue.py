@@ -8,11 +8,13 @@ verifies:
 * state=running on a printer suppresses dispatch (queue waits)
 * state=idle triggers dispatch of head-of-queue
 * dispatch_cb is called exactly once per job
-* job → running on dispatch, then → done on next idle tick
+* job → running on dispatch, then → done only after the printer was
+  seen RUNNING for it and idle again (a stale FINISH or a delta
+  without gcode_state changes nothing)
 * per-printer FIFO ordering preserved
 * cross-printer isolation (idle on A doesn't fire B's queue)
-* persistence: re-loading from disk demotes running → pending so
-  nothing gets lost on restart
+* persistence: a second manager on the same file (the CLI) keeps
+  running jobs running and sees the first manager's edits
 * drag-and-drop reorder (move) honoured for pending jobs
 * cancel removes from dispatchable queue
 * "queue 3 jobs across 2 printers, watch them auto-dispatch" full
@@ -107,10 +109,22 @@ def main() -> int:
                   dispatched[0].id == j1.id,
                   detail=f"got {dispatched[0].label}")
 
-        # ----- 5. job j1 now running, second idle tick doesn't redispatch -----
+        # ----- 5. j1 running: a stale idle tick neither completes it nor
+        # redispatches (the printer has not started j1 yet) -----
         m.on_state("studio", _state(gcode_state="FINISH"))
-        # First, j1 should be marked done; then j3 (next pending) dispatched.
-        check("after second idle tick: 2 dispatches total (j1 done + j3)",
+        check("stale FINISH right after dispatch: still 1 dispatch",
+              len(dispatched) == 1,
+              detail=str([d.label for d in dispatched]))
+        check("stale FINISH leaves j1 running",
+              m.get(j1.id).status == "running", detail=m.get(j1.id).status)
+        # A delta without gcode_state is ignored entirely.
+        m.on_state("studio", {"print": {"nozzle_temper": 210.0}})
+        check("delta without gcode_state: still 1 dispatch",
+              len(dispatched) == 1)
+        # Printer starts j1, then finishes it → done, j3 dispatched.
+        m.on_state("studio", _state(gcode_state="RUNNING", percent=10))
+        m.on_state("studio", _state(gcode_state="FINISH", percent=100))
+        check("after RUNNING→FINISH: 2 dispatches total (j1 done + j3)",
               len(dispatched) == 2,
               detail=str([d.label for d in dispatched]))
         if len(dispatched) >= 2:
@@ -129,11 +143,11 @@ def main() -> int:
               detail=str([d.label for d in dispatched]))
 
         # ----- 7. job state transitions -----
-        # By now: j1 done (the second studio FINISH tick marked it
-        # complete before dispatching j3); j3 running; j2 running on
-        # garage's first FINISH tick.
+        # By now: j1 done (RUNNING then FINISH completed it before j3
+        # was dispatched); j3 running; j2 running on garage's first
+        # FINISH tick.
         all_jobs = {j.id: j for j in m.list()}
-        check("j1 status=done after second idle tick",
+        check("j1 status=done after RUNNING→FINISH",
               all_jobs[j1.id].status == "done",
               detail=all_jobs[j1.id].status)
         check("j2 status=running", all_jobs[j2.id].status == "running",
@@ -142,28 +156,26 @@ def main() -> int:
               detail=all_jobs[j3.id].status)
 
         # ----- 8. completing j2 marks it done -----
-        m.on_state("garage", _state(gcode_state="FINISH"))
+        m.on_state("garage", _state(gcode_state="RUNNING", percent=50))
+        m.on_state("garage", _state(gcode_state="FINISH", percent=100))
         all_jobs = {j.id: j for j in m.list()}
-        check("j2 status=done after second garage idle",
+        check("j2 status=done after garage RUNNING→FINISH",
               all_jobs[j2.id].status == "done",
               detail=all_jobs[j2.id].status)
 
-        # ----- 9. persistence: snapshot path, demote running on reload -----
-        # Mark a fresh job running to test the demotion path
-        j4 = m.add(printer="garage", gcode="/tmp/job4.3mf", label="job4")
-        # Simulate a running state by directly mutating
-        with m._lock:
-            j4_obj = next(j for j in m._jobs if j.id == j4.id)
-            j4_obj.status = "running"
-            m._persist()
-
+        # ----- 9. persistence: a second manager (the CLI) sees the same
+        # file and does NOT demote the daemon's running job -----
         m2 = QueueManager(dispatch_cb=lambda j: True, path=path)
         all_after_reload = {j.id: j for j in m2.list()}
-        check("reload preserves all 4 jobs",
-              len(m2.list()) == 4, detail=str(len(m2.list())))
-        check("reload demotes running → pending",
-              all_after_reload[j4.id].status == "pending",
-              detail=all_after_reload[j4.id].status)
+        check("reload preserves all 3 jobs",
+              len(m2.list()) == 3, detail=str(len(m2.list())))
+        check("reload keeps running j3 running (no re-dispatch)",
+              all_after_reload[j3.id].status == "running",
+              detail=all_after_reload[j3.id].status)
+        # An edit through m2 is visible to m (reload-before-read).
+        j4 = m2.add(printer="garage", gcode="/tmp/job4.3mf", label="job4")
+        check("job added by a second manager is visible to the first",
+              m.get(j4.id) is not None)
 
         # ----- 10. drag-and-drop reorder -----
         # Add three pending jobs to studio, move the last to head.

@@ -50,7 +50,8 @@ the empty string in API responses. You can mix `[printer]` plus
 curl http://127.0.0.1:8765/state?printer=studio
 
 # Pause the studio printer (not garage)
-curl -X POST http://127.0.0.1:8765/control/pause?printer=studio
+curl -X POST -H 'Content-Type: application/json' -d '{}' \
+    'http://127.0.0.1:8765/control/pause?printer=studio'
 
 # Subscribe to live SSE for garage
 curl -N http://127.0.0.1:8765/state.events?printer=garage

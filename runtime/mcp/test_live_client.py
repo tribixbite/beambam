@@ -267,9 +267,9 @@ def main() -> int:
             "capabilities": {},
             "clientInfo": {"name": "x2d-live-client", "version": "0.1.0"},
         })
-        check("initialize result.serverInfo.name == 'x2d-bridge'",
+        check("initialize result.serverInfo.name == 'beambam'",
               resp.get("result", {}).get("serverInfo", {}).get("name")
-              == "x2d-bridge",
+              == "beambam",
               detail=str(resp))
         client.notify("notifications/initialized")
 

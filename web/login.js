@@ -14,6 +14,24 @@
   const sub   = $("submit");
   const clear = $("clear");
 
+  // Post-login redirect target from ?next=, restricted to this origin.
+  // `startsWith("/")` alone let `//evil.example` and `/\evil.example`
+  // through (protocol-relative URLs) — an open redirect off the login
+  // page. Resolve against our origin and keep only same-origin paths.
+  function safeNext(next) {
+    const fallback = "/index.html";
+    if (!next || next[0] !== "/" || next[1] === "/" || next[1] === "\\") {
+      return fallback;
+    }
+    try {
+      const u = new URL(next, location.origin);
+      if (u.origin !== location.origin) return fallback;
+      return u.pathname + u.search + u.hash;
+    } catch (e) {
+      return fallback;
+    }
+  }
+
   // If auth is not required (loopback + no --auth-token), skip the
   // whole flow.
   fetch("/auth/info").then((r) => r.json()).then((info) => {
@@ -60,8 +78,7 @@
       msg.className = "login-msg ok";
       // Honour ?next=... if present so deep-linked URLs round-trip
       // through the gate cleanly.
-      const next = new URLSearchParams(location.search).get("next");
-      const target = (next && next.startsWith("/")) ? next : "/index.html";
+      const target = safeNext(new URLSearchParams(location.search).get("next"));
       setTimeout(() => { location.href = target; }, 250);
     } catch (e) {
       msg.textContent = "Network error: " + e.message;

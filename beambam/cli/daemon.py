@@ -23,8 +23,77 @@ keep working.
 from __future__ import annotations
 
 import argparse
+import copy
+import json
 import sys
-from typing import TypedDict
+import time
+from typing import Any, Protocol, TypedDict
+
+from beambam.state import deep_merge
+
+
+class _StateConsumer(Protocol):
+    """Anything with the queue manager / timelapse recorder hook."""
+
+    def on_state(self, printer: str, state: dict | None) -> None: ...
+
+
+class _StatePublisher(Protocol):
+    """The StateHub surface the fan-out uses."""
+
+    def publish(self, state: Any) -> None: ...
+
+
+class PrinterStateFanout:
+    """Per-printer ``X2DClient.on_state`` callback for the daemon.
+
+    The printer sends full reports, partial delta reports and command
+    replies on one topic. This folds every message into one merged
+    document (:func:`beambam.state.deep_merge`) and hands each consumer
+    an immutable snapshot of it, so HTTP /state, SSE, the queue and the
+    timelapse recorder always see the whole state: a delta carrying only
+    a temperature no longer reads as an idle printer (which made the
+    queue dispatch its next job mid-print).
+
+    Runs on paho's network thread, so everything here is quick; queue
+    dispatch runs on the queue manager's own worker thread.
+    """
+
+    def __init__(self, name: str, *,
+                 hub: _StatePublisher | None = None,
+                 consumers: tuple[_StateConsumer | None, ...] = (),
+                 echo: bool = False) -> None:
+        self.name = name
+        self._hub = hub
+        self._consumers = [c for c in consumers if c is not None]
+        self._echo = echo
+        self._merged: dict[str, Any] = {}
+        # Replaced (never mutated) on each message, so HTTP threads can
+        # serialise it without racing the network thread.
+        self.snapshot: dict[str, Any] | None = None
+
+    def __call__(self, message: dict) -> None:
+        deep_merge(self._merged, message)
+        snap = copy.deepcopy(self._merged)
+        self.snapshot = snap
+        # Fan out to every subscriber of the per-printer hub. Slow
+        # consumers drop oldest entries; the MQTT thread never blocks.
+        if self._hub is not None:
+            try:
+                self._hub.publish(snap)
+            except Exception as e:
+                print(f"[x2d-bridge] hub.publish({self.name}) failed: {e}",
+                      file=sys.stderr)
+        for consumer in self._consumers:
+            try:
+                consumer.on_state(self.name, snap)
+            except Exception as e:
+                print(f"[x2d-bridge] {type(consumer).__name__}.on_state"
+                      f"({self.name}) failed: {e}", file=sys.stderr)
+        if self._echo:
+            # stdout stays an event log of the raw messages.
+            print(json.dumps({"ts": time.time(), "printer": self.name,
+                              "state": message}), flush=True)
 
 
 def cmd_daemon(args: argparse.Namespace) -> int:
@@ -69,8 +138,9 @@ def cmd_daemon(args: argparse.Namespace) -> int:
     else:
         names = Creds.list_names()
         names_to_run = names if names else [""]
-    # Per-printer state cache + clients.
-    states: dict[str, dict | None] = {n: None for n in names_to_run}
+    # Per-printer merged-state fan-out (PrinterStateFanout), filled in
+    # once the queue / timelapse consumers exist.
+    fanouts: dict[str, PrinterStateFanout] = {}
     # Per-printer pub/sub hub. Drop-oldest-on-full so a slow SSE/HA
     # consumer can't backpressure the MQTT thread. Wired into the SSE
     # handler so /state.events pushes are immediate (no 1 Hz polling)
@@ -96,7 +166,9 @@ def cmd_daemon(args: argparse.Namespace) -> int:
                      else "127.0.0.1")
         timelapse_rec = TimelapseRecorder(
             snapshot_url=f"http://{snap_host}:{port_part}/snapshot.jpg",
-            interval_s=float(args.timelapse_interval))
+            interval_s=float(args.timelapse_interval),
+            # Our own /snapshot.jpg is Bearer-gated when a token is set.
+            auth_token=args.auth_token or None)
         print(f"[x2d-bridge] timelapse recorder enabled "
               f"(every {args.timelapse_interval}s during prints)",
               file=sys.stderr)
@@ -109,7 +181,9 @@ def cmd_daemon(args: argparse.Namespace) -> int:
 
         def _dispatch_job(job) -> bool:
             """Upload the job's .gcode.3mf to the printer + start_print.
-            Runs synchronously while the queue manager waits."""
+            Runs on the queue manager's worker thread (background
+            dispatch), never on paho's network thread: request_state()
+            below waits for a report that only that thread can deliver."""
             cli = clients.get(job.printer)
             if cli is None:
                 LOG_QUEUE.warning(
@@ -147,40 +221,16 @@ def cmd_daemon(args: argparse.Namespace) -> int:
                     job.label or job.gcode, e)
                 return False
 
-        queue_mgr = QueueManager(dispatch_cb=_dispatch_job)
+        queue_mgr = QueueManager(dispatch_cb=_dispatch_job,
+                                 background_dispatch=True)
         print(f"[x2d-bridge] queue enabled; persisted at "
               f"{queue_mgr._path}", file=sys.stderr)
 
-    def make_on_state(name: str):
-        def on_state(state: dict) -> None:
-            states[name] = state
-            # Fan out to every subscriber of the per-printer hub.
-            # Slow consumers drop oldest entries; the MQTT thread
-            # never blocks.
-            hub = hubs.get(name)
-            if hub is not None:
-                try:
-                    hub.publish(state)
-                except Exception as e:
-                    print(f"[x2d-bridge] hub.publish({name}) "
-                          f"failed: {e}", file=sys.stderr)
-            if queue_mgr is not None:
-                try:
-                    queue_mgr.on_state(name, state)
-                except Exception as e:
-                    print(f"[x2d-bridge] queue.on_state({name}) "
-                          f"failed: {e}", file=sys.stderr)
-            if timelapse_rec is not None:
-                try:
-                    timelapse_rec.on_state(name, state)
-                except Exception as e:
-                    print(f"[x2d-bridge] timelapse.on_state({name}) "
-                          f"failed: {e}", file=sys.stderr)
-            if not args.quiet:
-                print(json.dumps({"ts": time.time(),
-                                  "printer": name,
-                                  "state": state}), flush=True)
-        return on_state
+    for name in names_to_run:
+        fanouts[name] = PrinterStateFanout(
+            name, hub=hubs.get(name),
+            consumers=(queue_mgr, timelapse_rec),
+            echo=not args.quiet)
 
     clients: dict[str, X2DClient] = {}
     failed: list[tuple[str, str]] = []
@@ -189,7 +239,7 @@ def cmd_daemon(args: argparse.Namespace) -> int:
             ns = _argparse.Namespace(ip=None, code=None, serial=None,
                                       printer=(name or None))
             creds = Creds.resolve(ns)
-            cli = X2DClient(creds, on_state=make_on_state(name))
+            cli = X2DClient(creds, on_state=fanouts[name])
             cli.connect()
             clients[name] = cli
             print(f"[x2d-bridge] {name or '<default>'}: connected to "
@@ -220,7 +270,8 @@ def cmd_daemon(args: argparse.Namespace) -> int:
 
     if args.http:
         def get_state(printer: str):
-            return states.get(printer)
+            fo = fanouts.get(printer)
+            return fo.snapshot if fo is not None else None
 
         def get_last_ts(printer: str):
             cli = clients.get(printer)
@@ -239,7 +290,9 @@ def cmd_daemon(args: argparse.Namespace) -> int:
                        "web_dir": _WEB_DIR_DEFAULT,
                        "queue_mgr": queue_mgr,
                        "timelapse_rec": timelapse_rec,
-                       "get_hub": get_hub},
+                       "get_hub": get_hub,
+                       "allowed_hosts": list(
+                           getattr(args, "allow_host", None) or [])},
                daemon=True).start()
 
     period = max(1, int(args.interval))
@@ -861,7 +914,8 @@ def cmd_webrtc(args: argparse.Namespace) -> int:
     return _run_webrtc(host=host, port=port,
                        camera_url=args.camera_url,
                        frame_hz=float(args.frame_hz),
-                       stun_servers=stun)
+                       stun_servers=stun,
+                       auth_token=getattr(args, "auth_token", "") or None)
 
 
 def cmd_ha_publish(args: argparse.Namespace) -> int:

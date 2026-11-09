@@ -25,11 +25,13 @@ import io
 import json
 import logging
 import os
+import subprocess
 import sys
 import tempfile
+import threading
 import time
 import zipfile
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from threading import Event, Thread
 from typing import TYPE_CHECKING, Any, Callable
@@ -48,6 +50,20 @@ from beambam.serve_http_helpers import (
     _format_prometheus_metrics,
     _write_access_log,
 )
+from beambam.http_validate import (
+    JSON_MAX_BYTES,
+    BadRequest,
+    allowed_host_names,
+    content_length,
+    get_bool,
+    get_float,
+    get_int,
+    get_optional_int,
+    get_str,
+    is_safe_slug,
+    parse_json_object,
+    request_guard_error,
+)
 from beambam.cli._helpers import _print_cmd, _system_cmd, _camera_cmd
 from beambam.http_cloud import (
     _http_cloud_login,
@@ -62,6 +78,119 @@ from beambam.http_cloud import (
 # lazy-imported inside _serve_http so the test fixtures that build a
 # server with an explicit web_dir don't need the bridge import.
 
+
+# How long POST /control/* waits for the printer's reply. Kept under the
+# Home Assistant publisher's 5 s HTTP timeout; the printer normally
+# answers within a second.
+CONTROL_REPLY_TIMEOUT_S = 4.0
+
+# /control verbs whose command the firmware always answers (print job
+# control + AMS load); silence there is an error (504). Other verbs may
+# legitimately go unanswered (202).
+_CONTROL_VERBS_THAT_REPLY = frozenset({"pause", "resume", "stop", "ams_load"})
+
+
+def _slice_print_argv(model: Path, *, printer: str, slot: int | None,
+                      bed_type: str, no_ams: bool) -> list[str]:
+    """argv for the `beambam slice-print` child of POST /slice-print.
+
+    Runs the real CLI module with this interpreter. (The route used to
+    spawn ``python serve_http.py slice-print``, which only defines
+    functions and exits 0 without doing anything, behind a 202.)
+    `slice-print` defines its own --printer, so it follows the
+    subcommand; flags left unset keep the CLI's defaults.
+    """
+    argv = [sys.executable, "-m", "beambam.cli", "slice-print", str(model),
+            "--bed-type", bed_type]
+    if printer:
+        argv += ["--printer", printer]
+    if slot is not None:
+        argv += ["--slot", str(slot)]
+    if no_ams:
+        argv.append("--no-ams")
+    return argv
+
+
+@dataclass
+class SliceJob:
+    """One `slice-print` child spawned by this daemon."""
+    pid: int
+    proc: "subprocess.Popen[bytes]"
+    log_path: Path
+    model: Path
+    started: float
+
+    def status(self) -> dict[str, Any]:
+        rc = self.proc.poll()
+        return {
+            "pid":       self.pid,
+            "state":     "running" if rc is None else "exited",
+            "exit_code": rc,
+            "ok_exit":   None if rc is None else rc == 0,
+            "started":   self.started,
+            "model":     str(self.model),
+            "log":       str(self.log_path),
+            "log_tail":  _tail_text(self.log_path),
+        }
+
+
+def _tail_text(path: Path, max_bytes: int = 4096) -> str:
+    """Last `max_bytes` of a log file, decoded leniently ("" if absent)."""
+    try:
+        with path.open("rb") as f:
+            f.seek(0, os.SEEK_END)
+            size = f.tell()
+            f.seek(max(0, size - max_bytes))
+            return f.read().decode("utf-8", errors="replace")
+    except OSError:
+        return ""
+
+
+class SliceJobRegistry:
+    """The slice-print children this server spawned, keyed by PID.
+
+    Only these PIDs are reported by GET /slice-print/jobs/<pid> (the
+    route used to report on ANY pid via /proc, which also does not exist
+    on Windows). Finished jobs beyond `keep_finished` are dropped,
+    oldest first, so the registry cannot grow without bound.
+    """
+
+    def __init__(self, keep_finished: int = 50) -> None:
+        self._jobs: dict[int, SliceJob] = {}
+        self._lock = threading.Lock()
+        self._keep = keep_finished
+
+    def spawn(self, argv: list[str], *, log_path: Path,
+              model: Path) -> SliceJob:
+        # Run from the directory that contains this `beambam` package so
+        # `-m beambam.cli` resolves to the same code as the daemon (a
+        # source checkout is not necessarily on the child's sys.path).
+        pkg_parent = Path(__file__).resolve().parents[1]
+        # The child gets its own duplicate of the log handle; the
+        # parent's copy is closed as soon as Popen returns so long-lived
+        # daemons do not leak one handle per upload.
+        with open(log_path, "wb") as log:
+            proc = subprocess.Popen(argv, stdout=log,
+                                    stderr=subprocess.STDOUT,
+                                    stdin=subprocess.DEVNULL,
+                                    cwd=str(pkg_parent), close_fds=True)
+        job = SliceJob(pid=proc.pid, proc=proc, log_path=log_path,
+                       model=model, started=time.time())
+        with self._lock:
+            self._jobs[job.pid] = job
+            self._prune()
+        return job
+
+    def get(self, pid: int) -> SliceJob | None:
+        with self._lock:
+            return self._jobs.get(pid)
+
+    def _prune(self) -> None:
+        finished = [j for j in self._jobs.values() if j.proc.poll() is not None]
+        finished.sort(key=lambda j: j.started)
+        for j in finished[:max(0, len(finished) - self._keep)]:
+            self._jobs.pop(j.pid, None)
+
 def _serve_http(bind: str,
                 get_state: Callable[[str], dict | None],
                 get_last_ts: Callable[[str], float] | None = None,
@@ -72,7 +201,8 @@ def _serve_http(bind: str,
                 web_dir: Path | None = None,
                 queue_mgr=None,
                 timelapse_rec=None,
-                get_hub: Callable[[str], "StateHub | None"] | None = None) -> None:
+                get_hub: Callable[[str], "StateHub | None"] | None = None,
+                allowed_hosts: list[str] | None = None) -> None:
     """Multi-printer HTTP server (item #36).
 
     `get_state` and `get_last_ts` now take a printer name (empty string
@@ -110,6 +240,13 @@ def _serve_http(bind: str,
     `clients` (optional) maps printer name → live X2DClient so the
     POST /control/* routes can publish without re-dialing MQTT each time.
     Without it the control routes return 503.
+
+    Every request passes `beambam.http_validate.request_guard_error`
+    first (Host allow-list against DNS rebinding; for POST: same-origin
+    Origin and a JSON / octet-stream Content-Type against cross-site
+    forgery). `allowed_hosts` adds host names beyond IP literals,
+    localhost and this machine's names. Malformed bodies and fields
+    answer 400 via `BadRequest`.
     """
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
     import urllib.parse
@@ -125,6 +262,8 @@ def _serve_http(bind: str,
         from beambam import _WEB_DIR_DEFAULT
         web_dir = _WEB_DIR_DEFAULT
     clients = clients or {}
+    host_allow = allowed_host_names(host, allowed_hosts)
+    slice_jobs = SliceJobRegistry()
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *_):  # silence default stderr access log
@@ -301,9 +440,37 @@ def _serve_http(bind: str,
                 # the worker thread terminates.
                 return
 
-        def do_GET(self):
+        # ---- request guard + error funnel ---------------------------
+        def _guard(self) -> bool:
+            """Refuse DNS-rebinding Hosts and cross-site POSTs before any
+            route (including the auth-free ones) runs."""
+            path = urllib.parse.urlparse(self.path).path
+            err = request_guard_error(self.command, path, self.headers,
+                                      host_allow)
+            if err is None:
+                return True
+            status, reason = err
+            self._send_json({"error": reason}, status=status)
+            return False
+
+        def _dispatch(self, handler: Callable[[], None]) -> None:
             self._x2d_start = time.time()
             self._x2d_printer = None
+            self._x2d_authed = None
+            if not self._guard():
+                return
+            try:
+                handler()
+            except BadRequest as e:
+                self._send_json({"error": e.message}, status=e.status)
+
+        def do_GET(self):
+            self._dispatch(self._handle_get)
+
+        def do_POST(self):
+            self._dispatch(self._handle_post)
+
+        def _handle_get(self):
             cookie_token = _parse_cookie(self.headers.get("Cookie", ""),
                                           _AUTH_COOKIE_NAME)
             self._x2d_authed = (auth_token is not None) and (
@@ -404,8 +571,7 @@ def _serve_http(bind: str,
             tl_match = re.match(
                 r"^/timelapses/([^/]+)/([^/]+)(?:/(.+))?$", path)
             if tl_match and timelapse_rec is not None:
-                printer = urllib.parse.unquote(tl_match.group(1))
-                job_id  = urllib.parse.unquote(tl_match.group(2))
+                printer, job_id = self._timelapse_ids(tl_match)
                 tail    = tl_match.group(3) or ""
                 if tail == "":
                     self._send_json({
@@ -472,7 +638,12 @@ def _serve_http(bind: str,
             if path == "/cloud/state":
                 qs = urllib.parse.parse_qs(url.query)
                 serial  = (qs.get("serial") or [""])[0] or None
-                timeout = float((qs.get("timeout") or ["15"])[0])
+                try:
+                    timeout = float((qs.get("timeout") or ["15"])[0])
+                except ValueError:
+                    raise BadRequest("timeout must be a number") from None
+                if not 0.1 <= timeout <= 120.0:
+                    raise BadRequest("timeout must be in 0.1..120 s")
                 code, payload = _http_cloud_state(serial, timeout)
                 self._send_json(payload, status=code); return
             printer = self._parse_printer()
@@ -537,39 +708,21 @@ def _serve_http(bind: str,
                 self.end_headers()
                 self.wfile.write(body)
             elif path.startswith("/slice-print/jobs/"):
-                # GET status of a spawned slice-print job.
-                # Looks at the upload dir's <stem>.log file + the PID's
-                # process status. Returns running / done(rc) / orphaned.
+                # GET status of a slice-print job THIS daemon spawned
+                # (Popen.poll — portable, no /proc). Any other PID is
+                # 404: the route never reports on processes it does not
+                # own.
                 pid_str = path[len("/slice-print/jobs/"):]
                 if not pid_str.isdigit():
-                    self.send_response(400); self.end_headers(); return
-                pid = int(pid_str)
-                # Process state via /proc (Linux only — Termux is Linux).
-                state = "unknown"
-                exit_code: int | None = None
-                proc_stat = Path(f"/proc/{pid}/stat")
-                if proc_stat.is_file():
-                    try:
-                        st = proc_stat.read_text().split()
-                        # state field is the 3rd token; R/S = running/sleep,
-                        # Z = zombie (already exited; parent is HTTP daemon
-                        # so it will reap when waitpid is called).
-                        state = "running" if st[2] in ("R", "S", "D") else "exited"
-                    except Exception:
-                        state = "unknown"
-                else:
-                    state = "exited"
-                # The full slice log lives at the `log` path returned in the
-                # spawn response; we can't bind pid -> log here without extra
-                # bookkeeping, so callers read it directly (hint below).
-                self._send_json({
-                    "ok":        True,
-                    "pid":       pid,
-                    "state":     state,
-                    "exit_code": exit_code,
-                    "log_hint":  ("Read the `log` path returned at spawn "
-                                  "time for full output."),
-                }, status=200)
+                    raise BadRequest("job id must be the numeric pid "
+                                     "returned by POST /slice-print")
+                job = slice_jobs.get(int(pid_str))
+                if job is None:
+                    self._send_json({"error": f"no slice-print job "
+                                     f"{pid_str} spawned by this daemon"},
+                                    status=404)
+                    return
+                self._send_json({"ok": True, **job.status()}, status=200)
                 return
             elif path == "/ams":
                 # Surface the AMS sub-tree of the printer's last cached
@@ -634,17 +787,46 @@ def _serve_http(bind: str,
                 self.send_response(404)
                 self.end_headers()
 
-        def _read_body_json(self) -> dict | None:
-            length = int(self.headers.get("Content-Length", "0") or "0")
-            if length <= 0:
-                return {}
-            if length > 64 * 1024:
-                return None
-            raw = self.rfile.read(length)
-            try:
-                return json.loads(raw.decode("utf-8"))
-            except (json.JSONDecodeError, UnicodeDecodeError):
-                return None
+        def _json_body(self) -> dict[str, Any]:
+            """The request body as a JSON object ({} when empty). Raises
+            BadRequest for a bad Content-Length, oversize, non-JSON or
+            non-object body."""
+            n = content_length(self.headers, JSON_MAX_BYTES)
+            raw = self.rfile.read(n) if n else b""
+            if len(raw) != n:
+                raise BadRequest(f"short body: expected {n} B, got {len(raw)}")
+            return parse_json_object(raw)
+
+        def _raw_body(self, max_bytes: int, what: str) -> bytes:
+            """A raw (octet) body of 1..max_bytes bytes, fully read."""
+            n = content_length(self.headers, max_bytes)
+            if n <= 0:
+                raise BadRequest(f"expected raw {what} body "
+                                 "(Content-Length > 0)")
+            raw = self.rfile.read(n)
+            if len(raw) != n:
+                raise BadRequest(f"short body: expected {n} B, got {len(raw)}")
+            return raw
+
+        def _timelapse_ids(self, m: "re.Match[str]") -> tuple[str, str]:
+            """Printer + job id from a /timelapses/<p>/<j> match. The
+            regex runs on the raw path, so `%2F` / `%5C` / `..` only
+            appear after decoding: both ids must be plain slugs."""
+            printer = urllib.parse.unquote(m.group(1))
+            job_id = urllib.parse.unquote(m.group(2))
+            if not (is_safe_slug(printer) and is_safe_slug(job_id)):
+                raise BadRequest("timelapse printer/job ids must match "
+                                 "[A-Za-z0-9_][A-Za-z0-9._-]*")
+            return printer, job_id
+
+        def _require_printer(self, name: str) -> str:
+            """`name` if it is a configured printer, else 400. Job
+            records and UI rows carry this string, so arbitrary text
+            (markup) must never get in."""
+            if name not in names:
+                raise BadRequest(f"unknown printer {name!r}; "
+                                 f"available: {names}")
+            return name
 
         def _send_json(self, payload: dict, status: int = 200) -> None:
             body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
@@ -654,21 +836,59 @@ def _serve_http(bind: str,
             self.end_headers()
             self.wfile.write(body)
 
-        def _publish_via_client(self, printer: str, payload: dict) -> tuple[int, dict]:
+        def _publish_via_client(self, printer: str, payload: dict, *,
+                                expect_reply: bool) -> tuple[int, dict]:
+            """Send one control command the way the CLI does
+            (beambam.commands.send_command: print.* signed with the
+            recovered key, which X2D/H2D firmware requires) and answer
+            with the printer's verdict:
+
+              200  printer acknowledged (`verified: true`)
+              409  printer refused — err_code / reason / readable cause
+              504  no reply within CONTROL_REPLY_TIMEOUT_S for a command
+                   the firmware always answers (`expect_reply`)
+              202  sent, no reply, for a command that may not answer
+              502  publish itself failed
+              503  no live client for this printer
+
+            A client that cannot observe replies (no `wait_for`, e.g. a
+            test double) gets 200 with `verified: false`.
+            """
             cli = (clients or {}).get(printer)
             if cli is None:
                 return 503, {"error": "no live MQTT client for printer "
                               f"{printer!r}; run with --http on the daemon"}
+            from beambam.commands import refusal_message, send_command
+            family = next(iter(payload))
+            command = str(payload[family].get("command", ""))
+            can_wait = callable(getattr(cli, "wait_for", None))
             try:
-                cli.publish(payload)
+                reply = send_command(
+                    cli, payload,
+                    timeout=CONTROL_REPLY_TIMEOUT_S if can_wait else 0)
             except Exception as e:
-                return 502, {"error": f"publish failed: {e}",
-                              "payload": payload}
-            return 200, {"ok": True, "printer": printer, "payload": payload}
+                return 502, {"ok": False, "error": f"publish failed: {e}",
+                              "printer": printer, "payload": payload}
+            base = {"printer": printer, "payload": payload}
+            if reply is None:
+                if not can_wait:
+                    return 200, {"ok": True, "verified": False, **base}
+                if expect_reply:
+                    return 504, {"ok": False, "verified": False,
+                                 "error": f"{family}.{command} sent; the "
+                                          "printer did not answer within "
+                                          f"{CONTROL_REPLY_TIMEOUT_S:g} s",
+                                 **base}
+                return 202, {"ok": True, "verified": False, **base}
+            verdict = {"err_code": reply.err_code, "reason": reply.reason,
+                       "sequence_id": reply.sequence_id}
+            if reply.ok:
+                return 200, {"ok": True, "verified": True,
+                             "reply": verdict, **base}
+            return 409, {"ok": False, "verified": True,
+                         "error": refusal_message(reply), **verdict, **base}
 
-        def do_POST(self):
-            self._x2d_start = time.time()
-            self._x2d_printer = None
+        def _handle_post(self):
             self._x2d_authed = (auth_token is not None) and bool(
                 self.headers.get("Authorization", "").startswith("Bearer "))
             if not _check_bearer(self, auth_token, host):
@@ -677,20 +897,24 @@ def _serve_http(bind: str,
             path = url.path
             # Item #57: AI assistant — POST chat.
             if path == "/assistant/chat":
-                body = self._read_body_json() or {}
-                msg = (body.get("message") or "").strip()
+                body = self._json_body()
+                msg = get_str(body, "message", "", max_len=4000).strip()
                 if not msg:
                     self._send_json({"error":
                         "expected {message: str, provider?: str, history?: [...]}"},
                         status=400); return
+                history = body.get("history") or []
+                if not isinstance(history, list):
+                    raise BadRequest("'history' must be a list")
                 try:
                     from runtime.assistant.router import route as _route
                 except ImportError as e:
                     self._send_json({"error": f"assistant import failed: {e}"},
                                       status=500); return
                 result = _route(msg,
-                                  provider=body.get("provider", "auto"),
-                                  history=body.get("history") or [])
+                                  provider=get_str(body, "provider", "auto",
+                                                   max_len=32),
+                                  history=history)
                 self._send_json({
                     "reply":      result.reply,
                     "provider":   result.provider,
@@ -708,23 +932,13 @@ def _serve_http(bind: str,
                 # JSON. Web UI / HA dashboards use this to surface
                 # weight / time / purge waste / per-filament usage for
                 # a file the user uploaded but hasn't sent to the
-                # printer yet. Content-Type is irrelevant — we treat
-                # the body as octet bytes and write to a tmp file.
-                length = int(self.headers.get("Content-Length", "0") or "0")
-                if length <= 0:
-                    self._send_json(
-                        {"error": "expected raw .gcode.3mf body "
-                                  "(Content-Length > 0)"}, status=400)
-                    return
+                # printer yet. The body is raw octets (the request guard
+                # requires a non-form Content-Type such as
+                # application/octet-stream) written to a tmp file.
                 # Cap body at 64 MiB — Bambu .3mf bundles are typically
                 # 1-20 MiB; anything bigger is almost certainly an
                 # attack or a misuploaded video.
-                if length > 64 * 1024 * 1024:
-                    self._send_json(
-                        {"error": f"body too large ({length} B); cap is "
-                                  "64 MiB"}, status=413)
-                    return
-                raw = self.rfile.read(length)
+                raw = self._raw_body(64 * 1024 * 1024, ".gcode.3mf")
                 import tempfile
                 from dataclasses import asdict
                 from beambam.analyze import analyze_3mf
@@ -750,31 +964,32 @@ def _serve_http(bind: str,
             tl_match = re.match(
                 r"^/timelapses/([^/]+)/([^/]+)/stitch$", path)
             if tl_match and timelapse_rec is not None:
-                printer = urllib.parse.unquote(tl_match.group(1))
-                job_id  = urllib.parse.unquote(tl_match.group(2))
-                body = self._read_body_json() or {}
-                fps = int(body.get("fps", 30))
+                printer, job_id = self._timelapse_ids(tl_match)
+                body = self._json_body()
+                fps = get_int(body, "fps", 30, lo=1, hi=120)
                 result = timelapse_rec.stitch(printer, job_id, fps=fps)
                 self._send_json(result, status=200 if result["ok"] else 500)
                 return
             # Cloud-side POST routes (item #67).
             if path == "/cloud/login":
-                body = self._read_body_json() or {}
+                body = self._json_body()
                 code, resp = _http_cloud_login(
-                    email=body.get("email") or "",
-                    password=body.get("password") or "",
-                    region=body.get("region") or None,
-                    email_code=body.get("email_code") or None,
-                    tfa_code=body.get("tfa_code") or None)
+                    email=get_str(body, "email", ""),
+                    password=get_str(body, "password", ""),
+                    region=get_str(body, "region", "", max_len=16) or None,
+                    email_code=get_str(body, "email_code", "",
+                                       max_len=32) or None,
+                    tfa_code=get_str(body, "tfa_code", "",
+                                     max_len=32) or None)
                 self._send_json(resp, status=code); return
             if path == "/cloud/logout":
                 code, resp = _http_cloud_logout()
                 self._send_json(resp, status=code); return
             if path == "/cloud/publish":
-                body = self._read_body_json() or {}
-                serial = body.get("serial") or ""
+                body = self._json_body()
+                serial = get_str(body, "serial", "", max_len=64)
                 payload = body.get("payload")
-                timeout = float(body.get("timeout", 10.0))
+                timeout = get_float(body, "timeout", 10.0, lo=0.1, hi=120.0)
                 if not serial or not isinstance(payload, dict):
                     self._send_json({"error":
                         "expected {serial: str, payload: dict, timeout?: float}"},
@@ -793,37 +1008,53 @@ def _serve_http(bind: str,
                                       status=503)
                     return
                 qverb = path[len("/queue/"):]
-                body = self._read_body_json() or {}
+                body = self._json_body()
                 if qverb == "add":
                     if "gcode" not in body:
                         self._send_json({"error":
                             "expected {gcode, printer, slot?, label?}"},
                             status=400); return
+                    from runtime.queue.manager import (
+                        JobFileError, validate_job_file)
+                    # Dispatch uploads this file verbatim: only an
+                    # existing .gcode.3mf is accepted (never e.g.
+                    # ~/.x2d/credentials).
+                    try:
+                        gcode = validate_job_file(
+                            get_str(body, "gcode", max_len=4096))
+                    except JobFileError as e:
+                        raise BadRequest(str(e)) from None
                     job = queue_mgr.add(
-                        printer=body.get("printer", ""),
-                        gcode=body["gcode"],
-                        slot=int(body.get("slot", 1)),
-                        label=body.get("label", ""))
+                        printer=self._require_printer(
+                            get_str(body, "printer", "", max_len=128)),
+                        gcode=str(gcode),
+                        # Global AMS slot, 0-based (unit*4 + tray),
+                        # as `beambam print --slot` / start_print.
+                        slot=get_int(body, "slot", 0, lo=0, hi=15),
+                        label=get_str(body, "label", "", max_len=200))
                     self._send_json({"ok": True, "job": job.to_dict()})
                     return
                 elif qverb == "cancel":
-                    job_id = body.get("id", "")
+                    job_id = get_str(body, "id", "", max_len=64)
                     ok = queue_mgr.cancel(job_id)
                     self._send_json({"ok": ok})
                     return
                 elif qverb == "remove":
-                    job_id = body.get("id", "")
+                    job_id = get_str(body, "id", "", max_len=64)
                     ok = queue_mgr.remove(job_id)
                     self._send_json({"ok": ok})
                     return
                 elif qverb == "move":
-                    job_id = body.get("id", "")
+                    job_id = get_str(body, "id", "", max_len=64)
+                    dest = body.get("dest_printer")
                     ok = queue_mgr.move(
                         job_id,
-                        dest_printer=body.get("dest_printer"),
-                        position=(body.get("position")
-                                   if body.get("position") is not None
-                                   else None))
+                        dest_printer=(None if dest is None else
+                                      self._require_printer(get_str(
+                                          body, "dest_printer",
+                                          max_len=128))),
+                        position=get_optional_int(body, "position",
+                                                  lo=0, hi=10_000))
                     self._send_json({"ok": ok})
                     return
                 self._send_json({"error": f"unknown queue verb {qverb!r}",
@@ -839,54 +1070,44 @@ def _serve_http(bind: str,
                 fname = re.sub(r"[^a-zA-Z0-9._-]", "_", fname)[:120]
                 if not fname.lower().endswith((".stl", ".3mf", ".step", ".obj")):
                     fname += ".stl"
-                cl = int(self.headers.get("Content-Length", 0))
-                if cl <= 0 or cl > 200 * 1024 * 1024:
-                    self._send_json({"error":
-                        "Content-Length must be 1..200 MiB"}, status=400)
-                    return
-                body = self.rfile.read(cl)
-                if len(body) != cl:
-                    self._send_json({"error":
-                        "short read; expected %d, got %d" % (cl, len(body))},
-                                      status=400); return
+                # Header-driven kwargs — every header is optional; all
+                # are validated BEFORE the upload is written or a
+                # process spawned.
+                printer_name = self._require_printer(
+                    self.headers.get("X-Printer") or self._parse_printer())
+                slot_hdr = (self.headers.get("X-Slot") or "").strip()
+                if slot_hdr and not (slot_hdr.isdigit()
+                                     and 0 <= int(slot_hdr) <= 15):
+                    raise BadRequest("X-Slot must be an integer 0..15")
+                bed_type = (self.headers.get("X-Bed-Type") or "auto").strip()
+                if not re.fullmatch(r"[A-Za-z0-9_.-]{1,40}", bed_type):
+                    raise BadRequest(f"bad X-Bed-Type {bed_type!r}")
+                no_ams = (self.headers.get("X-No-AMS") or "").lower() in (
+                    "1", "true", "yes", "on")
+                body = self._raw_body(200 * 1024 * 1024, "model")
                 upload_dir = config_path("uploads")
                 upload_dir.mkdir(parents=True, exist_ok=True)
                 stamped = f"{int(time.time())}_{fname}"
                 stl_path = upload_dir / stamped
                 stl_path.write_bytes(body)
-                # Header-driven kwargs — every header is optional.
-                printer_name = (self.headers.get("X-Printer")
-                                 or self._parse_printer())
-                slot = int(self.headers.get("X-Slot") or 1)
-                bed_type = self.headers.get("X-Bed-Type") or "auto"
-                no_ams = (self.headers.get("X-No-AMS") or "").lower() in (
-                    "1", "true", "yes", "on")
-                # Resolve our own argv0 to allow distro/dev installs.
-                cmd_argv = [sys.executable, str(Path(__file__).resolve()),
-                            "slice-print", str(stl_path),
-                            "--printer", printer_name,
-                            "--slot",    str(slot),
-                            "--bed-type", bed_type]
-                if no_ams:
-                    cmd_argv.append("--no-ams")
+                cmd_argv = _slice_print_argv(
+                    stl_path, printer=printer_name,
+                    slot=int(slot_hdr) if slot_hdr else None,
+                    bed_type=bed_type, no_ams=no_ams)
                 log_path = upload_dir / (stl_path.stem + ".log")
-                import subprocess as _sp
                 try:
-                    proc = _sp.Popen(
-                        cmd_argv,
-                        stdout=open(log_path, "wb"),
-                        stderr=_sp.STDOUT,
-                        close_fds=True)
+                    job = slice_jobs.spawn(cmd_argv, log_path=log_path,
+                                           model=stl_path)
                 except OSError as e:
                     self._send_json({"error": f"spawn failed: {e}"},
                                       status=500); return
                 self._send_json({
                     "ok":     True,
-                    "job_id": proc.pid,
+                    "job_id": job.pid,
                     "stl":    str(stl_path),
                     "log":    str(log_path),
                     "status": "spawned",
-                    "poll":   f"/slice-print/jobs/{proc.pid}",
+                    "poll":   f"/slice-print/jobs/{job.pid}",
                 }, status=202)
                 return
             verb = path[len("/control/"):]
@@ -896,11 +1117,7 @@ def _serve_http(bind: str,
                 self._send_json({"error": f"unknown printer {printer!r}",
                                   "available": names}, status=404)
                 return
-            body = self._read_body_json()
-            if body is None:
-                self._send_json({"error": "body must be JSON ≤64 KiB"},
-                                  status=400)
-                return
+            body = self._json_body()
             if verb == "pause":
                 payload = _print_cmd("pause", param="")
             elif verb == "resume":
@@ -908,48 +1125,59 @@ def _serve_http(bind: str,
             elif verb == "stop":
                 payload = _print_cmd("stop", param="")
             elif verb == "light":
-                state = (body or {}).get("state", "")
+                state = body.get("state", "")
                 if state not in ("on", "off", "flashing"):
                     self._send_json({"error":
                         "state must be on/off/flashing"}, status=400)
                     return
                 payload = _system_cmd(
                     "ledctrl", led_node="chamber_light", led_mode=state,
-                    led_on_time=int(body.get("on_time", 500)),
-                    led_off_time=int(body.get("off_time", 500)),
-                    loop_times=int(body.get("loops", 0)),
-                    interval_time=int(body.get("interval", 0)))
+                    led_on_time=get_int(body, "on_time", 500,
+                                        lo=0, hi=60_000),
+                    led_off_time=get_int(body, "off_time", 500,
+                                         lo=0, hi=60_000),
+                    loop_times=get_int(body, "loops", 0, lo=0, hi=10_000),
+                    interval_time=get_int(body, "interval", 0,
+                                          lo=0, hi=60_000))
             elif verb == "temp":
-                target = (body or {}).get("target", "")
+                target = body.get("target", "")
                 value = body.get("value")
                 if target not in ("bed", "nozzle", "chamber") \
+                        or isinstance(value, bool) \
                         or not isinstance(value, (int, float)):
                     self._send_json({"error":
                         "expected target=bed|nozzle|chamber + value=int"},
                                       status=400)
                     return
+                temp = int(get_float(body, "value", lo=0, hi=400))
                 if target == "bed":
-                    payload = _print_cmd("set_bed_temp", temp=int(value))
+                    payload = _print_cmd("set_bed_temp", temp=temp)
                 elif target == "nozzle":
                     payload = _print_cmd(
                         "set_nozzle_temp",
-                        extruder_index=int(body.get("idx", 0)),
-                        target_temp=int(value))
+                        extruder_index=get_int(body, "idx", 0, lo=0, hi=1),
+                        target_temp=temp)
                 else:  # chamber
                     payload = _print_cmd(
-                        "gcode_line", param=f"M141 S{int(value)}\n")
+                        "gcode_line", param=f"M141 S{temp}\n")
             elif verb == "ams_load":
                 slot = body.get("slot")
-                if not isinstance(slot, int) or not 1 <= slot <= 16:
+                if isinstance(slot, bool) or not isinstance(slot, int) \
+                        or not 1 <= slot <= 16:
                     self._send_json({"error":
                         "slot must be int 1..16"}, status=400)
                     return
-                # MachineObject::command_ams_change_filament — DeviceManager.cpp:1700
-                payload = _print_cmd(
-                    "ams_change_filament",
-                    target=int(slot) - 1,         # 0-indexed in mqtt
-                    curr_temp=int(body.get("curr_temp", 215)),
-                    tar_temp=int(body.get("tar_temp", 215)))
+                # The UI labels trays 1..16; the printer wants the AMS
+                # unit + tray. Same builder as `beambam ams-load` (Bambu
+                # Studio's command_ams_change_filament shape: ams_id,
+                # slot_id, target with the tray-0 special case) instead
+                # of the old bare target=slot-1.
+                from beambam.commands import ams_load_payload
+                global_slot = int(slot) - 1
+                payload = ams_load_payload(
+                    global_slot // 4, global_slot % 4,
+                    curr_temp=get_int(body, "curr_temp", 215, lo=0, hi=400),
+                    tar_temp=get_int(body, "tar_temp", 215, lo=0, hi=400))
             elif verb == "ams_set":
                 # Push tray_info_idx + nozzle range + color to a single
                 # AMS slot. UI sends raw fields (no profile loading on
@@ -958,33 +1186,37 @@ def _serve_http(bind: str,
                 # NOT the 1..16 UI labeling used by ams_load.
                 from beambam.ams import build_tray_metadata_payload
                 slot = body.get("slot")
-                if not isinstance(slot, int) or not 0 <= slot <= 15:
+                if isinstance(slot, bool) or not isinstance(slot, int) \
+                        or not 0 <= slot <= 15:
                     self._send_json({"error":
                         "slot must be int 0..15"}, status=400)
                     return
                 try:
                     payload = build_tray_metadata_payload(
                         slot,
-                        tray_type=str(body.get("tray_type", "PLA")),
-                        tray_info_idx=str(body.get("tray_info_idx",
-                                                    "GFL99")),
-                        nozzle_temp_min=int(body.get("nozzle_temp_min",
-                                                       190)),
-                        nozzle_temp_max=int(body.get("nozzle_temp_max",
-                                                       240)),
-                        tray_color=(body.get("tray_color") or None),
-                        setting_id=(body.get("setting_id") or None),
+                        tray_type=get_str(body, "tray_type", "PLA",
+                                          max_len=32),
+                        tray_info_idx=get_str(body, "tray_info_idx",
+                                              "GFL99", max_len=32),
+                        nozzle_temp_min=get_int(body, "nozzle_temp_min",
+                                                190, lo=0, hi=400),
+                        nozzle_temp_max=get_int(body, "nozzle_temp_max",
+                                                240, lo=0, hi=400),
+                        tray_color=(get_str(body, "tray_color", "",
+                                            max_len=16) or None),
+                        setting_id=(get_str(body, "setting_id", "",
+                                            max_len=64) or None),
                     )
                 except (ValueError, TypeError) as e:
                     self._send_json({"error": f"bad input: {e}"},
                                       status=400)
                     return
-                if body.get("dry_run"):
+                if get_bool(body, "dry_run"):
                     self._send_json({"ok": True, "dry_run": True,
                                       "payload": payload})
                     return
             elif verb == "gcode":
-                line = (body or {}).get("line", "")
+                line = body.get("line", "")
                 if not isinstance(line, str) or not line.strip():
                     self._send_json({"error":
                         "expected {\"line\": \"<g-code>\"}"}, status=400)
@@ -996,7 +1228,7 @@ def _serve_http(bind: str,
                 # ha-bambulab parity: prompt-sound switch. Bambu's
                 # firmware accepts `print:print_option` with a
                 # `sound_enable` bit; expose as a simple on/off.
-                state = (body or {}).get("state", "")
+                state = body.get("state", "")
                 if state not in ("on", "off", "ON", "OFF", True, False):
                     self._send_json({"error":
                         "state must be on/off"}, status=400)
@@ -1011,7 +1243,9 @@ def _serve_http(bind: str,
                                                 "ams_set", "gcode", "sound"]},
                                   status=404)
                 return
-            status, resp = self._publish_via_client(printer, payload)
+            status, resp = self._publish_via_client(
+                printer, payload,
+                expect_reply=verb in _CONTROL_VERBS_THAT_REPLY)
             self._send_json(resp, status=status)
 
     server = ThreadingHTTPServer((host, port), Handler)

@@ -22,9 +22,29 @@ lookups inside its Handler class continue to resolve unchanged.
 from __future__ import annotations
 
 import json
+import re
 import threading
 import time
 from typing import Any
+
+# Keys whose values are credentials. Bambu's bind list carries every
+# printer's LAN `dev_access_code` (the MQTT/FTPS password); the daemon's
+# HTTP surface is readable by anything that can reach it, so these are
+# stripped from every cloud payload it returns.
+_SECRET_KEY_RE = re.compile(
+    r"(access_?code|token|password|passwd|secret|ticket|private_?key|"
+    r"credential|session_?key)", re.IGNORECASE)
+
+
+def _redact_secrets(value: Any) -> Any:
+    """Copy of `value` with every dict key that names a credential
+    removed, recursively (lists and nested dicts included)."""
+    if isinstance(value, dict):
+        return {k: _redact_secrets(v) for k, v in value.items()
+                if not (isinstance(k, str) and _SECRET_KEY_RE.search(k))}
+    if isinstance(value, list):
+        return [_redact_secrets(v) for v in value]
+    return value
 
 
 def _http_cloud_login(*, email: str, password: str,
@@ -81,7 +101,7 @@ def _http_cloud_login(*, email: str, password: str,
             return 200, {"requires_tfa": True,
                          "hint": "TOTP required; re-POST with tfa_code"}
         return 401, {"error": f"login failed: {e}",
-                     "status": e.status, "body": e.body}
+                     "status": e.status, "body": _redact_secrets(e.body)}
     except Exception as e:
         return 500, {"error": f"login crashed: {e}"}
     return 200, {
@@ -135,7 +155,9 @@ def _http_cloud_printers() -> tuple[int, dict[str, Any]]:
                      "hint": ("POST /cloud/login or run cloud-login "
                               "first")}
     try:
-        return 200, {"printers": cli.get_bound_devices()}
+        # Never hand out the printers' LAN access codes (or any other
+        # credential field) over HTTP.
+        return 200, {"printers": _redact_secrets(cli.get_bound_devices())}
     except cloud_client.CloudError as e:
         return 502, {"error": f"cloud API failed: {e}",
                      "status": e.status, "body": e.body}

@@ -15,8 +15,20 @@ per-printer state callback. Lifecycle:
 `stitch(printer, job_id)` runs ffmpeg to encode all frames into
 ``timelapse.mp4`` at 30 fps using H.264.
 
+Only reports that carry ``print.gcode_state`` move the lifecycle: the
+printer also sends partial deltas and command replies (a light toggle's
+reply used to read as "not printing" and end the capture). The daemon
+passes its merged per-printer state.
+
+On disk and in the HTTP API a printer is a slug: the unnamed default
+printer is ``_default`` (it used to be the empty string, which put its
+jobs directly under the root where `list_jobs` never looked; such a
+legacy layout is migrated on start), a named printer is its name with
+anything outside ``[A-Za-z0-9._-]`` replaced by ``_``. Printer and job
+ids from a URL must be plain slugs and resolve inside the root.
+
 The HTTP / web UI surface (browser, thumbnails, stitch button,
-inline player) is wired from `_serve_http` in x2d_bridge.py.
+inline player) is wired from `beambam.serve_http._serve_http`.
 """
 
 from __future__ import annotations
@@ -40,6 +52,12 @@ from beambam.paths import config_path
 LOG = logging.getLogger("x2d.timelapse")
 
 _DEFAULT_DIR = config_path("timelapses")
+
+# Directory / URL slug of the unnamed default printer ("" in the daemon).
+DEFAULT_PRINTER_SLUG = "_default"
+
+# A plain path component: no separators, no leading dot ("..", ".x").
+_SLUG_RE = re.compile(r"[A-Za-z0-9_][A-Za-z0-9._-]{0,119}")
 
 
 @dataclass
@@ -72,8 +90,24 @@ def _is_print_active(state: dict | None) -> bool:
 
 def _safe_id(name: str) -> str:
     """File-system-safe slug for a job_id (subtask_name often has
-    spaces, slashes, or non-ASCII)."""
-    return re.sub(r"[^A-Za-z0-9._-]", "_", name)[:120] or "job"
+    spaces, slashes, or non-ASCII). Never starts with a dot."""
+    slug = re.sub(r"[^A-Za-z0-9._-]", "_", name)[:120]
+    if slug.startswith("."):
+        slug = "_" + slug[1:]
+    return slug or "job"
+
+
+def printer_slug(printer: str) -> str:
+    """Directory / URL name of a printer: ``_default`` for the unnamed
+    default printer ("" or already ``_default``), else a safe slug."""
+    if printer in ("", DEFAULT_PRINTER_SLUG):
+        return DEFAULT_PRINTER_SLUG
+    return _safe_id(printer)
+
+
+def _has_gcode_state(state: dict | None) -> bool:
+    p = state.get("print") if isinstance(state, dict) else None
+    return isinstance(p, dict) and bool(p.get("gcode_state"))
 
 
 class _Capture:
@@ -81,13 +115,14 @@ class _Capture:
 
     def __init__(self, root: Path, printer: str, job_id: str,
                  subtask_name: str, snapshot_url: str,
-                 interval_s: float):
+                 interval_s: float, auth_token: str | None = None):
         self.root = root
         self.printer = printer
         self.job_id = job_id
-        self.dir = root / printer / job_id
+        self.dir = root / printer_slug(printer) / job_id
         self.snapshot_url = snapshot_url
         self.interval_s = interval_s
+        self.auth_token = auth_token
         self._stop = threading.Event()
         self.frame_count = 0
         self.dir.mkdir(parents=True, exist_ok=True)
@@ -110,6 +145,11 @@ class _Capture:
         while not self._stop.is_set():
             try:
                 req = urllib.request.Request(self.snapshot_url)
+                if self.auth_token:
+                    # The daemon's own /snapshot.jpg is behind the same
+                    # Bearer gate as every route when --auth-token is set.
+                    req.add_header("Authorization",
+                                   f"Bearer {self.auth_token}")
                 with urllib.request.urlopen(req, timeout=8) as r:
                     if r.status == 200:
                         data = r.read()
@@ -141,16 +181,62 @@ class TimelapseRecorder:
     def __init__(self, *,
                  snapshot_url: str,
                  root: Path | None = None,
-                 interval_s: float = 30.0) -> None:
+                 interval_s: float = 30.0,
+                 auth_token: str | None = None) -> None:
         self.snapshot_url = snapshot_url
         self.root = root or _DEFAULT_DIR
         self.interval_s = interval_s
+        self.auth_token = auth_token or None
         self.root.mkdir(parents=True, exist_ok=True)
         self._lock = threading.Lock()
         # printer → active _Capture (or None)
         self._active: dict[str, _Capture] = {}
+        self._migrate_legacy_default()
+
+    def _migrate_legacy_default(self) -> None:
+        """Move jobs recorded for the default printer under the old
+        layout (``<root>/<job>/meta.json``, because the printer name was
+        "") into ``<root>/_default/<job>/``."""
+        dest_root = self.root / DEFAULT_PRINTER_SLUG
+        try:
+            entries = sorted(self.root.iterdir())
+        except OSError:
+            return
+        for d in entries:
+            if not d.is_dir() or d.name == DEFAULT_PRINTER_SLUG \
+                    or not (d / "meta.json").is_file():
+                continue
+            dest_root.mkdir(exist_ok=True)
+            target = dest_root / d.name
+            n = 1
+            while target.exists():
+                n += 1
+                target = dest_root / f"{d.name}_{n}"
+            try:
+                d.rename(target)
+                LOG.info("migrated legacy timelapse %s → %s", d, target)
+            except OSError as e:
+                LOG.warning("could not migrate legacy timelapse %s: %s", d, e)
+
+    def _job_dir(self, printer: str, job_id: str) -> Path | None:
+        """``<root>/<printer slug>/<job_id>`` when both ids are plain
+        slugs and the path resolves inside the root; else None. Ids come
+        from URLs (already percent-decoded, so ``%2F`` arrives as "/")."""
+        slug = printer_slug(printer) if printer == "" else printer
+        if not (_SLUG_RE.fullmatch(slug) and _SLUG_RE.fullmatch(job_id)):
+            return None
+        d = self.root / slug / job_id
+        try:
+            d.resolve().relative_to(self.root.resolve())
+        except (ValueError, OSError):
+            return None
+        return d
 
     def on_state(self, printer: str, state: dict | None) -> None:
+        """Start/stop the printer's capture from a (merged) report.
+        Messages without ``print.gcode_state`` are ignored."""
+        if not _has_gcode_state(state):
+            return
         active = _is_print_active(state)
         with self._lock:
             cap = self._active.get(printer)
@@ -164,11 +250,12 @@ class TimelapseRecorder:
                 # ran today already.
                 base = job_id
                 n = 1
-                while (self.root / printer / job_id).exists():
+                while (self.root / printer_slug(printer) / job_id).exists():
                     n += 1
                     job_id = f"{base}_{n}"
                 cap = _Capture(self.root, printer, job_id, subtask,
-                                self.snapshot_url, self.interval_s)
+                                self.snapshot_url, self.interval_s,
+                                auth_token=self.auth_token)
                 cap.start()
                 self._active[printer] = cap
             elif (not active) and cap is not None:
@@ -177,6 +264,8 @@ class TimelapseRecorder:
 
     # --- listing for the HTTP API -------------------------------------
     def list_jobs(self) -> list[dict]:
+        """Every recorded job. ``printer`` is the printer's slug (what the
+        URLs take; ``_default`` for the unnamed printer)."""
         out: list[dict] = []
         if not self.root.exists():
             return out
@@ -192,6 +281,8 @@ class TimelapseRecorder:
                         meta = json.loads(meta_path.read_text())
                     except (json.JSONDecodeError, OSError):
                         continue
+                    if not isinstance(meta, dict):
+                        continue
                     meta["printer"] = printer_dir.name
                     meta["job_id"] = job_dir.name
                     meta["mp4_ready"] = (job_dir / "timelapse.mp4").exists()
@@ -202,8 +293,8 @@ class TimelapseRecorder:
         return out
 
     def list_frames(self, printer: str, job_id: str) -> list[str]:
-        d = self.root / printer / job_id
-        if not d.exists():
+        d = self._job_dir(printer, job_id)
+        if d is None or not d.is_dir():
             return []
         return sorted(p.name for p in d.iterdir()
                       if p.suffix.lower() == ".jpg" and p.stem.isdigit())
@@ -211,20 +302,18 @@ class TimelapseRecorder:
     def frame_path(self, printer: str, job_id: str, frame: str) -> Path | None:
         if not re.fullmatch(r"\d{1,8}\.jpg", frame):
             return None
-        p = self.root / printer / job_id / frame
-        try:
-            p.resolve().relative_to(self.root.resolve())
-        except (ValueError, OSError):
+        d = self._job_dir(printer, job_id)
+        if d is None:
             return None
-        return p if p.exists() else None
+        p = d / frame
+        return p if p.is_file() else None
 
     def mp4_path(self, printer: str, job_id: str) -> Path | None:
-        p = self.root / printer / job_id / "timelapse.mp4"
-        try:
-            p.resolve().relative_to(self.root.resolve())
-        except (ValueError, OSError):
+        d = self._job_dir(printer, job_id)
+        if d is None:
             return None
-        return p if p.exists() else None
+        p = d / "timelapse.mp4"
+        return p if p.is_file() else None
 
     def stitch(self, printer: str, job_id: str, fps: int = 30) -> dict:
         """Run ffmpeg over the captured frames → timelapse.mp4 in the
@@ -234,8 +323,8 @@ class TimelapseRecorder:
         if shutil.which("ffmpeg") is None:
             return {"ok": False, "error": "ffmpeg not in PATH",
                     "frames": 0, "size": 0}
-        d = self.root / printer / job_id
-        if not d.exists():
+        d = self._job_dir(printer, job_id)
+        if d is None or not d.is_dir():
             return {"ok": False, "error": "job not found",
                     "frames": 0, "size": 0}
         frames = self.list_frames(printer, job_id)

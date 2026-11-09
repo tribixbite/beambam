@@ -13,6 +13,7 @@ the JSON-RPC channel.
 
 from __future__ import annotations
 
+import argparse
 import base64
 import json
 import os
@@ -22,6 +23,7 @@ import sys
 import time
 import traceback
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import Any, Callable
@@ -39,35 +41,67 @@ DAEMON_HTTP = os.environ.get("X2D_DAEMON_HTTP", "http://127.0.0.1:8765")
 DAEMON_AUTH = os.environ.get("X2D_DAEMON_TOKEN", "")
 CALL_TIMEOUT_S = float(os.environ.get("X2D_MCP_CALL_TIMEOUT", "30"))
 
-PROTOCOL_VERSION = "2025-06-18"
-SERVER_NAME = "x2d-bridge"
-SERVER_VERSION = "0.1.0"
+# MCP protocol revisions this server speaks, newest first. `initialize`
+# echoes the client's requested revision when it is one of these and
+# otherwise answers with the newest (the spec's negotiation rule).
+SUPPORTED_PROTOCOL_VERSIONS: tuple[str, ...] = (
+    "2025-06-18",
+    "2025-03-26",
+    "2024-11-05",
+)
+PROTOCOL_VERSION = SUPPORTED_PROTOCOL_VERSIONS[0]
+SERVER_NAME = "beambam"
+
+
+def _server_version() -> str:
+    try:
+        from beambam._version import PACKAGE_VERSION
+    except Exception:                    # pragma: no cover - broken install
+        return "0.0.0+unknown"
+    return str(PACKAGE_VERSION)
+
+
+SERVER_VERSION = _server_version()
 
 
 # ---------------------------------------------------------------------------
 # Tool catalogue
 # ---------------------------------------------------------------------------
 
-def _printer_arg(args: dict) -> list[str]:
+def _creds(args: dict) -> list[str]:
+    """Top-level `--printer NAME` for the bridge CLI.
+
+    `--printer` (like `--ip/--code/--serial`) is defined on the CLI's
+    top-level parser only, so it must come BEFORE the subcommand:
+    `beambam --printer lab status`. Placed after the subcommand, argparse
+    rejected it and every printer-targeted tool call failed.
+    """
     p = args.get("printer")
     return ["--printer", str(p)] if p else []
 
 
-def _serial_arg(args: dict) -> list[str]:
-    s = args.get("serial")
-    return ["--serial", str(s)] if s else []
+def _cmd(args: dict, *argv: str) -> list[str]:
+    """argv for one printer-targeted CLI call: creds, then subcommand."""
+    return _creds(args) + list(argv)
 
 
-def _ip_arg(args: dict) -> list[str]:
-    return ["--ip", str(args["ip"])] if args.get("ip") else []
+def _global_slot(args: dict, key: str = "slot") -> tuple[str, str]:
+    """Split a global AMS slot (unit*4 + tray, 0..15) into the CLI's
+    `ams slot` positionals."""
+    slot = int(args[key])
+    if not 0 <= slot <= 15:
+        raise _ToolError(f"{key} must be 0..15 (unit*4 + tray), got {slot}")
+    return str(slot // 4), str(slot % 4)
 
 
-def _code_arg(args: dict) -> list[str]:
-    return ["--code", str(args["code"])] if args.get("code") else []
-
-
-def _common_creds(args: dict) -> list[str]:
-    return _printer_arg(args) + _ip_arg(args) + _code_arg(args) + _serial_arg(args)
+def _print_slots(args: dict) -> list[str]:
+    """`--slot` for `beambam print`: global slot(s), one per filament,
+    comma-separated (an integer is one slot)."""
+    if args.get("slot") is None:
+        return []
+    raw = args["slot"]
+    text = str(int(raw)) if isinstance(raw, (int, float)) else str(raw)
+    return ["--slot", text]
 
 
 _PRINTER_PROP = {
@@ -106,7 +140,7 @@ def _build(name: str,
 TOOLS: list[dict] = [
     _build("status",
            "Fetch the latest printer state JSON (temps, AMS, print job, lights).",
-           lambda a: ["status"] + _common_creds(a)),
+           lambda a: _cmd(a, "status")),
 
     _build("list_printers",
            "List every [printer] / [printer:NAME] section configured in "
@@ -115,27 +149,27 @@ TOOLS: list[dict] = [
 
     _build("pause",
            "Pause the current print.",
-           lambda a: ["pause"] + _common_creds(a)),
+           lambda a: _cmd(a, "pause")),
 
     _build("resume",
            "Resume a paused print.",
-           lambda a: ["resume"] + _common_creds(a)),
+           lambda a: _cmd(a, "resume")),
 
     _build("stop",
            "Abort the current print (cannot be resumed).",
-           lambda a: ["stop"] + _common_creds(a)),
+           lambda a: _cmd(a, "stop")),
 
     _build("home",
            "Home all axes (G28).",
-           lambda a: ["home"] + _common_creds(a)),
+           lambda a: _cmd(a, "home")),
 
     _build("level",
            "Run auto bed-level (G29).",
-           lambda a: ["level"] + _common_creds(a)),
+           lambda a: _cmd(a, "level")),
 
     _build("gcode",
            "Send a single arbitrary G-code line to the printer.",
-           lambda a: ["gcode", a["line"]] + _common_creds(a),
+           lambda a: _cmd(a, "gcode", str(a["line"])),
            extra_props={
                "line": {"type": "string",
                         "description": "G-code line, e.g. 'M104 S210' or 'G1 X10'"},
@@ -144,9 +178,9 @@ TOOLS: list[dict] = [
 
     _build("set_temp",
            "Set a heater target temperature.",
-           lambda a: (["set-temp", a["target"], str(int(a["value"]))]
-                      + (["--idx", str(int(a["idx"]))] if "idx" in a else [])
-                      + _common_creds(a)),
+           lambda a: (_cmd(a, "set-temp", str(a["target"]),
+                           str(int(a["value"])))
+                      + (["--idx", str(int(a["idx"]))] if "idx" in a else [])),
            extra_props={
                "target": {"type": "string",
                           "enum": ["bed", "nozzle", "chamber"],
@@ -160,11 +194,10 @@ TOOLS: list[dict] = [
 
     _build("chamber_light",
            "Control the chamber LED (on / off / flashing).",
-           lambda a: (["chamber-light", a["state"]]
+           lambda a: (_cmd(a, "chamber-light", str(a["state"]))
                       + (["--on-time", str(int(a["on_time"]))] if "on_time" in a else [])
                       + (["--off-time", str(int(a["off_time"]))] if "off_time" in a else [])
-                      + (["--loops", str(int(a["loops"]))] if "loops" in a else [])
-                      + _common_creds(a)),
+                      + (["--loops", str(int(a["loops"]))] if "loops" in a else [])),
            extra_props={
                "state": {"type": "string",
                          "enum": ["on", "off", "flashing"]},
@@ -176,22 +209,28 @@ TOOLS: list[dict] = [
 
     _build("ams_unload",
            "Eject filament from the AMS feed-tube back to the spool.",
-           lambda a: ["ams-unload"] + _common_creds(a)),
+           lambda a: _cmd(a, "ams-unload", str(int(a.get("ams", 0)))),
+           extra_props={
+               "ams": {"type": "integer", "minimum": 0,
+                       "description": "AMS unit index (0 = first unit; "
+                                      "default 0)."},
+           }),
 
     _build("ams_load",
            "Load filament from a specific AMS slot.",
-           lambda a: (["ams-load", "--slot", str(int(a["slot"]))]
-                      + _common_creds(a)),
+           lambda a: _cmd(a, "ams-load", *_global_slot(a)),
            extra_props={
-               "slot": {"type": "integer",
-                        "description": "AMS slot, 1-4 indexed."},
+               "slot": {"type": "integer", "minimum": 0, "maximum": 15,
+                        "description": "Global AMS slot: unit*4 + tray, "
+                                       "0..15 (0 = first tray of the "
+                                       "first unit)."},
            },
            required=["slot"]),
 
     _build("jog",
            "Jog one axis by a relative distance (mm).",
-           lambda a: (["jog", "--axis", a["axis"], "--distance", str(a["distance"])]
-                      + _common_creds(a)),
+           lambda a: _cmd(a, "jog", str(a["axis"]).upper(),
+                          f"{float(a['distance']):g}"),
            extra_props={
                "axis": {"type": "string",
                         "enum": ["x", "y", "z", "e"]},
@@ -203,7 +242,7 @@ TOOLS: list[dict] = [
     _build("upload",
            "Upload a sliced .gcode.3mf to the printer's SD card "
            "(does NOT start the print).",
-           lambda a: (["upload", a["path"]] + _common_creds(a)),
+           lambda a: _cmd(a, "upload", str(a["path"])),
            extra_props={
                "path": {"type": "string",
                         "description": "Local path to .gcode.3mf"},
@@ -211,12 +250,18 @@ TOOLS: list[dict] = [
            required=["path"]),
 
     _build("print",
-           "Upload + start a print on the given AMS slot.",
-           lambda a: (["print", a["path"], "--slot", str(int(a.get("slot", 1)))]
-                      + _common_creds(a)),
+           "Upload + start a print. The printer must be idle (the CLI "
+           "refuses a busy printer).",
+           lambda a: _cmd(a, "print", str(a["path"])) + _print_slots(a),
            extra_props={
-               "path": {"type": "string"},
-               "slot": {"type": "integer", "description": "AMS slot, default 1"},
+               "path": {"type": "string",
+                        "description": "Local path to a sliced .gcode.3mf"},
+               "slot": {"type": ["integer", "string"],
+                        "description": "Global AMS slot(s), unit*4 + tray "
+                                       "(0..15): one integer, or one per "
+                                       "filament the plate uses, comma-"
+                                       "separated in filament order "
+                                       "(e.g. \"4,0,12\")."},
            },
            required=["path"]),
 
@@ -256,17 +301,17 @@ TOOLS: list[dict] = [
            "filament type, tray_info_idx, humidity level, remaining %, and "
            "active-feed marker. Use this to answer 'what's loaded?' questions "
            "without parsing the raw state JSON.",
-           lambda a: ["ams", "status", "--json"] + _common_creds(a)),
+           lambda a: _cmd(a, "ams", "status", "--json")),
 
     _build("ams_tray_info",
            "Detailed info for a single AMS tray by global slot (unit*4 + tray, "
            "0..15): color, filament type/sub-brand, tray_info_idx, nozzle "
            "temp range, bed temp + type, drying temp/time, remaining %, RFID "
            "tag UID, current state.",
-           lambda a: (["ams", "info", str(int(a["slot"])), "--no-color"]
-                       + _common_creds(a)),
+           lambda a: _cmd(a, "ams", "info", str(int(a["slot"])),
+                          "--no-color"),
            extra_props={
-               "slot": {"type": "integer",
+               "slot": {"type": "integer", "minimum": 0, "maximum": 15,
                         "description": "Global slot 0..15 (unit*4 + tray)"},
            },
            required=["slot"]),
@@ -277,14 +322,14 @@ TOOLS: list[dict] = [
            "wifi RSSI thresholds, camera state, print state surfacing. "
            "Returns a list of {category, name, severity, detail} dicts. "
            "Severity is one of pass/warn/fail/info.",
-           lambda a: ["doctor", "--json"] + _common_creds(a)),
+           lambda a: _cmd(a, "doctor", "--json")),
 
     _build("download",
            "Pull a file off the printer's SD card via FTPS. Use this for "
            "/cache/<filename>.gcode.3mf (the just-sent print), /timelapse/... "
            "(stored videos), or any path returned by the `files` tool.",
-           lambda a: (["download", a["remote_path"], a["local_path"]]
-                       + _common_creds(a)),
+           lambda a: _cmd(a, "download", str(a["remote_path"]),
+                          str(a["local_path"])),
            extra_props={
                "remote_path": {"type": "string",
                                "description": "Path on the printer's SD"},
@@ -407,17 +452,26 @@ def _err(req_id: Any, code: int, message: str, data: Any = None) -> dict:
     return {"jsonrpc": "2.0", "id": req_id, "error": err}
 
 
-def _initialize(_params: dict) -> dict:
+def _negotiate_version(requested: Any) -> str:
+    """The spec's rule: echo the client's revision when we support it,
+    otherwise answer with our newest and let the client decide."""
+    if isinstance(requested, str) and requested in SUPPORTED_PROTOCOL_VERSIONS:
+        return requested
+    return PROTOCOL_VERSION
+
+
+def _initialize(params: dict) -> dict:
     return {
-        "protocolVersion": PROTOCOL_VERSION,
+        "protocolVersion": _negotiate_version(params.get("protocolVersion")),
         "serverInfo": {
             "name": SERVER_NAME,
             "version": SERVER_VERSION,
         },
+        # Only what this server implements: there is no logging/setLevel
+        # handler, so the `logging` capability is not advertised.
         "capabilities": {
             "tools": {"listChanged": False},
             "resources": {"subscribe": False, "listChanged": False},
-            "logging": {},
         },
         "instructions":
             "X2D printer control bridge. Use the `status` tool to read "
@@ -455,7 +509,10 @@ def _call_tool(params: dict) -> dict:
     if name == "camera_snapshot":
         return _camera_snapshot()
     if name == "healthz":
-        return _http_text_tool("/healthz")
+        printer = arguments.get("printer")
+        query = ("?printer=" + urllib.parse.quote(str(printer))
+                 if printer else "")
+        return _http_text_tool("/healthz" + query)
     if name == "metrics":
         return _http_text_tool("/metrics", accept="text/plain")
     argv = tool["argv"](arguments)
@@ -577,9 +634,15 @@ class _ToolError(Exception):
 def _handle(message: dict) -> dict | None:
     """Dispatch one JSON-RPC message; return the response (or None if
     notification)."""
+    if not isinstance(message, dict):
+        # Batches / scalars are not supported (MCP dropped JSON-RPC
+        # batching in 2025-06-18).
+        return _err(None, -32600, "request must be a JSON object")
     req_id = message.get("id")
     method = message.get("method")
     params = message.get("params") or {}
+    if not isinstance(params, dict):
+        return _err(req_id, -32602, "params must be an object")
     is_notification = "id" not in message
 
     if not method:
@@ -608,8 +671,9 @@ def serve_stdio(stdin=None, stdout=None) -> int:
     stdin = stdin or sys.stdin
     stdout = stdout or sys.stdout
     bridge_label = str(BRIDGE_PATH) if BRIDGE_PATH else "python -m beambam.cli"
-    print(f"[mcp] x2d-bridge MCP server up (bridge={bridge_label}, "
-          f"daemon={DAEMON_HTTP})", file=sys.stderr, flush=True)
+    print(f"[mcp] {SERVER_NAME} MCP server {SERVER_VERSION} up "
+          f"(bridge={bridge_label}, daemon={DAEMON_HTTP})",
+          file=sys.stderr, flush=True)
     while True:
         line = stdin.readline()
         if not line:
@@ -630,7 +694,27 @@ def serve_stdio(stdin=None, stdout=None) -> int:
     return 0
 
 
-def main() -> int:
+def _arg_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(
+        prog="beambam-mcp",
+        description="MCP (Model Context Protocol) stdio server for "
+                    "beambam: exposes printer status/control as tools and "
+                    "x2d://state + x2d://camera/snapshot as resources. "
+                    "Reads newline-delimited JSON-RPC 2.0 on stdin; an MCP "
+                    "host (Claude Desktop, ...) launches it.",
+        epilog="Environment: X2D_DAEMON_HTTP (default "
+               "http://127.0.0.1:8765), X2D_DAEMON_TOKEN, "
+               "X2D_MCP_CALL_TIMEOUT (s), X2D_BRIDGE_PYTHON, X2D_BRIDGE.")
+    p.add_argument("--version", action="version",
+                   version=f"beambam-mcp {SERVER_VERSION} "
+                           f"(MCP {', '.join(SUPPORTED_PROTOCOL_VERSIONS)})")
+    return p
+
+
+def main(argv: list[str] | None = None) -> int:
+    # `beambam-mcp --help` / `--version` must answer and exit instead of
+    # silently starting the server and waiting on stdin.
+    _arg_parser().parse_args(argv)
     from beambam.console import utf8_stdio
     utf8_stdio()
     return serve_stdio()
