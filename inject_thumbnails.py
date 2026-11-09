@@ -70,6 +70,8 @@ def render_silhouette(stl_path: Path, size: tuple[int, int]) -> Image.Image:
 
 
 def main() -> int:
+    from beambam.console import utf8_stdio
+    utf8_stdio()
     ap = argparse.ArgumentParser()
     ap.add_argument("--3mf", dest="threemf", required=True, type=Path)
     ap.add_argument("--stl", required=True, type=Path)

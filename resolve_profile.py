@@ -66,6 +66,8 @@ def load_chain(name: str, idx: dict[str, Path], visited: set[str]) -> dict:
 
 
 def main() -> int:
+    from beambam.console import utf8_stdio
+    utf8_stdio()
     ap = argparse.ArgumentParser()
     ap.add_argument("profile", type=Path, help="Path to leaf profile JSON")
     ap.add_argument("-o", "--out", type=Path, required=True, help="Output flattened JSON")

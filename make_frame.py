@@ -343,6 +343,8 @@ def emit_vertical_walls(tris: list, mask: np.ndarray,
 
 
 def main() -> int:
+    from beambam.console import utf8_stdio
+    utf8_stdio()
     args = parse_args()
     if args.deboss_depth < 0 or args.deboss_depth > args.height:
         print(f"--deboss-depth must be in [0, --height={args.height}]",

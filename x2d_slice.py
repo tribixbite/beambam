@@ -934,6 +934,8 @@ def _parse_color_by_region(raw: object) -> tuple[list[str], list[int] | None]:
 
 
 def main() -> int:
+    from beambam.console import utf8_stdio
+    utf8_stdio()
     p = argparse.ArgumentParser(description=__doc__.split("\n", 1)[0])
     p.add_argument("stl", type=Path, help="input STL/STP/etc.")
     p.add_argument("--out", "-o", type=Path, required=True, help="output .gcode.3mf path")

@@ -328,6 +328,8 @@ def validate(path: Path, *, want_printer: str | None = None,
 
 
 def main() -> int:
+    from beambam.console import utf8_stdio
+    utf8_stdio()
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("file", type=Path, help=".gcode.3mf to validate")

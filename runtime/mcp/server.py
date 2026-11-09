@@ -631,6 +631,8 @@ def serve_stdio(stdin=None, stdout=None) -> int:
 
 
 def main() -> int:
+    from beambam.console import utf8_stdio
+    utf8_stdio()
     return serve_stdio()
 
 

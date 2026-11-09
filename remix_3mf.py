@@ -272,6 +272,8 @@ def cmd_apply(args: argparse.Namespace, root: ET.Element) -> int:
 
 
 def main() -> int:
+    from beambam.console import utf8_stdio
+    utf8_stdio()
     ap = argparse.ArgumentParser(
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -294,7 +296,7 @@ def main() -> int:
                          "id 2 to extruder 2. Stack multiple --object "
                          "flags for multi-object prints.")
     ap.add_argument("--wall-loops", type=int)
-    ap.add_argument("--sparse-infill", help="Density % (int 0..100)")
+    ap.add_argument("--sparse-infill", help="Density %% (int 0..100)")
     ap.add_argument("--sparse-infill-pattern",
                     help="grid|honeycomb|gyroid|cubic|monotonic|adaptive_cubic|...")
     ap.add_argument("--layer-height", type=float)
@@ -302,7 +304,7 @@ def main() -> int:
     ap.add_argument("--bottom-shells", type=int)
     ap.add_argument("--scale",
                     help="Uniform 'S' or 'Sx,Sy,Sz' (e.g. '1.0,1.0,1.10' "
-                         "to make Z 10% taller). Pre-multiplies each part's "
+                         "to make Z 10%% taller). Pre-multiplies each part's "
                          "matrix.")
     ap.add_argument("--reset", action="store_true",
                     help="Strip every per-object override, returning to the "
