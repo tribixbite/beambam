@@ -95,27 +95,63 @@ def _execute_tool(name: str, arguments: dict) -> str:
 # Provider: local (rule-based, no API key)
 # ---------------------------------------------------------------------------
 
+# Printer-changing verbs. These only fire for an IMPERATIVE request with
+# no negation: a bare `\bstop\b` used to abort the print on "don't stop
+# the print" or "why did it stop?". The verb must open the sentence,
+# optionally after politeness / "can you" / an interjection.
+_CONTROL_VERBS: list[tuple[str, str]] = [
+    # (verb regex, MCP tool name)
+    (r"pause",                                   "pause"),
+    (r"resume|continue|unpause",                 "resume"),
+    (r"stop|abort|cancel|kill",                  "stop"),
+    (r"home(?:\s+(?:all\s+)?(?:the\s+)?axes)?|g28", "home"),
+    (r"(?:auto[- ]?)?level|g29|run\s+(?:a\s+)?bed\s+level(?:ing)?", "level"),
+]
+_IMPERATIVE_PREFIX = (
+    r"^\s*(?:(?:ok(?:ay)?|hey|yes|yeah|now|right)[\s,!.]+)*"
+    r"(?:please\s+|pls\s+|(?:can|could|would|will)\s+you\s+(?:please\s+)?"
+    r"|go\s+ahead\s+and\s+|i\s+(?:want|need)\s+you\s+to\s+)?")
+# Any negation or hypothetical anywhere vetoes a control action.
+_NEGATION_RE = re.compile(
+    r"\b(?:don'?t|do\s+not|doesn'?t|didn'?t|never|not|no|without|"
+    r"shouldn'?t|won'?t|wouldn'?t|isn'?t|why|what\s+if|if|unless|"
+    r"whether|before|after)\b")
+
+# Read-only intents: matching anywhere is harmless.
 _LOCAL_PATTERNS: list[tuple[str, str, dict]] = [
     # (regex, MCP tool name, args_template_dict_with_capture_keys)
     (r"\b(list|show|what)\b.*\bprinters?\b",  "list_printers", {}),
     (r"\b(temp|temperature|how hot)\b",       "status",        {}),
     (r"\bstatus\b",                            "status",        {}),
-    (r"\bpause\b",                             "pause",         {}),
-    (r"\bresume\b",                            "resume",        {}),
-    (r"\bstop\b|\babort\b|\bcancel print\b",   "stop",          {}),
-    (r"\b(home|G28)\b",                        "home",          {}),
-    (r"\b(level|G29|bed level)\b",             "level",         {}),
     (r"\bcamera|snapshot|chamber view\b",      "camera_snapshot", {}),
     (r"\bAMS\b|\bspool\b|\bcolor\b",           "status",        {}),
     (r"\bhealthz\b|\balive\b",                 "healthz",       {}),
 ]
 
 
+def _control_intent(msg: str) -> str | None:
+    """MCP tool for an imperative, non-negated control request, else None.
+
+    `msg` is lower-cased. Only the first sentence counts, so "Stop. No,
+    wait" still has its negation seen (it is anywhere in the message).
+    """
+    if _NEGATION_RE.search(msg):
+        return None
+    first = re.split(r"[.!?;\n]", msg, maxsplit=1)[0]
+    for verb, tool in _CONTROL_VERBS:
+        if re.match(_IMPERATIVE_PREFIX + rf"(?:{verb})\b", first):
+            return tool
+    return None
+
+
 def _local_route(message: str) -> tuple[str, dict] | None:
     msg = message.lower()
-    for pat, tool, args in _LOCAL_PATTERNS:
-        if re.search(pat, msg):
-            return tool, dict(args)
+    tool = _control_intent(msg)
+    if tool is not None:
+        return tool, {}
+    for pat, read_tool, args in _LOCAL_PATTERNS:
+        if re.search(pat, msg, re.IGNORECASE):
+            return read_tool, dict(args)
     return None
 
 
