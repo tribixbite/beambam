@@ -121,6 +121,9 @@ def test_84_persistence_round_trip() -> bool:
             print("FAIL: second apply"); return False
         second = _read_overrides(path)
         ok = True
+        # The first apply must have recorded the overrides the second keeps.
+        ok &= _expect("#84 first-apply extruder recorded",
+                      first.get(2, {}).get("extruder"), "2")
         ok &= _expect("#84 first-apply extruder kept",
                       second.get(2, {}).get("extruder"), "2")
         ok &= _expect("#84 first-apply wall_loops kept",
