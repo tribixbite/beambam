@@ -470,6 +470,9 @@ def build_x2d_project_file(gcode_filename: str, md5_hex: str, *,
                            use_ams: bool = True,
                            subtask_name: str | None = None,
                            timelapse: bool = False,
+                           bed_levelling: bool = True,
+                           flow_cali: bool = False,
+                           vibration_cali: bool = False,
                            device_cert_path: Path | None = None) -> dict:
     """Build the X2D/H2D `print.project_file` body — the exact field shape
     captured from a real Bambu Studio desktop LAN print (verified live: the
@@ -498,15 +501,20 @@ def build_x2d_project_file(gcode_filename: str, md5_hex: str, *,
     body = {
         "ams_mapping": ams_mapping,
         "ams_mapping2": ams_mapping2,
-        "auto_bed_leveling": 2,
+        # Captured defaults (verified live): auto bed levelling (2) and
+        # automatic flow calibration (extrude_cali_flag 2). The print flags
+        # only change them when the caller asks: --no-bed-level -> 0 (off),
+        # --flow-cali -> forced (flow_cali true, extrude_cali_flag 1),
+        # --vib-cali -> vibration_cali true. They used to be dropped.
+        "auto_bed_leveling": 2 if bed_levelling else 0,
         "bed_leveling": False,
         "bed_type": bed_type,
         "cfg": "4",
         "command": "project_file",
-        "extrude_cali_flag": 2,
+        "extrude_cali_flag": 1 if flow_cali else 2,
         "extrude_cali_manual_mode": 0,
         "file": gcode_filename,
-        "flow_cali": False,
+        "flow_cali": bool(flow_cali),
         "layer_inspect": True,
         "md5": md5_hex,
         "nozzle_offset_cali": 0,
@@ -521,7 +529,7 @@ def build_x2d_project_file(gcode_filename: str, md5_hex: str, *,
         "url_enc": _device_url_enc(f"ftp:///cache/{gcode_filename}",
                                    device_cert_path),
         "use_ams": bool(use_ams),
-        "vibration_cali": False,
+        "vibration_cali": bool(vibration_cali),
     }
     return dict(sorted(body.items()))
 
@@ -628,9 +636,18 @@ def start_print(client: "X2DClient", gcode_filename: str, *,
     # (printer accepts with err_code 0 and starts). The legacy shape below is for
     # pre-auth-control firmware.
     if _DEVICE_CERT_PATH.is_file():
+        if not md5_hex:
+            # The firmware's file-verify compares this md5 with the plate
+            # G-code inside the uploaded file; an empty one is a certain
+            # err 84033544 after the upload, so refuse before sending.
+            raise PrintRefusal(
+                f"start_print: need the local .gcode.3mf ({local_path}) to compute the "
+                f"plate G-code md5 the X2D verifies; pass local_path")
         x2d_body = build_x2d_project_file(
             gcode_filename, md5_hex, ams_slots=ams_mapping_legacy,
-            bed_type=bed_type, use_ams=use_ams, timelapse=timelapse)
+            bed_type=bed_type, use_ams=use_ams, timelapse=timelapse,
+            bed_levelling=bed_levelling, flow_cali=flow_cali,
+            vibration_cali=vibration_cali)
         _publish_signed_or_legacy(client, {"print": x2d_body})
         return
 

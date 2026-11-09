@@ -75,7 +75,15 @@ def test_multi_filament_ams_mapping(device_cert):
     assert b["ams_mapping2"][2] == {"ams_id": 255, "slot_id": 255}
 
 
-def test_start_print_takes_x2d_branch_when_cert_present(device_cert, monkeypatch):
+def _plate_3mf(path):
+    """A .gcode.3mf with a plate G-code, so start_print can compute the md5."""
+    import zipfile
+    with zipfile.ZipFile(path, "w") as z:
+        z.writestr("Metadata/plate_1.gcode", "G28\n")
+    return path
+
+
+def test_start_print_takes_x2d_branch_when_cert_present(device_cert, monkeypatch, tmp_path):
     """With the device cert present, start_print emits the X2D body (not legacy)."""
     p, key = device_cert
     monkeypatch.setattr(pj, "_DEVICE_CERT_PATH", p)               # override conftest
@@ -88,10 +96,40 @@ def test_start_print_takes_x2d_branch_when_cert_present(device_cert, monkeypatch
         def publish(self, payload, qos=1, **_):
             captured["payload"] = payload
 
+    local = _plate_3mf(tmp_path / "zoey_x2d.gcode.3mf")
     pj.start_print(_Cli(), "zoey_x2d.gcode.3mf", use_ams=True, ams_slot=4,
-                   bed_type="supertack_plate", bed_temp=35, local_path=None)
+                   bed_type="supertack_plate", bed_temp=35, local_path=local)
     body = captured["payload"]["print"]
+    assert len(body["md5"]) == 32
     assert body["command"] == "project_file"
     assert "url_enc" in body and "url" not in body
     assert body["ams_mapping"] == [4, -1, -1, -1, -1, -1, -1, -1, -1, -1]
     assert body["task_id"] == "0"
+
+
+def test_x2d_start_refuses_without_local_file(device_cert, monkeypatch, tmp_path):
+    """No local file = no md5 = a certain file-verify failure: refuse first."""
+    p, key = device_cert
+    monkeypatch.setattr(pj, "_DEVICE_CERT_PATH", p)
+
+    class _Cli:
+        creds = type("C", (), {"serial": "S1"})()
+        def publish(self, payload, qos=1, **_):
+            raise AssertionError("must not publish")
+    import pytest as _pytest
+    with _pytest.raises(pj.PrintRefusal, match="md5"):
+        pj.start_print(_Cli(), "x.gcode.3mf", ams_slot=0, bed_type="supertack_plate",
+                       bed_temp=35, local_path=tmp_path / "missing.gcode.3mf")
+
+
+def test_x2d_body_keeps_captured_defaults_and_maps_flags(device_cert):
+    p, key = device_cert
+    default = pj.build_x2d_project_file("a.gcode.3mf", "0" * 32, ams_slots=[0],
+                                        bed_type="supertack_plate", device_cert_path=p)
+    assert (default["auto_bed_leveling"], default["extrude_cali_flag"],
+            default["flow_cali"], default["vibration_cali"]) == (2, 2, False, False)
+    flags = pj.build_x2d_project_file("a.gcode.3mf", "0" * 32, ams_slots=[0],
+                                      bed_type="supertack_plate", device_cert_path=p,
+                                      bed_levelling=False, flow_cali=True, vibration_cali=True)
+    assert (flags["auto_bed_leveling"], flags["extrude_cali_flag"],
+            flags["flow_cali"], flags["vibration_cali"]) == (0, 1, True, True)
