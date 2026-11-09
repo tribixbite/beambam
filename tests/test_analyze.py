@@ -181,3 +181,96 @@ def test_zip_missing_slice_info_raises(tmp_path):
         z.writestr("dummy.txt", "hi")
     with pytest.raises(KeyError):
         analyze_3mf(bad)
+
+
+# ---------------------------------------------------------------------------
+# G-code-driven flush accounting (exact, per layer)
+# ---------------------------------------------------------------------------
+
+# A 6-layer, 2-nozzle plate: layers 0-1 use filaments 1+2 on separate nozzles
+# (changes with L0 = no purge), layers 2-3 add filament 3 on nozzle 0 (two
+# purging changes, 112.253 + 224.506 mm), layers 4-5 are filament 1 only.
+_SYNTH_GCODE = b"""; HEADER_BLOCK_START
+; total layer number: 6
+; filament_density: 1.27,1.27,1.50
+; HEADER_BLOCK_END
+M620 S0A H0 B
+T0 H0
+M73 L1
+M620 S1A B H-1
+M620.10 A0 F299 L0 H0.4 T270 P255 S1
+M620.10 A1 F299 L0 H0.4 T270 P255 S1
+T1 H-1
+M73 L2
+M73 L3
+M620 S2A B H-1
+M620.10 A0 F299 L112.253 H0.4 T270 P255 S1
+M620.10 A1 F299 L112.253 H0.4 T270 P255 S1
+T2 H-1
+M73 L4
+M620 S0A B H-1
+M620.10 A0 F299 L224.506 H0.4 T270 P255 S1
+M620.10 A1 F299 L224.506 H0.4 T270 P255 S1
+T0 H-1
+M73 L5
+M73 L6
+M620 S65279 B
+T65279
+"""
+
+_SYNTH_SLICE_INFO = b"""<?xml version="1.0" encoding="UTF-8"?>
+<config><header><header_item key="X-BBL-Client-Type" value="slicer"/>
+<header_item key="X-BBL-Client-Version" value="02.08.02.61"/></header>
+<plate><metadata key="index" value="1"/><metadata key="nozzle_diameters" value="0.4,0.4"/>
+<metadata key="prediction" value="600"/><metadata key="weight" value="3.0"/>
+<filament id="1" tray_info_idx="GFG99" type="PETG" color="#FFFFFF" used_m="1" used_g="1" group_id="0" nozzle_diameter="0.40"/>
+<filament id="2" tray_info_idx="GFG99" type="PETG" color="#000000" used_m="1" used_g="1" group_id="1" nozzle_diameter="0.40"/>
+<filament id="3" tray_info_idx="GFG99" type="PETG" color="#FF0000" used_m="1" used_g="1" group_id="0" nozzle_diameter="0.40"/>
+<layer_filament_lists>
+<layer_filament_list filament_list="0 1" layer_ranges="0 1"/>
+<layer_filament_list filament_list="0 1 2" layer_ranges="2 3"/>
+<layer_filament_list filament_list="0" layer_ranges="4 5"/>
+</layer_filament_lists>
+</plate></config>
+"""
+
+
+@pytest.fixture
+def synth_3mf(tmp_path: Path) -> Path:
+    path = tmp_path / "synth.gcode.3mf"
+    with zipfile.ZipFile(path, "w") as z:
+        z.writestr("Metadata/slice_info.config", _SYNTH_SLICE_INFO)
+        z.writestr("Metadata/plate_1.gcode", _SYNTH_GCODE)
+        # A sequence whose proportional split would put swaps in layers 4-5.
+        z.writestr("Metadata/filament_sequence.json", json.dumps(
+            {"plate_1": {"sequence": [1, 2, 3, 1, 1, 1, 1, 1],
+                         "nozzle_sequence": [0, 1, 0, 0, 0, 0, 0, 0]}}))
+    return path
+
+
+def test_gcode_flushes_are_attributed_to_their_layers(synth_3mf: Path):
+    r = analyze_3mf(synth_3mf)
+    assert [(p.layer_start, p.layer_end, p.real_flushes, p.filament_changes) for p in r.phases] == [
+        (0, 1, 0, 1), (2, 3, 2, 2), (4, 5, 0, 0)]
+    assert r.phases[2].flush_g == 0.0          # a single-colour phase never purges
+    assert r.plate["layer_count"] == 6         # from the G-code header
+
+
+def test_gcode_flush_units_and_density(synth_3mf: Path):
+    t = analyze_3mf(synth_3mf).totals
+    assert t["flush_source"] == "gcode"
+    assert t["filament_changes"] == 3
+    assert t["nozzle_swaps"] == 2
+    assert t["flush_length_mm"] == pytest.approx(336.759)
+    assert t["flush_volume_mm3"] == pytest.approx(336.759 * 2.4053)
+    assert t["flush_volume_mm"] == t["flush_volume_mm3"]       # legacy key, mm³
+    # Each purge weighs at the INCOMING filament's density: #3 is 1.50, #1 is 1.27.
+    expected_g = (112.253 * 1.50 + 224.506 * 1.27) * 2.4053 / 1000
+    assert t["flush_volume_g"] == pytest.approx(expected_g)
+
+
+def test_no_gcode_falls_back_to_labelled_estimate(tmp_path: Path):
+    path = tmp_path / "nogcode.gcode.3mf"
+    with zipfile.ZipFile(path, "w") as z:
+        z.writestr("Metadata/slice_info.config", _SYNTH_SLICE_INFO)
+    assert analyze_3mf(path).totals["flush_source"] == "estimate"

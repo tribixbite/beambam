@@ -64,8 +64,12 @@ class Phase:
     layer_start: int
     layer_end: int
     filaments: list[int]               # filament IDs (1-based per slice_info)
-    real_flushes: int = 0              # actual nozzle-swap events
-    flush_volume_mm: float = 0.0       # cumulative purge length
+    real_flushes: int = 0              # filament changes that purge (same nozzle, new filament)
+    # Purge VOLUME in mm³ (legacy name: Bambu's flush matrix is mm³, not mm).
+    flush_volume_mm: float = 0.0
+    flush_length_mm: float = 0.0       # the same purge as filament length (1.75 mm)
+    flush_g: float = 0.0               # the same purge in grams (incoming filament's density)
+    filament_changes: int = 0          # every filament load in this phase (purging or not)
     note: str = ""
 
 
@@ -273,15 +277,111 @@ def _count_gcode_toolchanges(gcode_bytes: bytes) -> dict[str, Any]:
     }
 
 
+# Cross-section of 1.75 mm filament (mm²): Bambu's own change_filament_gcode
+# converts volume to length with this constant (`/2.4053`).
+FILAMENT_AREA_MM2 = 2.4053
+DEFAULT_DENSITY_G_CM3 = 1.24   # PLA; used only when the G-code header has none
+
+
+@dataclass
+class _GcodeChange:
+    """One filament load in the printed G-code (not the initial load)."""
+    layer: int            # 0-based layer, matching slice_info layer_ranges
+    filament: int         # 1-based filament id
+    flush_length_mm: float
+
+
+def _parse_gcode_events(gcode_bytes: bytes) -> dict[str, Any]:
+    """Read what the printer will actually do from the plate G-code.
+
+    Bambu Studio marks every layer with `M73 L<n>` (1-based) and every
+    filament change with `M620 S<k>A` (k 0-based; 255+ = unload sentinels)
+    followed by `M620.10 A1 ... L<len>`, whose L is the purge length in mm
+    of filament the firmware extrudes for that change (0 when the other
+    nozzle takes over instead of purging). Loads before the first layer
+    marker belong to the start G-code's initial load and are not changes.
+    """
+    text = gcode_bytes.decode("utf-8", errors="replace")
+    header_layers = re.search(r"(?m)^; total layer number: (\d+)", text)
+    densities_m = re.search(r"(?m)^; filament_density: ([\d.,\s]+)$", text)
+    densities = ([float(x) for x in densities_m.group(1).split(",") if x.strip()]
+                 if densities_m else [])
+    changes: list[_GcodeChange] = []
+    layer = -1
+    pending: _GcodeChange | None = None
+    for line in text.splitlines():
+        if line.startswith("M73 L"):
+            m = re.match(r"M73 L(\d+)", line)
+            if m:
+                layer = int(m.group(1)) - 1
+        elif line.startswith("M620 S"):
+            m = re.match(r"M620 S(\d+)A", line)
+            if m and layer >= 0 and int(m.group(1)) < 255:
+                pending = _GcodeChange(layer=layer, filament=int(m.group(1)) + 1,
+                                       flush_length_mm=0.0)
+                changes.append(pending)
+        elif line.startswith("M620.10 A1") and pending is not None:
+            m = re.search(r" L([\d.]+)", line)
+            if m:
+                pending.flush_length_mm = float(m.group(1))
+            pending = None
+    return {
+        "layer_count": int(header_layers.group(1)) if header_layers else None,
+        "densities": densities,
+        "changes": changes,
+    }
+
+
+def _density(densities: list[float], filament: int) -> float:
+    """g/cm³ of a 1-based filament id (header value, else PLA)."""
+    return densities[filament - 1] if 0 < filament <= len(densities) else DEFAULT_DENSITY_G_CM3
+
+
+def _change_grams(c: _GcodeChange, densities: list[float]) -> float:
+    return c.flush_length_mm * FILAMENT_AREA_MM2 * _density(densities, c.filament) / 1000.0
+
+
+def _phase_note(filaments: list[int], flushes: int) -> str:
+    n_fil = len(filaments)
+    if n_fil <= 1:
+        return f"single-color (filament {filaments[0] + 1 if filaments else '?'})"
+    if n_fil == 2:
+        return "2-color (pure parallel, no flush)" if flushes == 0 else "2-color with flushes"
+    return f"{n_fil}-color (1 nozzle MUST be shared → flushes unavoidable)"
+
+
+def _phases_from_gcode(layer_filament: list[tuple[int, int, list[int]]],
+                       changes: list[_GcodeChange],
+                       densities: list[float]) -> tuple[list[Phase], int]:
+    """Exact phases: every change is attributed to the layer it happens in."""
+    phases: list[Phase] = []
+    flushes_total = 0
+    for start, end, filaments in sorted(layer_filament, key=lambda x: x[0]):
+        here = [c for c in changes if start <= c.layer <= end]
+        purging = [c for c in here if c.flush_length_mm > 0]
+        length = sum(c.flush_length_mm for c in purging)
+        flushes_total += len(purging)
+        phases.append(Phase(
+            layer_start=start, layer_end=end,
+            filaments=[f + 1 for f in filaments],   # 0-based -> 1-based ids
+            real_flushes=len(purging),
+            flush_volume_mm=length * FILAMENT_AREA_MM2,
+            flush_length_mm=length,
+            flush_g=sum(_change_grams(c, densities) for c in purging),
+            filament_changes=len(here),
+            note=_phase_note(filaments, len(purging)),
+        ))
+    return phases, flushes_total
+
+
 def _compute_phases(layer_filament: list[tuple[int, int, list[int]]],
                     sequence: list[int],
                     nozzle_sequence: list[int]) -> tuple[list[Phase], int]:
-    """Walk layer_filament_lists in layer order and produce contiguous phases.
-    For each phase, look at the slice of the sequence/nozzle_sequence that
-    falls within it (heuristic: proportional split since the 3mf doesn't
-    record explicit phase→sequence mapping) and count nozzle-swap events
-    (same nozzle used by two different filaments in a row)."""
-    # Sort layer ranges by start layer.
+    """ESTIMATE, used only when the 3MF has no plate G-code: map each layer
+    range onto filament_sequence proportionally (the sequence carries no
+    layer numbers) and count swaps (same nozzle, different filament than
+    its previous one). With uneven swap density per layer the swaps land
+    in the wrong phase; `_phases_from_gcode` is exact."""
     sorted_ranges = sorted(layer_filament, key=lambda x: x[0])
     if not sorted_ranges:
         return [], 0
@@ -292,15 +392,12 @@ def _compute_phases(layer_filament: list[tuple[int, int, list[int]]],
     phases: list[Phase] = []
 
     for start, end, filaments in sorted_ranges:
-        # Map this layer range onto the sequence proportionally.
         if total_layers > 0 and seq_len > 0:
             seq_start = (start * seq_len) // total_layers
             seq_end = ((end + 1) * seq_len) // total_layers
         else:
             seq_start = seq_end = 0
 
-        # Count swaps within this slice: same nozzle, different filament
-        # vs the previous step on that nozzle.
         seen_on_nozzle: dict[int, int] = {}
         phase_swaps = 0
         for i in range(seq_start, min(seq_end, seq_len)):
@@ -312,21 +409,12 @@ def _compute_phases(layer_filament: list[tuple[int, int, list[int]]],
             seen_on_nozzle[n] = f
         swaps_total += phase_swaps
 
-        note = ""
-        n_fil = len(filaments)
-        if n_fil <= 1:
-            note = f"single-color (filament {filaments[0] + 1 if filaments else '?'})"
-        elif n_fil == 2:
-            note = "2-color (pure parallel, no flush)" if phase_swaps == 0 else "2-color with flushes"
-        elif n_fil >= 3:
-            note = f"{n_fil}-color (1 nozzle MUST be shared → flushes unavoidable)"
-
         phases.append(Phase(
             layer_start=start,
             layer_end=end,
             filaments=[f + 1 for f in filaments],   # convert 0-based to 1-based filament IDs
             real_flushes=phase_swaps,
-            note=note,
+            note=_phase_note(filaments, phase_swaps),
         ))
 
     return phases, swaps_total
@@ -336,15 +424,17 @@ def _compute_flush_volumes(phases: list[Phase],
                            sequence: list[int],
                            nozzle_sequence: list[int],
                            flush_matrix: list[list[list[float]]],
-                           flush_multiplier: list[float]) -> None:
-    """For each phase, sum the flush_matrix volume for every nozzle-swap
-    event. Mutates phases in place."""
+                           flush_multiplier: list[float],
+                           densities: list[float] | None = None) -> None:
+    """ESTIMATE (no G-code): sum the flush matrix (mm³) for every swap in
+    each phase's proportional share of the sequence. Mutates phases."""
     if not flush_matrix or not sequence:
         return
 
     n_fil = len(flush_matrix[0]) if flush_matrix else 0
     total_layers = max((p.layer_end for p in phases), default=0) + 1
     seq_len = len(sequence)
+    dens = densities or []
 
     for phase in phases:
         if total_layers <= 0 or seq_len <= 0:
@@ -353,6 +443,7 @@ def _compute_flush_volumes(phases: list[Phase],
         seq_end = ((phase.layer_end + 1) * seq_len) // total_layers
         seen_on_nozzle: dict[int, int] = {}
         vol = 0.0
+        grams = 0.0
         for i in range(seq_start, min(seq_end, seq_len)):
             f = sequence[i]                                  # 1-based filament id
             n = nozzle_sequence[i] if i < len(nozzle_sequence) else 0
@@ -362,9 +453,13 @@ def _compute_flush_volumes(phases: list[Phase],
                 fi_to = f - 1
                 if 0 <= fi_from < n_fil and 0 <= fi_to < n_fil:
                     mult = flush_multiplier[n] if n < len(flush_multiplier) else 1.0
-                    vol += flush_matrix[n][fi_from][fi_to] * mult
+                    v = flush_matrix[n][fi_from][fi_to] * mult
+                    vol += v
+                    grams += v * _density(dens, f) / 1000.0
             seen_on_nozzle[n] = f
         phase.flush_volume_mm = vol
+        phase.flush_length_mm = vol / FILAMENT_AREA_MM2
+        phase.flush_g = grams
 
 
 def _generate_hints(report: Report) -> list[str]:
@@ -374,12 +469,10 @@ def _generate_hints(report: Report) -> list[str]:
     if tri_color and len(report.nozzles) <= 2:
         worst = max(tri_color, key=lambda p: p.flush_volume_mm)
         layers = worst.layer_end - worst.layer_start + 1
-        # ~0.0024 g/mm for 1.75mm filament (rough density estimate)
-        waste_g = worst.flush_volume_mm * 1.75 ** 2 * 3.14159 / 4 * 1.24 / 1000
         hints.append(
             f"Tri-color section spans layers {worst.layer_start}-{worst.layer_end} "
             f"({layers} layers, {worst.real_flushes} flushes, "
-            f"≈{worst.flush_volume_mm:.0f} mm = ≈{waste_g:.1f} g purge). "
+            f"≈{worst.flush_volume_mm:.0f} mm³ = ≈{worst.flush_g:.1f} g purge). "
             f"With only {len(report.nozzles)} nozzles, one color must share a nozzle. "
             f"Re-staging the model so the shared color appears only in non-tri-color "
             f"layers eliminates this entirely."
@@ -389,9 +482,9 @@ def _generate_hints(report: Report) -> list[str]:
         mins = int(report.plate["predicted_seconds"]) // 60
         report.plate["predicted_human"] = f"{mins // 60}h {mins % 60}min" if mins >= 60 else f"{mins} min"
 
-    if report.totals.get("flush_volume_mm", 0) > 5000:
+    if report.totals.get("flush_volume_g", 0) > 6.0:
         hints.append(
-            f"Total purge volume ≈{report.totals['flush_volume_mm']:.0f} mm "
+            f"Total purge volume ≈{report.totals['flush_volume_mm']:.0f} mm³ "
             f"(~{report.totals.get('flush_volume_g', 0):.1f} g) — non-trivial cost. "
             f"Check that filament_map_mode is 'Auto For Flush' (slicer picks the "
             f"minimum-flush assignment) rather than a manual override."
@@ -425,8 +518,9 @@ def analyze_3mf(path: Path) -> Report:
                                        plate_idx=plate_idx)
               if "Metadata/filament_sequence.json" in names else {})
         gcode_name = f"Metadata/plate_{plate_idx}.gcode"
-        gc = (_count_gcode_toolchanges(z.read(gcode_name))
-              if gcode_name in names else {})
+        gcode_raw = z.read(gcode_name) if gcode_name in names else b""
+        gc = _count_gcode_toolchanges(gcode_raw) if gcode_raw else {}
+        ev = _parse_gcode_events(gcode_raw) if gcode_raw else {}
 
     nozzle_diameters_raw = si["plate_meta"].get("nozzle_diameters", "")
     nozzle_diameters = [float(x) for x in nozzle_diameters_raw.split(",") if x]
@@ -443,7 +537,8 @@ def analyze_3mf(path: Path) -> Report:
         "bed_type": pl.get("bed_type") or ps.get("bed_type_default", ""),
         "weight_g": float(si["plate_meta"].get("weight", "0")),
         "predicted_seconds": int(float(si["plate_meta"].get("prediction", "0"))),
-        "layer_count": int(si["plate_meta"].get("total_layer_num", "0")) or None,
+        "layer_count": (int(si["plate_meta"].get("total_layer_num", "0"))
+                        or ev.get("layer_count")),
         "filament_dynamic_map": (si["plate_meta"].get("enable_filament_dynamic_map", "")
                                   .lower() == "true"),
         "has_filament_switcher": (si["plate_meta"].get("has_filament_switcher", "")
@@ -471,26 +566,46 @@ def analyze_3mf(path: Path) -> Report:
         warnings=si["warnings"],
     )
 
-    phases, swaps_total = _compute_phases(
-        si["layer_filament_lists"], report.sequence, report.nozzle_sequence)
-    _compute_flush_volumes(phases, report.sequence, report.nozzle_sequence,
-                           report.flush_matrix_mm, report.flush_multiplier)
+    densities: list[float] = ev.get("densities") or []
+    changes: list[_GcodeChange] = ev.get("changes") or []
+    if changes:
+        # Exact: what the G-code does, layer by layer.
+        phases, swaps_total = _phases_from_gcode(si["layer_filament_lists"], changes, densities)
+        flush_source = "gcode"
+        flush_length = sum(c.flush_length_mm for c in changes)
+        flush_g = sum(_change_grams(c, densities) for c in changes)
+        n_changes = len(changes)
+    else:
+        phases, swaps_total = _compute_phases(
+            si["layer_filament_lists"], report.sequence, report.nozzle_sequence)
+        _compute_flush_volumes(phases, report.sequence, report.nozzle_sequence,
+                               report.flush_matrix_mm, report.flush_multiplier, densities)
+        flush_source = "estimate"
+        flush_length = sum(p.flush_length_mm for p in phases)
+        flush_g = sum(p.flush_g for p in phases)
+        n_changes = max(len(report.sequence) - 1, 0)
     report.phases = phases
-
-    total_flush_mm = sum(p.flush_volume_mm for p in phases)
-    # 1.75mm PLA ≈ 1.24 g/cc; volume = π·(0.875)² · length_mm = ~2.405 mm³/mm
-    total_flush_g = total_flush_mm * 2.405 * 0.00124
 
     report.totals = {
         "sequence_length": len(report.sequence),
+        # Filament changes that purge (same nozzle, different filament); a
+        # change the other nozzle takes over costs no purge.
         "nozzle_swaps": swaps_total,
+        "filament_changes": n_changes,
         "tool_calls": gc.get("tool_calls", {}),
         "tool_calls_total": gc.get("tool_calls_total", 0),
         "unload_sentinels": gc.get("unload_sentinels", 0),
         "m620_cycles": gc.get("m620_cycles", 0),
         "m620_flushes": gc.get("m620_flushes", 0),
-        "flush_volume_mm": total_flush_mm,
-        "flush_volume_g": total_flush_g,
+        # Purge in three units of one quantity. `flush_volume_mm` keeps its
+        # historical key but is mm³ (it always summed Bambu's mm³ matrix).
+        "flush_volume_mm": flush_length * FILAMENT_AREA_MM2,
+        "flush_volume_mm3": flush_length * FILAMENT_AREA_MM2,
+        "flush_length_mm": flush_length,
+        "flush_volume_g": flush_g,
+        # "gcode" = read from the plate G-code (exact); "estimate" = flush
+        # matrix times a proportional guess of where the swaps fall.
+        "flush_source": flush_source,
     }
 
     report.hints = _generate_hints(report)
@@ -542,19 +657,21 @@ def format_report(r: Report) -> str:
         fil_str = ",".join(str(f) for f in ph.filaments)
         lines.append(f"  layers {ph.layer_start:>3}-{ph.layer_end:<3} ({layers:>3}) "
                      f"filaments=[{fil_str}]  flushes={ph.real_flushes:>3}  "
-                     f"purge={ph.flush_volume_mm:>6.0f}mm   {ph.note}")
+                     f"purge={ph.flush_g:>5.1f} g   {ph.note}")
 
     lines.append(_h("Totals"))
     t = r.totals
     tc = t.get("tool_calls", {})
     tc_str = " ".join(f"{k}={v}" for k, v in sorted(tc.items()))
-    lines.append(f"  sequence: {t.get('sequence_length')} entries  "
-                 f"nozzle swaps: {t.get('nozzle_swaps')}")
+    lines.append(f"  filament changes: {t.get('filament_changes')}  "
+                 f"purging: {t.get('nozzle_swaps')}  "
+                 f"(sequence: {t.get('sequence_length')} entries)")
     lines.append(f"  gcode: {tc_str or '—'}   "
                  f"M620 cycles: {t.get('m620_cycles')}   "
                  f"M620.10 flushes: {t.get('m620_flushes')}")
-    lines.append(f"  purge: {t.get('flush_volume_mm', 0):.0f} mm "
-                 f"≈ {t.get('flush_volume_g', 0):.2f} g")
+    lines.append(f"  purge: {t.get('flush_length_mm', 0):.0f} mm of filament "
+                 f"= {t.get('flush_volume_mm3', 0):.0f} mm³ "
+                 f"≈ {t.get('flush_volume_g', 0):.2f} g  ({t.get('flush_source')})")
 
     if r.warnings:
         lines.append(_h("Slicer warnings"))
