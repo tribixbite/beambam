@@ -314,8 +314,10 @@ def cmd_slice_print(args: argparse.Namespace) -> int:
             # existing BS docs apply.
             print(f"[slice-print] input already a 3mf, re-slicing in "
                   f"place", file=sys.stderr)
-            bs_bin = (X2D_ROOT_PATH / "bs-bionic" / "build" / "src"
-                      / "bambu-studio")
+            from beambam.slicer_paths import bambu_studio_bin, run_bambu_cli
+            bs_bin = bambu_studio_bin()
+            if bs_bin is None:
+                sys.exit("bambu-studio not found: install Bambu Studio or set BAMBU_STUDIO")
             cmd = [
                 str(bs_bin), "--slice", "0",
                 "--outputdir", str(out_3mf.parent),
@@ -343,13 +345,15 @@ def cmd_slice_print(args: argparse.Namespace) -> int:
                 # x2d_slice.py's --copies (which tiles one model).
                 cmd.extend(["--repetitions", str(int(args.repetitions))])
             cmd.append(str(stl))
-            rc = subprocess.call(cmd, env={
-                **os.environ,
-                "DISPLAY": os.environ.get("DISPLAY", ":1"),
-            })
+            env = dict(os.environ)
+            if os.name != "nt":
+                env.setdefault("DISPLAY", ":1")
+            rc = run_bambu_cli(cmd, out_3mf.parent, env=env)
         else:
             # STL/OBJ/STEP — graft into template and slice
-            cmd = [str(slice_bin), str(stl), "--out", str(out_3mf)]
+            # Through this interpreter: running the .py directly fails on
+            # Windows (WinError 193) and wherever the file isn't executable.
+            cmd = [sys.executable, str(slice_bin), str(stl), "--out", str(out_3mf)]
             if args.template:
                 cmd.extend(["--template", str(args.template)])
             if args.scale and args.scale != 1.0:

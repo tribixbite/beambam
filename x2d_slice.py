@@ -40,11 +40,18 @@ import zipfile
 from pathlib import Path
 from xml.etree import ElementTree as ET
 
-X2D_ROOT = Path(os.environ.get("X2D_ROOT", "/data/data/com.termux/files/home/git/x2d"))
-DEFAULT_TEMPLATE = X2D_ROOT / "rumi_frame.gcode.3mf"
-BS_BIN = X2D_ROOT / "bs-bionic" / "build" / "src" / "bambu-studio"
-COLOR_CODES_JSON = (X2D_ROOT / "bs-bionic" / "resources" / "profiles"
-                    / "BBL" / "filament" / "filaments_color_codes.json")
+from beambam.slicer_paths import (REPO_ROOT, bambu_studio_bin, bbl_profiles_dir,
+                                  default_template, is_bionic_build, run_bambu_cli)
+
+# Resolved per machine (beambam.slicer_paths): $X2D_ROOT / this checkout, the installed
+# Bambu Studio (env, Termux build, PATH, standard install), its BBL profiles.
+X2D_ROOT = REPO_ROOT
+DEFAULT_TEMPLATE = default_template()
+_RESOLVED_BS = bambu_studio_bin()
+BS_BIN = _RESOLVED_BS or (X2D_ROOT / "bs-bionic" / "build" / "src" / "bambu-studio")
+_BBL = bbl_profiles_dir(_RESOLVED_BS)
+COLOR_CODES_JSON = ((_BBL or X2D_ROOT / "bs-bionic" / "resources" / "profiles" / "BBL")
+                    / "filament" / "filaments_color_codes.json")
 
 
 def resolve_color_name(spec: str) -> str:
@@ -646,6 +653,58 @@ def patch_project_settings_for_bed(json_bytes: bytes, bed_type: str) -> bytes:
     return _json.dumps(data, indent=4).encode("utf-8")
 
 
+_IDENTITY_4X4 = "1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 1"
+_IDENTITY_3X4 = "1 0 0 0 1 0 0 0 1 0 0 0"
+
+
+def _single_component_wrapper(xml_bytes: bytes) -> bytes:
+    """Reduce the template's assembly to ONE component with no offset.
+
+    A template made from a multi-part project (a pokefit figure + its flat
+    base, a model with modifiers) lists several <component>s in
+    3D/3dmodel.model, each pointing at an object inside object_1.model. The
+    graft writes a single mesh there, so the extra components point at
+    objects that no longer exist and Bambu Studio fails with "Failed
+    slicing the model" (-100). Keep the first component, drop its
+    transform (the STL's own coordinates are what the build item places).
+    """
+    import re as _re
+    text = xml_bytes.decode("utf-8")
+
+    def _one(m: "_re.Match[str]") -> str:
+        comps = _re.findall(r"<component\b[^>]*/>", m.group(2))
+        if len(comps) <= 1:
+            return m.group(0)
+        first = _re.sub(r'\stransform="[^"]*"', "", comps[0])
+        return f"{m.group(1)}{first}{m.group(3)}"
+
+    text = _re.sub(r"(<components>\s*)(.*?)(\s*</components>)", _one, text,
+                   count=1, flags=_re.S)
+    return text.encode("utf-8")
+
+
+def _single_part_settings(xml_bytes: bytes, face_count: int) -> bytes:
+    """Match Metadata/model_settings.config to the single grafted mesh: keep
+    the first object's first <part>, reset its matrix / source offsets to
+    identity, and record the new face count (see _single_component_wrapper)."""
+    import re as _re
+    text = xml_bytes.decode("utf-8")
+    obj = _re.search(r"<object\b.*?</object>", text, flags=_re.S)
+    if obj is None:
+        return xml_bytes
+    block = obj.group(0)
+    parts = list(_re.finditer(r"\s*<part\b.*?</part>", block, flags=_re.S))
+    if not parts:
+        return xml_bytes
+    first = parts[0].group(0)
+    first = _re.sub(r'(<metadata key="matrix" value=")[^"]*(")', rf"\g<1>{_IDENTITY_4X4}\g<2>", first)
+    first = _re.sub(r'(<metadata key="source_offset_[xyz]" value=")[^"]*(")', r"\g<1>0\g<2>", first)
+    first = _re.sub(r'(<mesh_stat face_count=")\d+(")', rf"\g<1>{face_count}\g<2>", first)
+    new_block = block[:parts[0].start()] + first + block[parts[-1].end():]
+    new_block = _re.sub(r'(<metadata face_count=")\d+(")', rf"\g<1>{face_count}\g<2>", new_block)
+    return (text[:obj.start()] + new_block + text[obj.end():]).encode("utf-8")
+
+
 def graft_stl_into_template(template: Path, stl: Path, out: Path,
                               scale: float = 1.0, color: str | None = None,
                               bed_type: str | None = None,
@@ -713,12 +772,13 @@ def graft_stl_into_template(template: Path, stl: Path, out: Path,
             for name in names:
                 if name == target:
                     zout.writestr(name, new_xml)
-                elif name == "3D/3dmodel.model" and int(copies) > 1:
-                    data = zin.read(name)
-                    data = _patch_wrapper_for_copies(data, int(copies), vlist, float(scale))
+                elif name == "3D/3dmodel.model" and name != target:
+                    data = _single_component_wrapper(zin.read(name))
+                    if int(copies) > 1:
+                        data = _patch_wrapper_for_copies(data, int(copies), vlist, float(scale))
                     zout.writestr(name, data)
                 elif name == "Metadata/model_settings.config":
-                    data = zin.read(name)
+                    data = _single_part_settings(zin.read(name), len(tris))
                     if scale != 1.0:
                         data = patch_model_settings_for_scale(data, scale)
                     if color:
@@ -772,6 +832,11 @@ def run_bs_slice(input_3mf: Path, out_3mf: Path, plate: int = 0, debug: int = 1)
         str(input_3mf),
     ]
     env = os.environ.copy()
+    if not is_bionic_build(BS_BIN):
+        # A stock Bambu Studio install (Windows/macOS/Linux) needs no library
+        # or GL environment; run it in out_dir with the hang-at-exit guard.
+        print(f"[x2d_slice] running: {' '.join(cmd)}", file=sys.stderr)
+        return run_bambu_cli(cmd, out_dir, env=env)
     # bs-bionic is BIND_NOW-linked against ffmpeg 7.0 and needs its bundled libs;
     # LD_LIBRARY_PATH is filtered by some parent shells (bun-on-termux), so set
     # it explicitly. The empty ffmpeg stubs (runtime/ffmpeg-stubs) satisfy the
@@ -949,7 +1014,9 @@ def main() -> int:
         print(f"template not found: {args.template}", file=sys.stderr)
         return 2
     if not BS_BIN.exists():
-        print(f"bambu-studio not found at {BS_BIN}", file=sys.stderr)
+        print(f"bambu-studio not found (looked for $BAMBU_STUDIO, {BS_BIN}, PATH and the "
+              f"standard install location); install Bambu Studio or set BAMBU_STUDIO",
+              file=sys.stderr)
         return 2
 
     color_hex = resolve_color_name(args.color) if args.color else None

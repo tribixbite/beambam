@@ -291,17 +291,18 @@ def check_environment() -> list[Check]:
                          "no cloud_session.json — run `beambam cloud-login "
                          "--code-only` for the passwordless device-code flow"))
 
-    bs = shutil.which("bambu-studio") or shutil.which("BambuStudio")
-    if not bs:
-        local = Path(__file__).resolve().parent.parent / "bs-bionic" / "build" / "src" / "bambu-studio"
-        if local.is_file():
-            bs = str(local)
+    # Same resolver the slicing commands use (env, Termux build, PATH,
+    # standard install); PATH alone gave a false pass/fail.
+    from beambam.slicer_paths import bambu_studio_bin
+    _found = bambu_studio_bin()
+    bs = str(_found) if _found else None
     if bs:
         out.append(Check("Environment", "Bambu Studio CLI", "pass",
                          f"found at {bs}"))
     else:
         out.append(Check("Environment", "Bambu Studio CLI", "warn",
-                         "no `bambu-studio` in PATH — slicing commands "
+                         "Bambu Studio not found ($BAMBU_STUDIO, PATH, standard "
+                         "install) — slicing commands "
                          "(slice / slice-print / cloud-print-design) will "
                          "fail. Install from https://bambulab.com/en/download "
                          "or build under bs-bionic/."))

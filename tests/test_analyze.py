@@ -274,3 +274,12 @@ def test_no_gcode_falls_back_to_labelled_estimate(tmp_path: Path):
     with zipfile.ZipFile(path, "w") as z:
         z.writestr("Metadata/slice_info.config", _SYNTH_SLICE_INFO)
     assert analyze_3mf(path).totals["flush_source"] == "estimate"
+
+
+def test_single_colour_gcode_is_exact_not_estimate(tmp_path: Path):
+    path = tmp_path / "mono.gcode.3mf"
+    with zipfile.ZipFile(path, "w") as z:
+        z.writestr("Metadata/slice_info.config", _SYNTH_SLICE_INFO)
+        z.writestr("Metadata/plate_1.gcode", b"; total layer number: 6\nM73 L1\nM73 L2\n")
+    t = analyze_3mf(path).totals
+    assert t["flush_source"] == "gcode" and t["flush_volume_g"] == 0.0 and t["filament_changes"] == 0

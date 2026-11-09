@@ -568,8 +568,8 @@ def analyze_3mf(path: Path) -> Report:
 
     densities: list[float] = ev.get("densities") or []
     changes: list[_GcodeChange] = ev.get("changes") or []
-    if changes:
-        # Exact: what the G-code does, layer by layer.
+    if ev:
+        # The plate G-code exists: it is the truth even with zero changes.
         phases, swaps_total = _phases_from_gcode(si["layer_filament_lists"], changes, densities)
         flush_source = "gcode"
         flush_length = sum(c.flush_length_mm for c in changes)
