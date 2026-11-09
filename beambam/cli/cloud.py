@@ -1185,8 +1185,9 @@ def cmd_cloud_get_access_code(args: argparse.Namespace) -> int:
                   f"{target} has no ip set — re-run with --ip "
                   f"<printer-ip> to make this section usable for "
                   f"LAN commands.", file=sys.stderr)
-        with ini_path.open("w") as f:
-            cp.write(f)
+        # Same writer as `beambam config` (owner-only permissions).
+        from beambam.configcli import _save
+        _save(cp, ini_path)
         print(f"[cloud-get-access-code] wrote {target} -> "
               f"{ini_path}", file=sys.stderr)
     return 0

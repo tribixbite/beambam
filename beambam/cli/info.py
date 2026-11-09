@@ -561,7 +561,7 @@ def cmd_fcm_harvest(args: argparse.Namespace) -> int:
               / "fcm_snapshot_harvest.py")
     if not script.exists():
         sys.exit(f"harvester missing at {script}")
-    cmd = ["python3", str(script), "--device", args.device]
+    cmd = [sys.executable, str(script), "--device", args.device]
     if args.daemon:
         cmd.append("--daemon")
         cmd.extend(["--interval", str(args.interval)])

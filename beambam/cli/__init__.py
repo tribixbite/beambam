@@ -326,29 +326,35 @@ def main() -> int:
     d.set_defaults(fn=cmd_daemon)
 
     # ----- print-control verbs -----------------------------------------
-    # These auto-route over the cloud broker with the recovered RSA signing key
-    # (X-series firmware rejects unsigned LAN print.*); pass --lan to force LAN.
-    pa = sub.add_parser("pause", help="Pause current print (cloud-signed; --lan to force LAN)")
+    # LAN-signed with the recovered per-install key (`beambam key`) when it is
+    # on disk; the cloud-signed relay otherwise, or with --cloud. Each verb
+    # waits for the printer's reply: exit 1 when the printer refuses.
+    pa = sub.add_parser("pause", help="Pause current print (LAN-signed; --cloud for the relay)")
     pa.add_argument("--lan", action="store_true", help="force the LAN publish path")
+    pa.add_argument("--cloud", action="store_true", help="use the cloud-signed relay instead of LAN")
     pa.set_defaults(fn=cmd_pause)
 
-    re_ = sub.add_parser("resume", help="Resume current print (cloud-signed)")
+    re_ = sub.add_parser("resume", help="Resume current print (LAN-signed)")
     re_.add_argument("--lan", action="store_true", help="force the LAN publish path")
+    re_.add_argument("--cloud", action="store_true", help="use the cloud-signed relay instead of LAN")
     re_.set_defaults(fn=cmd_resume)
 
-    sp = sub.add_parser("stop", help="Abort current print (cloud-signed)")
+    sp = sub.add_parser("stop", help="Abort current print (LAN-signed)")
     sp.add_argument("--lan", action="store_true", help="force the LAN publish path")
+    sp.add_argument("--cloud", action="store_true", help="use the cloud-signed relay instead of LAN")
     sp.set_defaults(fn=cmd_stop)
 
     sk = sub.add_parser("skip", help="Skip objects on the running print "
-                                     "(print.skip_objects; cloud-signed)")
+                                     "(print.skip_objects; LAN-signed)")
     sk.add_argument("obj_ids", nargs="+", type=int,
                     help="per-plate object id(s) to skip")
     sk.add_argument("--lan", action="store_true", help="force the LAN publish path")
+    sk.add_argument("--cloud", action="store_true", help="use the cloud-signed relay instead of LAN")
     sk.set_defaults(fn=cmd_skip)
 
     sa = sub.add_parser("start", help="Smart start: resume paused print, else print again (ranked)")
     sa.add_argument("--lan", action="store_true", help="force the LAN publish path")
+    sa.add_argument("--cloud", action="store_true", help="use the cloud-signed relay instead of LAN")
     sa.set_defaults(fn=cmd_start)
 
     ky = sub.add_parser("key", aliases=["token"],

@@ -240,6 +240,19 @@ def format_report(checks: list[Check]) -> str:
 # ----- environment checks (fresh-OS / FRE prerequisites) ------------------
 
 
+def check_signing() -> Check:
+    """LAN print-control signing (X2D/H2D): key, cert id, app-cert expiry,
+    user_id (beambam.signing). Local files only, so it runs in every mode:
+    without it a refused print start reads as a printer problem."""
+    from beambam.signing import signing_status
+    sig = signing_status()
+    if sig.ready:
+        exp = f", app cert valid to {sig.app_cert_expires:%Y-%m-%d}" if sig.app_cert_expires else ""
+        return Check("Control", "Print-control signing", "pass",
+                     f"key + cert id present, user_id from {sig.user_id_source}{exp}")
+    return Check("Control", "Print-control signing", "warn", sig.summary())
+
+
 def check_environment() -> list[Check]:
     """Check the host environment for beambam prerequisites.
 
@@ -306,6 +319,8 @@ def check_environment() -> list[Check]:
                          "(slice / slice-print / cloud-print-design) will "
                          "fail. Install from https://bambulab.com/en/download "
                          "or build under bs-bionic/."))
+
+    out.append(check_signing())
 
     adb = shutil.which("adb")
     if adb:
@@ -459,6 +474,8 @@ def cmd_doctor(args: argparse.Namespace) -> int:
             with Printer() as printer:
                 state = printer.state(timeout=10.0)
             checks.extend(run_all_checks(state))
+            if not want_env:          # check_environment() already includes it
+                checks.append(check_signing())
         except Exception as e:                              # noqa: BLE001
             # Preserve the legacy contract: tests + callers may grep
             # stderr for the unreachable-printer error before deciding

@@ -35,6 +35,9 @@ def cmd_upload(args: argparse.Namespace) -> int:
     return 0
 
 
+from beambam.signing import SIGNATURE_REJECTED, signing_status  # noqa: E402
+
+
 def cmd_print(args: argparse.Namespace) -> int:
     """LAN-direct print: derive bed/temp from 3MF, validate AMS slot
     against live state, upload .gcode.3mf (unless --no-upload), publish
@@ -135,6 +138,11 @@ def cmd_print(args: argparse.Namespace) -> int:
         return _dry_run_report(local, float(getattr(args, "max_flush_g", 10.0)))
 
     creds = Creds.resolve(args)
+    signing = signing_status()
+    if not signing.ready:
+        # Not fatal (older firmware takes the legacy signature), but on an
+        # X2D/H2D this is why a start would be refused: say so up front.
+        sys.stderr.write(f"[print] WARNING: LAN print signing not ready: {signing.summary()}\n")
 
     # Step 3: upload (if requested) BEFORE we open the MQTT client so a
     # transient FTPS failure doesn't leave a stale subscription.
@@ -195,6 +203,8 @@ def cmd_print(args: argparse.Namespace) -> int:
             return 0
         if verdict == "refused":
             sys.stderr.write(f"[print] printer REFUSED the job: {detail}\n")
+            if any(str(code) in detail for code in SIGNATURE_REJECTED):
+                sys.stderr.write(f"[print] signature rejected: {signing_status().summary()}\n")
             return 1
         sys.stderr.write(
             f"[print] sent, but the printer did not confirm within {wait_s:g} s "

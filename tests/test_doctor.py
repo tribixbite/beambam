@@ -228,7 +228,11 @@ def test_cmd_doctor_exit_0_all_pass():
     args = argparse.Namespace(no_color=True, json_out=False)
     state = {"print": {"gcode_state": "IDLE", "ams": {"ams": []},
                        "hms": [], "wifi_signal": "-50dBm"}}
-    with patch("beambam.Printer") as Printer:
+    from beambam.doctor import Check
+    # The signing check reads this machine's ~/.x2d: pin it to pass.
+    with patch("beambam.Printer") as Printer, \
+         patch("beambam.doctor.check_signing",
+               return_value=Check("Control", "Print-control signing", "pass", "ok")):
         fake = MagicMock()
         Printer.return_value.__enter__.return_value = fake
         fake.state.return_value = state
