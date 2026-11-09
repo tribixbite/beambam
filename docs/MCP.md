@@ -98,7 +98,8 @@ EOF
 
 # Smoke-test the MCP server
 python3.12 runtime/mcp/test_mcp.py
-python3.12 -m mcp_x2d </dev/null    # should print "[mcp] x2d-bridge MCP server up …" then exit on EOF
+python3.12 -m mcp_x2d </dev/null    # should print "[mcp] beambam MCP server … up …" then exit on EOF
+beambam-mcp --help                  # usage + environment variables, does not start the server
 ```
 
 Termux can't run Claude Desktop directly. Two patterns work:
@@ -209,7 +210,7 @@ over SSH stdio.
 
 Once the server is wired in, ask Claude:
 
-> "Use the x2d-bridge tools. List my printers, then pull current
+> "Use the beambam tools. List my printers, then pull current
 >  temperatures."
 
 Expected behaviour: Claude calls `list_printers` → receives the JSON

@@ -199,7 +199,6 @@ def main() -> int:
     daemon_http = args.daemon_http
     camera_url = f"http://127.0.0.1:{camera_port}"
 
-    cam_thread = None
     if not args.no_spawn_helpers:
         if not _is_listening(daemon_http + "/healthz"):
             helpers.append(_spawn_helper(
@@ -228,7 +227,7 @@ def main() -> int:
                       "(RTSP disabled?); spinning up synthetic JPEG "
                       "stub on the same port for plumbing test",
                       file=sys.stderr)
-                cam_thread = _start_synthetic_camera(camera_port)
+                _start_synthetic_camera(camera_port)
 
     # Give helpers up to 30s to come up.
     if not args.no_spawn_helpers:
@@ -268,9 +267,9 @@ def main() -> int:
             "capabilities": {},
             "clientInfo": {"name": "x2d-live-client", "version": "0.1.0"},
         })
-        check("initialize result.serverInfo.name == 'x2d-bridge'",
+        check("initialize result.serverInfo.name == 'beambam'",
               resp.get("result", {}).get("serverInfo", {}).get("name")
-              == "x2d-bridge",
+              == "beambam",
               detail=str(resp))
         client.notify("notifications/initialized")
 

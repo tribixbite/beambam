@@ -85,7 +85,7 @@ def main() -> int:
         if "result" in resp:
             r = resp["result"]
             check("initialize has serverInfo.name",
-                  r.get("serverInfo", {}).get("name") == "x2d-bridge",
+                  r.get("serverInfo", {}).get("name") == "beambam",
                   detail=str(r.get("serverInfo")))
             check("initialize advertises tools capability",
                   "tools" in r.get("capabilities", {}),
