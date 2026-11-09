@@ -575,3 +575,19 @@ def test_live_ams_status_renders(live_printer):
     ams_block = state.get("print", {}).get("ams", {})
     text = format_status(ams_block, color=False)
     assert "AMS" in text or "no AMS" in text
+
+
+def test_generic_info_idx_covers_common_types():
+    from beambam.ams import _generic_info_idx
+    # Verified against the installed Bambu Studio generic @base catalogue.
+    assert _generic_info_idx("PLA") == "GFL99"
+    assert _generic_info_idx("PETG") == "GFG99"
+    assert _generic_info_idx("ABS") == "GFB99"
+    assert _generic_info_idx("ASA") == "GFB98"
+    assert _generic_info_idx("PC") == "GFC99"
+    assert _generic_info_idx("TPU") == "GFU99"
+    # Decorated / compound names fall back to the base polymer, not PLA.
+    assert _generic_info_idx("PETG-CF") == "GFG98"
+    assert _generic_info_idx("ABS-GF Pro") == "GFB99"
+    # A genuinely unknown type returns "" (never a wrong PLA claim).
+    assert _generic_info_idx("Unobtanium") == ""
