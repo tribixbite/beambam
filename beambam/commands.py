@@ -103,6 +103,10 @@ def send_command(cli: "X2DClient", payload: dict[str, Any], *,
 
     family = next(iter(payload))
     command = str(payload[family].get("command", ""))
+    # Correlate the reply to this exact publish by the sequence_id the printer
+    # echoes back, so a stale reply to an earlier identical command (or another
+    # client's concurrent same-named command) is not mistaken for this answer.
+    seq = str(payload[family].get("sequence_id", "")) or None
     since = cli.message_seq if hasattr(cli, "message_seq") else 0
     if family == "print":
         _publish_signed_or_legacy(cli, payload)
@@ -110,9 +114,9 @@ def send_command(cli: "X2DClient", payload: dict[str, Any], *,
         cli.publish(payload)
     if timeout <= 0 or not command or not hasattr(cli, "wait_for"):
         return None
-    msg = cli.wait_for(lambda m: command_reply(m, family, command) is not None,
+    msg = cli.wait_for(lambda m: command_reply(m, family, command, seq) is not None,
                        timeout, since=since)
-    reply = command_reply(msg, family, command) if msg is not None else None
+    reply = command_reply(msg, family, command, seq) if msg is not None else None
     if reply is not None and not reply.ok and raise_on_refusal:
         raise CommandRefused(reply)
     return reply

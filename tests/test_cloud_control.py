@@ -179,7 +179,8 @@ def test_publish_one_reports_a_refusal(monkeypatch, capsys):
         def connect(self): pass
         def disconnect(self): pass
         def wait_for(self, pred, timeout, since=None):
-            msg = {"print": {"command": "pause", "err_code": 84033545, "result": "failed",
+            msg = {"print": {"command": "pause", "sequence_id": "1",
+                             "err_code": 84033545, "result": "failed",
                              "reason": "mqtt message verify failed"}}
             return msg if pred(msg) else None
     monkeypatch.setattr(control._mqtt, "X2DClient", _Cli)

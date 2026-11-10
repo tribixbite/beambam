@@ -81,18 +81,27 @@ class CommandReply:
     raw: dict[str, Any]
 
 
-def command_reply(payload: dict[str, Any], family: str, command: str) -> CommandReply | None:
+def command_reply(payload: dict[str, Any], family: str, command: str,
+                  sequence_id: str | None = None) -> CommandReply | None:
     """Return the reply to ``family.command`` contained in ``payload``, or None.
 
     A reply is a ``{family: {"command": command, ...}}`` message that also
     has a ``result`` / ``err_code`` / ``reason`` (a ``push_status`` never
     does). It is a failure when ``err_code`` is non-zero or ``result`` says
     so (``"failed"``, ``"fail"``, ``"error"``).
+
+    When ``sequence_id`` is given, the reply must echo that id. The printer
+    copies the ``sequence_id`` we sent onto its reply, so this correlates a
+    reply to the exact command that was published — without it, a reply to an
+    earlier identical command, or to another client's concurrent command of
+    the same name, would be accepted as this one's answer.
     """
     body = payload.get(family)
     if not isinstance(body, dict) or body.get("command") != command:
         return None
     if not any(k in body for k in _REPLY_KEYS):
+        return None
+    if sequence_id is not None and str(body.get("sequence_id", "")) != sequence_id:
         return None
     try:
         err = int(body.get("err_code") or 0)
