@@ -29,10 +29,20 @@ from dataclasses import dataclass, field
 
 from beambam.paths import config_path
 
-__all__ = ["SigningStatus", "signing_status", "SIGNATURE_REJECTED"]
+__all__ = ["SigningStatus", "signing_status", "SIGNATURE_REJECTED",
+           "SIGNATURE_OK_DOWNSTREAM"]
 
 # err_codes the firmware returns when it rejects a command's signature.
+# 84033543 = missing/malformed signature (stage 1); 84033545 = cert not
+# authorized for print.* OR an under-floor sequence_id (stage 2 — the code is
+# overloaded, so a too-small seq looks like a cert-trust failure).
 SIGNATURE_REJECTED = frozenset({84033543, 84033545})
+
+# Stage 4: signature + cert + authorization ALL PASS; only a downstream
+# file/task check failed (see runtime/handy_extract/DART_HEAP_KEY_EXTRACTION.md).
+# A bare gcode_line (e.g. M400) on an idle printer has no task, so it lands here
+# even though signing fully succeeded — NOT a signing failure.
+SIGNATURE_OK_DOWNSTREAM = 84033544
 
 
 @dataclass

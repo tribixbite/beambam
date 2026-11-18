@@ -22,7 +22,7 @@ import itertools
 import time
 from typing import TYPE_CHECKING, Any
 
-from beambam.signing import SIGNATURE_REJECTED, signing_status
+from beambam.signing import SIGNATURE_OK_DOWNSTREAM, SIGNATURE_REJECTED, signing_status
 from beambam.state import CommandReply, command_reply
 
 if TYPE_CHECKING:
@@ -85,7 +85,12 @@ def refusal_message(reply: CommandReply) -> str:
         st = signing_status()
         msg += " — signature rejected: " + st.summary()
         if st.ready:
-            msg += " (inputs look current; the key may belong to another Handy install)"
+            msg += (" (inputs look current; a too-small sequence_id returns this "
+                    "same code, else the key may belong to another Handy install)")
+    elif reply.err_code == SIGNATURE_OK_DOWNSTREAM:
+        msg += (" — signature + cert + auth ACCEPTED; rejected only at the "
+                "downstream file/task stage (a bare gcode_line like M400 has no "
+                "task on an idle printer — use during a print, or pause/resume/stop)")
     return msg
 
 

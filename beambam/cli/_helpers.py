@@ -16,18 +16,32 @@ x2d_bridge.py re-exports each name so external callers + tests using
 """
 from __future__ import annotations
 
+import time
 from typing import Any
 
 
-_SEQ_COUNTER = 0
+# Signed `print.*` frames must carry a sequence_id above a firmware floor
+# (~2000). The Jan-2025+ X2D/H2D verifier rejects a lower seq EARLY and returns
+# err 84033545 — the SAME code it uses for "cert not authorized for print.*" —
+# BEFORE the cert/signature even matter, so a fully correct key+cert+user_id
+# still looks like a cert-trust failure when the seq is small (verified live
+# 2026-11-18: seq=1 → 84033545 stage 2; seq=5001 → 84033544 stage 4, i.e.
+# signature+cert+auth all pass). Real Handy frames stay above the floor (a
+# captured `print.stop` used seq 2009 — tests/test_mqtt_sign.py). Seed the
+# counter from a ms timestamp, exactly as the cloud-signed path already does
+# (cloud_control uses str(int(time.time()*1000))): always far above the floor,
+# and monotonic across process restarts so a fresh run never looks like a replay.
+_SEQ_COUNTER = int(time.time() * 1000)
 
 
 def _next_seq() -> str:
     """Return the next per-process sequence ID as a decimal string.
 
     Bambu's MQTT protocol uses sequence_id as the request/response
-    correlation key on `device/<sn>/request` ↔ `device/<sn>/report`.
-    Monotonic + per-process — never reset within a single x2d_bridge run.
+    correlation key on `device/<sn>/request` ↔ `device/<sn>/report`, and
+    signed `print.*` frames must additionally clear the firmware's
+    signed-frame floor (see the module note above). Seeded from a ms
+    timestamp, then monotonic + per-process — never reset within a run.
     """
     global _SEQ_COUNTER
     _SEQ_COUNTER += 1
