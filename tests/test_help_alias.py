@@ -25,12 +25,12 @@ def _run(*argv: str) -> subprocess.CompletedProcess:
 
 
 def test_help_subcommand_exists():
-    """`beambam --help` should mention the new `help` subcommand in the
-    top-level usage block."""
+    """`beambam --help` lists the `help` subcommand and its SYNOPSIS form."""
     r = _run("--help")
     assert r.returncode == 0, r.stderr
-    # The usage line lists every subcommand between {…}; "help" must be there.
-    assert ",help," in r.stdout or ",help}" in r.stdout or "{help," in r.stdout
+    assert "beambam help [<command> [<subcommand>]]" in r.stdout
+    assert any(line.split()[:1] == ["help"] for line in r.stdout.splitlines()), \
+        "`help` missing from the COMMANDS table"
 
 
 @pytest.mark.parametrize("topic", ["print", "ams", "cloud-search", "doctor"])

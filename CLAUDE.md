@@ -18,3 +18,16 @@ Running GUI apps (BambuStudio / wxWidgets 3.3) on termux-x11. These lessons were
 - **When x2d "exits ~1–16 s after launch", read the launcher's stderr first** — operad now keeps it in `~/.local/share/tmx/logs/bare-x2d.log`. A `CANNOT LINK EXECUTABLE` / `cannot locate symbol` line means a Termux or firmware update moved a library under the prebuilt `bs-bionic` binary; nothing in BS changed.
 - **ffmpeg drift (2026-11, ffmpeg 7.1→8.1):** BS needs avcodec 61 / avutil 59 / swscale 8. The 7.1 libs (+ swresample 5, libvpx 11, x265 4.1) live in `$PREFIX/opt/x2d-ffmpeg7/lib`, prepended by `run_gui.sh`; recipe in its comment. Termux links some deps by **bare name** (`libx265.so`), so "the file exists" proves nothing — check undefined symbols against what the installed lib exports, over the full NEEDED closure. A bare-name compat lib also shadows the new one for every *other* library in the process (it broke GStreamer's ffmpeg-8 libav plugin): give it a private soname with `patchelf --set-soname` + `--replace-needed`, on a copy then `mv` (never patch a file a running process has mapped).
 - **Android system libs can resolve against Termux libs of the same soname.** After the Oct 2026 One UI build, ANGLE's Vulkan path loads `/system/lib64/libdng_sdk.so`, which NEEDs `libjxl.so`; bionic reuses the already-loaded Termux `libjxl.so` (pulled in by webkit2gtk), which keeps `JxlResizableParallelRunner*` in `libjxl_threads.so`. Fix: preload Termux's `libjxl_threads.so` for BS only. The dlopen error names the referencing library — start there.
+
+## Tests
+
+- **The full pytest suite rewrites tracked screenshots** (`docs/webui-landscape-s25.png`,
+  `docs/webui-portrait-s25.png`, `docs/webui-portrait-tablet.png`, via
+  `runtime/webui/test_mobile.py`). Don't commit them by accident with `git add -A`, and expect
+  them to block a `git stash pop` if you ran the suite on a stashed tree.
+- `runtime/ha/test_*.py` (run through `tests/test_runtime_subprocesses.py`) need the `amqtt`
+  broker module; on a box without it those 3 fail regardless of your change.
+- CLI help is built by `beambam/cli/manhelp.py` (ManParser, inherited by every subparser) and
+  argument text missing at the `add_argument` site is filled from `beambam/cli/arghelp.py`.
+  `tests/test_cli_manhelp.py` fails if any argument has no help, or an EXAMPLES entry does not
+  parse.

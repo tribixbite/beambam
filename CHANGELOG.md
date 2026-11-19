@@ -5,6 +5,19 @@ All notable changes to this project.
 ## [Unreleased]
 
 ### Added
+- **Man-page help for every command.** `beambam --help`, `beambam <cmd> --help`
+  and `beambam help <cmd> [<sub>]` now render NAME / SYNOPSIS / DESCRIPTION /
+  ARGUMENTS / OPTIONS / EXAMPLES / SEE ALSO pages (bold flags, underlined
+  values, colour on a TTY honouring `NO_COLOR` / `FORCE_COLOR`, paged through
+  `$PAGER` when longer than the screen). The root page groups all commands by
+  topic and documents ENVIRONMENT, FILES and EXIT STATUS.
+- `beambam help --all` (every page), `beambam help --man` (roff source) and
+  `beambam help --install-man [DIR]` (writes `beambam.1` so `man beambam` works).
+- Running a command with a missing or invalid argument now prints that
+  command's full page followed by the error (exit 2); an unknown command prints
+  "did you mean" suggestions instead.
+- Help text for the ~130 arguments that had none (`beambam/cli/arghelp.py`);
+  `tests/test_cli_manhelp.py` fails if a new argument ships without help.
 - `beambam slice` and `beambam slice-print` now expose the **full slicer option
   set** for STL input — `--colors`, `--color-by-region`, and `--orient` — matching
   `x2d_slice.py`. Previously only `--color` was forwarded.
@@ -18,6 +31,16 @@ All notable changes to this project.
   nozzle cycle when nozzles aren't specified.
 
 ### Fixed
+- **`beambam status` (and every command that opens the printer's MQTT session)
+  no longer dumps a Python traceback when the printer is unreachable.** It
+  prints the target, the socket error and next steps — including "you are
+  probably on a different network" when this device's address is outside the
+  printer's /24 (seen when the phone joined a car's Android Auto Wi-Fi) — and
+  exits 3. Other network / file errors (`OSError`) from any command print one
+  line instead of a traceback (exit 3 for timeouts and connection errors, 1
+  otherwise). Set `BEAMBAM_DEBUG=1` for the traceback.
+- `slice-print --slot` help said "0-3"; it is the AMS global slot (0..15), as
+  the code already validated.
 - **`list_files` on a busy printer (`[SSL: INVALID_ALERT]`)**: subdir listings
   (e.g. `/cache`) failed with an invalid-alert during the data-channel handshake
   while a print was active — `list_files` used a bare `SSLContext(PROTOCOL_TLS_

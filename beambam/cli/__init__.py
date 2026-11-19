@@ -29,12 +29,10 @@ too.
 from __future__ import annotations
 
 
-# Top-level command catalog. argparse only supports ONE add_subparsers
-# block so all subcommands appear together in the default help — we
-# append this grouped TOC as the epilog so users can scan by topic.
-# Group entries are advisory: the actual command set comes from the
-# add_parser() calls in x2d_bridge.main(), so a new command shows up in
-# the auto help even if we forget to list it here.
+# Top-level command catalog, rendered as the grouped COMMANDS section of
+# `beambam --help` (beambam.cli.manhelp). Entries are advisory: the real
+# command set comes from the add_parser() calls in build_parser(), and any
+# registered command missing here is still listed, under "Other".
 _COMMAND_GROUPS: list[tuple[str, list[tuple[str, str]]]] = [
     ("LAN control", [
         ("status",         "One-shot pushall — current bed/nozzle/print state"),
@@ -140,25 +138,6 @@ _COMMAND_GROUPS: list[tuple[str, list[tuple[str, str]]]] = [
 ]
 
 
-def _build_epilog() -> str:
-    """Format _COMMAND_GROUPS into a `beambam --help` epilog.
-
-    argparse only supports ONE add_subparsers block, so all subcommands
-    appear together in the default help. We append this grouped TOC as
-    the epilog so users can scan by topic. Group entries are advisory:
-    the actual command set comes from add_parser() calls in
-    x2d_bridge.main(), so a new command shows up in the auto help even
-    if we forget to list it here."""
-    lines = ["", "Commands by topic:"]
-    for group, cmds in _COMMAND_GROUPS:
-        lines.append(f"\n  {group}")
-        for name, blurb in cmds:
-            lines.append(f"    {name:<24} {blurb}")
-    lines.append("")
-    lines.append("Run `beambam <command> --help` for full per-command flags.")
-    return "\n".join(lines)
-
-
 # ---------------------------------------------------------------------------
 # main() — argparse builder + dispatcher, moved from x2d_bridge.py in
 # Phase 5e batch 5. x2d_bridge.py re-exports `main` so the GUI shim's
@@ -172,6 +151,11 @@ import sys
 from pathlib import Path
 
 from beambam._version import PACKAGE_VERSION
+from beambam.cli.arghelp import fill_missing_help
+from beambam.cli.manhelp import (
+    ROOT_SUMMARY, ManParser, Style, use_color, install as install_manhelp,
+)
+from beambam.mqtt import PrinterUnreachableError
 from beambam.cli.control import (
     cmd_pause, cmd_resume, cmd_stop, cmd_gcode,
     cmd_home, cmd_level, cmd_set_temp, cmd_chamber_light,
@@ -202,7 +186,11 @@ from beambam.cli.lan import (
     cmd_upload, cmd_print, cmd_slice_print, cmd_files,
 )
 
-def main() -> int:
+def build_parser() -> argparse.ArgumentParser:
+    """Build the complete `beambam` argument parser (every subcommand).
+
+    Kept separate from main() so tests and `beambam help --man` can walk
+    the tree without parsing argv or running a command."""
     # On Windows the default console codepage (cp1252) can't encode the
     # em-dashes / arrows / degree signs in our help + status text, which
     # crashes `--help` (and any unicode output) with UnicodeEncodeError.
@@ -215,9 +203,7 @@ def main() -> int:
                     _reconfigure(encoding="utf-8")
                 except (ValueError, OSError):
                     pass
-    p = argparse.ArgumentParser(prog="beambam", description=__doc__,
-                                formatter_class=argparse.RawDescriptionHelpFormatter,
-                                epilog=_build_epilog())
+    p = ManParser(prog="beambam", description=ROOT_SUMMARY)
     p.add_argument("--version", action="version",
                    version=f"beambam {PACKAGE_VERSION}")
     p.add_argument("--ip", help="Printer LAN IP (overrides env / file)")
@@ -589,7 +575,7 @@ def main() -> int:
     sp.add_argument("--remote", help="Remote filename on printer "
                                      "(default: input basename)")
     sp.add_argument("--slot", type=int, default=0,
-                    help="AMS tray slot 0-3 (default: 0)")
+                    help="AMS global slot: AMS_index*4 + tray (0..15, default: 0)")
     sp.add_argument("--no-ams", action="store_true",
                     help="Print without AMS (use external spool)")
     sp.add_argument("--no-bed-level", action="store_true",
@@ -1254,16 +1240,67 @@ def main() -> int:
     # `beambam help <topic>` alias for `beambam <topic> --help`.
     help_sub = sub.add_parser(
         "help",
-        help="Show help for a topic (alias for `<topic> --help`).",
+        help="Show the manual page for a command (same as `<command> --help`), "
+             "or the whole manual.",
     )
     help_sub.add_argument(
-        "topic",
-        help="Subcommand name to print help for. e.g. `beambam help print`.",
+        "topic", nargs="*",
+        help="Command (and subcommand) to show, e.g. `beambam help print` or "
+             "`beambam help cam start`. With no topic, shows the overview.",
     )
+    help_mode = help_sub.add_mutually_exclusive_group()
+    help_mode.add_argument("--all", action="store_true",
+                           help="Show the pages for every command, one after another.")
+    help_mode.add_argument("--man", action="store_true",
+                           help="Print the complete manual as roff (man(7)) source on stdout.")
+    help_mode.add_argument("--install-man", nargs="?", const="", metavar="DIR",
+                           help="Write beambam.1 so `man beambam` works. DIR defaults "
+                                "to $PREFIX/share/man/man1 when writable, else "
+                                "~/.local/share/man/man1.")
     help_sub.set_defaults(fn=cmd_help, _root_parser=p)
 
+    fill_missing_help(p)
+    install_manhelp(p)
+    return p
+
+
+def _report_failure(args: argparse.Namespace, exc: BaseException) -> int:
+    """Print a one-paragraph diagnosis for an expected runtime failure.
+
+    Network problems and missing files are user-environment issues, not
+    bugs, so they get a message and exit status instead of a traceback.
+    BEAMBAM_DEBUG=1 re-raises for the full stack."""
+    if os.environ.get("BEAMBAM_DEBUG"):
+        raise exc
+    st = Style(use_color(sys.stderr))
+    cmd = " ".join(["beambam", *[w for w in [getattr(args, "cmd", None)] if w]])
+    err = sys.stderr
+    if isinstance(exc, PrinterUnreachableError):
+        err.write(f"{st.error(cmd + ':')} {exc}\n")
+        for hint in exc.hints():
+            err.write(f"  - {hint}\n")
+        return 3
+    if isinstance(exc, (TimeoutError, ConnectionError)):
+        err.write(f"{st.error(cmd + ':')} {exc or exc.__class__.__name__}\n")
+        err.write("  - run `beambam doctor` to check connectivity; "
+                  "set BEAMBAM_DEBUG=1 for the traceback\n")
+        return 3
+    err.write(f"{st.error(cmd + ':')} {exc}\n")
+    err.write("  - set BEAMBAM_DEBUG=1 for the traceback\n")
+    return 1
+
+
+def main() -> int:
+    """`beambam` console-script entry point: parse argv and dispatch."""
+    p = build_parser()
     args = p.parse_args()
-    return args.fn(args)
+    try:
+        return args.fn(args)
+    except KeyboardInterrupt:
+        sys.stderr.write("\ninterrupted\n")
+        return 130
+    except OSError as exc:  # unreachable printer, timeouts, missing files
+        return _report_failure(args, exc)
 
 
 if __name__ == "__main__":
