@@ -80,6 +80,7 @@ def _try_cloud_signed(args: argparse.Namespace, payload: dict):
         return None
     try:
         import cloud_client
+        from beambam import mqtt_sign
         from beambam.cloud_control import CloudPrinter
     except Exception:
         return None
@@ -102,6 +103,13 @@ def _try_cloud_signed(args: argparse.Namespace, payload: dict):
     print(json.dumps({"transport": "cloud-signed",
                       "command": f"{family}.{command.get('command')}",
                       "ack": ack}, indent=2))
+    problem = mqtt_sign.explain_ack(ack)
+    if problem:
+        # Don't fall back to LAN: X-series firmware verifies the same
+        # signature there, so the result would be identical.
+        print(f"[cloud-signed] {family}.{command.get('command')} was NOT accepted: "
+              f"{problem}", file=sys.stderr)
+        return 1
     return 0
 
 

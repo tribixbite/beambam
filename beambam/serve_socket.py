@@ -50,9 +50,8 @@ from beambam.cli._helpers import _next_seq
 # Lazy-imported inside handlers to dodge the
 # x2d_bridge → beambam.serve_socket → beambam.print_job → ... cycle on
 # fresh interpreter starts:
-#   PrintRefusal, _derive_print_params_from_3mf, _validate_ams_slot,
-#   start_print
-# All four come from beambam.print_job and are only touched by
+#   PrintRefusal + start_print (beambam.print_job) and the mapping planner
+#   (beambam.filament_mapping), only touched by
 # `_op_start_local_print`; deferring the import keeps module load fast.
 
 
@@ -819,12 +818,8 @@ def _op_start_local_print(h: _ConnHandler, args: dict) -> dict:
     # Lazy-import the print-job helpers to dodge the import cycle on
     # fresh interpreter starts (beambam.print_job → beambam.printer →
     # x2d_bridge → beambam.serve_socket).
-    from beambam.print_job import (
-        PrintRefusal,
-        _derive_print_params_from_3mf,
-        _validate_ams_slot,
-        start_print,
-    )
+    from beambam.filament_mapping import MappingError, plan_print, read_project
+    from beambam.print_job import PrintRefusal, start_print
     dev_id = str(args.get("dev_id", ""))
     dev_ip = str(args.get("dev_ip", ""))
     code = str(args.get("password", ""))
@@ -864,28 +859,33 @@ def _op_start_local_print(h: _ConnHandler, args: dict) -> dict:
         bed_temp_arg = int(float(raw_temp)) if raw_temp is not None else None
     except (TypeError, ValueError):
         bed_temp_arg = None
-    target_slot = ams_mapping[0] if ams_mapping else 0
-    # Per code-review #1: parity with cmd_print — validate AMS state
-    # before publishing. The serve-mode shim is the BS GUI's primary
-    # path and was previously skipping this guard entirely.
+    # Bambu Studio sends its own filament-indexed ams_mapping (-1 for unused
+    # filaments). Pass ALL of it through — using only entry 0 broke every
+    # plate whose first project filament is unused. The user already
+    # confirmed the mapping in Bambu Studio's dialog, so only hard errors
+    # (empty tray, wrong material, unreachable nozzle) refuse here.
+    plan = None
     if use_ams:
         try:
-            derived = _derive_print_params_from_3mf(local, filament_index=0)
-        except PrintRefusal as e:
-            raise _OpError(-4031, f"3MF derive failed: {e}") from e
+            project = read_project(local)
+        except MappingError as e:
+            raise _OpError(-4031, f"3MF read failed: {e}") from e
         try:
             live = sess.client.request_state(timeout=15.0)
         except TimeoutError as e:
             raise _OpError(-4032, f"could not pull printer state: {e}") from e
         try:
-            _validate_ams_slot(live, int(target_slot), derived, force=False)
-        except PrintRefusal as e:
-            raise _OpError(-4033, f"AMS slot validation failed: {e}") from e
+            plan = plan_print(project, live,
+                              slot=[int(s) for s in ams_mapping] if ams_mapping else None)
+        except MappingError as e:
+            raise _OpError(-4033, f"AMS mapping refused: {e}") from e
+        if plan.errors:
+            raise _OpError(-4033, "AMS mapping refused: " + "; ".join(plan.errors))
     try:
         start_print(
             sess.client, remote,
-            use_ams=use_ams,
-            ams_slot=target_slot,
+            use_ams=plan.use_ams if plan is not None else use_ams,
+            plan=plan,
             bed_levelling=bool(args.get("task_bed_leveling", True)),
             flow_cali=bool(args.get("task_flow_cali", False)),
             timelapse=bool(args.get("task_record_timelapse", False)),

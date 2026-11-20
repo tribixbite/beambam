@@ -110,7 +110,7 @@ def test_format_status_includes_every_tray():
     assert "ACTIVE" in text
     assert "◀" in text
     # AMS header with humidity bar + temp
-    assert "AMS 0" in text
+    assert "AMS A" in text and "A1 slot  0" in text
     assert "26.5°C" in text
     # Global slot numbers
     assert "slot  0" in text
@@ -219,7 +219,7 @@ def test_cmd_ams_status_calls_printer_state(capsys):
         rc = cmd_ams(args)
     assert rc == 0
     out = capsys.readouterr().out
-    assert "AMS 0" in out
+    assert "AMS A" in out
 
 
 def test_cmd_ams_status_json_emits_raw_block(capsys):

@@ -108,3 +108,40 @@ def verify_message(published: bytes, public_key) -> bool:
         return True
     except InvalidSignature:
         return False
+
+
+# The printer's signed-command verification ladder (see
+# runtime/handy_extract/DART_HEAP_KEY_EXTRACTION.md). Every rung replies with
+# the same reason string, "mqtt message verify failed"; only err_code tells
+# them apart.
+VERIFY_ERRORS: dict[int, str] = {
+    84033543: "the command carried no signature (unsigned publish)",
+    84033545: ("the printer does not accept the signing certificate — it has "
+               "expired, was never Bambu-issued, or was replaced when Bambu Handy "
+               "renewed its certificate. Re-extract the key and certificate with "
+               "`beambam key` (needs the rooted phone running Handy)"),
+    84033548: "the signature does not match the certificate (wrong key for this cert_id)",
+    84033544: "signature accepted, but the printer rejected the file / task details",
+}
+
+
+def explain_ack(ack: dict | None) -> str | None:
+    """One-line reason a printer ack is a failure, or None if it succeeded.
+
+    `ack` is the `<family>` object of the printer's reply (the one whose
+    sequence_id echoes ours). None (no reply) is reported as a failure too."""
+    if ack is None:
+        return "no reply from the printer (offline, or the command was dropped)"
+    result = str(ack.get("result", "")).lower()
+    code = ack.get("err_code")
+    try:
+        code_i = int(code) if isinstance(code, (int, str)) and code != "" else 0
+    except ValueError:
+        code_i = 0
+    if result in ("success", "ok", "") and code_i == 0:
+        return None
+    if code_i in VERIFY_ERRORS:
+        return f"{VERIFY_ERRORS[code_i]} (err_code {code_i})"
+    reason = ack.get("reason") or result or "failed"
+    return f"{reason}" + (f" (err_code {code_i})" if code_i else "")
+

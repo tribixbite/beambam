@@ -47,11 +47,8 @@ def cmd_daemon(args: argparse.Namespace) -> int:
     from beambam.config import Creds
     from beambam.ftps import upload_file
     from beambam.mqtt import X2DClient
-    from beambam.print_job import (
-        _derive_print_params_from_3mf,
-        _validate_ams_slot,
-        start_print,
-    )
+    from beambam.filament_mapping import plan_print, read_project
+    from beambam.print_job import PrintRefusal, start_print
     from beambam.state_hub import StateHub
     # Canonical homes for everything we need:
     #   * `_serve_http`     — beambam.serve_http
@@ -127,15 +124,19 @@ def cmd_daemon(args: argparse.Namespace) -> int:
                     # start_print() auto-derive bed_type/bed_temp so
                     # heat profile matches the slice.
                     queued_3mf = Path(job.gcode)
-                    derived = _derive_print_params_from_3mf(
-                        queued_3mf, filament_index=0)
                     live = cli.request_state(timeout=15.0)
-                    _validate_ams_slot(live, int(job.slot), derived,
-                                        force=False)
+                    # Unattended: hard errors AND soft mismatches refuse
+                    # (nobody is there to confirm a different colour/brand).
+                    plan = plan_print(read_project(queued_3mf), live,
+                                      slot=int(job.slot))
+                    if plan.errors or plan.warnings:
+                        raise PrintRefusal(
+                            "filament mapping not clean: "
+                            + "; ".join(plan.errors + plan.warnings))
                     start_print(cli, queued_3mf.name,
-                                use_ams=True,
-                                ams_slot=int(job.slot),
-                                local_path=queued_3mf)
+                                use_ams=plan.use_ams,
+                                local_path=queued_3mf,
+                                plan=plan)
                 LOG_QUEUE.info(
                     "queue dispatched %s → %s slot %d",
                     job.label or job.gcode, job.printer, job.slot)

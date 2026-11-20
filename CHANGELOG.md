@@ -5,6 +5,34 @@ All notable changes to this project.
 ## [Unreleased]
 
 ### Added
+- **Full filament → tray mapping with confirmation before every print**
+  (`beambam/filament_mapping.py`). `beambam print` and `beambam slice-print`
+  now read the plate's *used* filaments and their nozzle assignments from the
+  `.gcode.3mf`, read the printer's AMS trays, external spools and Filament
+  Track Switch routing from live state, auto-map each filament to the best
+  matching loaded tray (type-first, colour-first for 3+ colour prints —
+  CIE76 ΔE, mirroring BambuStudio's `DevMappingUtil`), print the plan and ask
+  before starting. Hard mismatches (empty tray, wrong material class, a tray
+  that can't reach the sliced nozzle) always refuse; soft ones (brand /
+  profile / colour) need a `y` on the terminal or `--yes`.
+- **`--map F=TRAY,…` and `--plate N`** on `print` / `slice-print`: choose trays
+  per filament (`--map 1=B3,4=ext-right`, using the touchscreen A1–D4 labels or
+  a global slot), and select which sliced plate to print. `--slot` now defaults
+  to auto-mapping and is for single-filament plates.
+- **`beambam ams map FILE`** — preview the exact filament→tray plan (with the
+  `ams_mapping` arrays) for a sliced file without printing. Exit 0 clean, 2
+  warnings, 1 errors.
+- **The Filament Track Switch is now modelled.** `beambam ams status` shows
+  which nozzle(s) each AMS feeds and the switch state; AMS units are labelled
+  A–D and trays A1–D4 to match the printer. Files sliced for the switch's
+  automatic nozzle mode (`enable_filament_dynamic_map`) are refused with a clear
+  message (the printer-computed nozzle map isn't reproducible yet).
+- The LAN print path now **waits for the printer's `project_file` reply** and
+  reports acceptance vs. rejection (mapping the signed-command error ladder —
+  84033543/5/8/4 — to plain English via `beambam.mqtt_sign.explain_ack`), and
+  `beambam doctor --env` **checks the signing certificate's expiry** (an expired
+  Handy app cert makes every signed command fail with err 84033545).
+
 - **Man-page help for every command.** `beambam --help`, `beambam <cmd> --help`
   and `beambam help <cmd> [<sub>]` now render NAME / SYNOPSIS / DESCRIPTION /
   ARGUMENTS / OPTIONS / EXAMPLES / SEE ALSO pages (bold flags, underlined
@@ -31,6 +59,19 @@ All notable changes to this project.
   nozzle cycle when nozzles aren't specified.
 
 ### Fixed
+- **Every `cloud-*` REST command failed with an unreadable HTTP 403.** Bambu's
+  Cloudflare WAF began blocking requests whose `X-BBL-Client-Name` header is
+  `OrcaSlicer`; it is now `BambuStudio` (what BambuStudio's own client sends).
+  The HTTP-error path also gzip-decodes the response body, so a future block
+  shows the real message instead of binary mojibake. (`cloud_client.py`)
+- `beambam print --slot N` and the BambuStudio GUI shim / print queue sent the
+  filament mapping **indexed from 0 regardless of which project filament the
+  plate uses** — a single-colour plate printing filament 5 of 5 mapped
+  filament 1, and the GUI shim used only `ams_mapping[0]`. Mapping is now
+  indexed by project filament throughout, and bed-temp derivation reads the
+  plate's actual first filament.
+- `build_x2d_project_file` now honours bed-levelling / flow-cali / vibration-cali
+  and the plate index (previously hard-coded to auto / plate 1).
 - **`beambam status` (and every command that opens the printer's MQTT session)
   no longer dumps a Python traceback when the printer is unreachable.** It
   prints the target, the socket error and next steps — including "you are

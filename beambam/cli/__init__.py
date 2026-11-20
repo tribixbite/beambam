@@ -229,8 +229,23 @@ def build_parser() -> argparse.ArgumentParser:
     pr = sub.add_parser("print", help="Upload + start_print")
     pr.add_argument("file")
     pr.add_argument("--remote")
-    pr.add_argument("--slot", type=int, default=0,
-                    help="AMS global slot (AMS_index*4 + tray_in_ams), 0..15")
+    pr.add_argument("--slot", type=int, default=None,
+                    help="AMS global slot (AMS_index*4 + tray_in_ams, 0..15) for a "
+                         "plate that uses ONE filament. Default: auto-map every used "
+                         "filament to the best matching loaded tray (type, then "
+                         "colour; colour first for 3+ colour prints).")
+    pr.add_argument("--map", metavar="F=TRAY,...",
+                    help="Choose trays per filament: comma-separated FILAMENT=TRAY, filament "
+                         "numbers as Bambu Studio shows them (1-based); TRAY is a global "
+                         "slot (AMS_index*4 + tray), the touchscreen label (B3 = AMS B, "
+                         "slot 3), ext-left or ext-right. Filaments not named are "
+                         "auto-mapped. e.g. --map 1=B3,4=ext-right")
+    pr.add_argument("--plate", type=int, default=1,
+                    help="Which sliced plate of the .gcode.3mf to print.")
+    pr.add_argument("-y", "--yes", action="store_true",
+                    help="Accept the filament mapping without asking (it is still "
+                         "printed). Without a terminal, needed to accept mapping "
+                         "warnings.")
     pr.add_argument("--no-upload", action="store_true",
                     help="Skip upload — file is already on the printer")
     pr.add_argument("--no-ams", action="store_true")
@@ -574,8 +589,17 @@ def build_parser() -> argparse.ArgumentParser:
                          "bambu-studio --repetitions. (3MF input only)")
     sp.add_argument("--remote", help="Remote filename on printer "
                                      "(default: input basename)")
-    sp.add_argument("--slot", type=int, default=0,
-                    help="AMS global slot: AMS_index*4 + tray (0..15, default: 0)")
+    sp.add_argument("--slot", type=int, default=None,
+                    help="AMS global slot: AMS_index*4 + tray (0..15) for a single-"
+                         "filament model. Default: auto-map to the best matching tray.")
+    sp.add_argument("--map", metavar="F=TRAY,...",
+                    help="Choose trays per filament: comma-separated FILAMENT=TRAY, filament "
+                         "numbers as Bambu Studio shows them (1-based); TRAY is a global "
+                         "slot (AMS_index*4 + tray), the touchscreen label (B3 = AMS B, "
+                         "slot 3), ext-left or ext-right. Filaments not named are "
+                         "auto-mapped. e.g. --map 1=B3,4=ext-right")
+    sp.add_argument("-y", "--yes", action="store_true",
+                    help="Accept the filament mapping without asking (it is still printed).")
     sp.add_argument("--no-ams", action="store_true",
                     help="Print without AMS (use external spool)")
     sp.add_argument("--no-bed-level", action="store_true",

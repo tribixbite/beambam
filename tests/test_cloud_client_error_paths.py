@@ -204,6 +204,31 @@ def test_request_4xx_with_non_json_body_uses_raw_text(monkeypatch):
     assert "Bad Gateway" in str(exc.value)
 
 
+def test_request_4xx_gzip_body_is_inflated(monkeypatch):
+    """Bambu's Cloudflare WAF 403 ships a gzip-encoded HTML body. The error
+    message must be decompressed (a raw gzip body reads as binary mojibake,
+    which hid this block behind unreadable output for every cloud-* call).
+    """
+    import email.message
+
+    hdrs = email.message.Message()
+    hdrs["Content-Encoding"] = "gzip"
+    inner = b'{"message": "Account suspended"}'
+    err = urllib.error.HTTPError(
+        url="https://example.com/x", code=403, msg="Forbidden",
+        hdrs=hdrs, fp=io.BytesIO(gzip.compress(inner)),
+    )
+
+    def _raise(req, timeout=None, context=None):
+        raise err
+
+    monkeypatch.setattr(cloud_client.urllib.request, "urlopen", _raise)
+
+    with pytest.raises(cloud_client.CloudError) as exc:
+        cloud_client._request("GET", "https://example.com/x")
+    assert "Account suspended" in str(exc.value)
+
+
 # ===== URLError (network layer) ==========================================
 
 

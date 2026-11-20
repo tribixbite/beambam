@@ -75,7 +75,11 @@ DEFAULT_TIMEOUT = 15
 USER_AGENT = "bambu_network_agent/01.09.05.01"
 BBL_HEADERS = {
     "User-Agent":            USER_AGENT,
-    "X-BBL-Client-Name":     "OrcaSlicer",
+    # Must be "BambuStudio": Bambu's Cloudflare WAF began 403-ing requests
+    # whose X-BBL-Client-Name is "OrcaSlicer" (verified 2026-11-19 — every
+    # cloud-* REST call failed). BambuStudio's own GUI_App.cpp sends
+    # SLIC3R_APP_NAME = "BambuStudio" here; matching it clears the block.
+    "X-BBL-Client-Name":     "BambuStudio",
     "X-BBL-Client-Type":     "slicer",
     "X-BBL-Client-Version":  "01.09.05.51",
     "X-BBL-Language":        "en-US",
@@ -234,7 +238,19 @@ def _request(method: str,
     except urllib.error.HTTPError as e:
         body_str = ""
         try:
-            body_str = e.read().decode("utf-8", errors="replace")
+            raw = e.read()
+            # The error response honours Accept-Encoding too, so a gzip body
+            # must be inflated or the message is unreadable binary (this hid a
+            # Cloudflare WAF block behind mojibake for every failing cloud-*).
+            hdrs = getattr(e, "headers", None)
+            enc = ((hdrs.get("Content-Encoding") if hdrs else "") or "").lower()
+            if enc == "gzip":
+                import gzip
+                raw = gzip.decompress(raw)
+            elif enc == "deflate":
+                import zlib
+                raw = zlib.decompress(raw)
+            body_str = raw.decode("utf-8", errors="replace")
         except Exception:
             pass
         # Bambu returns JSON error bodies; pull the message if present.
