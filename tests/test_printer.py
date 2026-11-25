@@ -188,3 +188,57 @@ def test_refused_command_raises():
         send_command(_Cli(), {"system": {"command": "ledctrl"}}, raise_on_refusal=True)
     assert command_reply({"system": {"command": "ledctrl", "result": "success"}},
                          "system", "ledctrl").ok
+
+
+def test_set_tray_metadata_is_signed_and_clears_the_seq_floor():
+    """ams_filament_setting is print.*: it must go through send_command (the
+    signed path), not the raw X2DClient.publish, with a sequence id the
+    firmware accepts (it refuses signed frames under ~2000 with 84033545)."""
+    from beambam.commands import SIGNED_SEQ_FLOOR
+    p = Printer(creds=FAKE)
+    p._client = MagicMock()
+    with patch("beambam.commands.send_command", return_value=None) as send:
+        out = p.set_tray_metadata(5, tray_type="PETG", tray_info_idx="GFG99",
+                                  nozzle_temp_min=230, nozzle_temp_max=260)
+    p._client.publish.assert_not_called()
+    sent = send.call_args.args[1]
+    assert sent is out
+    assert sent["print"]["command"] == "ams_filament_setting"
+    assert (sent["print"]["ams_id"], sent["print"]["slot_id"]) == (1, 1)
+    assert int(sent["print"]["sequence_id"]) >= SIGNED_SEQ_FLOOR
+    assert send.call_args.kwargs["raise_on_refusal"]
+
+
+def test_set_tray_metadata_refusal_raises():
+    import pytest as _pytest
+    from beambam.commands import CommandRefused
+    from beambam.state import command_reply
+    reply = command_reply({"print": {"command": "ams_filament_setting", "result": "fail",
+                                     "err_code": 84033545}}, "print", "ams_filament_setting")
+    p = Printer(creds=FAKE)
+    p._client = MagicMock()
+    with patch("beambam.commands.send_command", side_effect=CommandRefused(reply)):
+        with _pytest.raises(CommandRefused):
+            p.set_tray_metadata(0, tray_type="PLA", tray_info_idx="GFL99",
+                                nozzle_temp_min=190, nozzle_temp_max=230)
+
+
+def test_send_command_raises_a_low_print_seq_but_not_other_families():
+    from beambam.commands import SIGNED_SEQ_FLOOR, command_payload, send_command
+
+    class _Cli:
+        message_seq = 0
+        def __init__(self): self.sent = []
+        def publish(self, payload): self.sent.append(payload)
+    cli = _Cli()
+    for seq in ("0", "1999", "", "abc"):
+        payload = {"print": {"command": "ams_filament_drying", "sequence_id": seq}}
+        send_command(cli, payload, timeout=0)
+        assert int(cli.sent[-1]["print"]["sequence_id"]) >= SIGNED_SEQ_FLOOR, seq
+    ok = {"print": {"command": "pause", "sequence_id": "1795600000000"}}
+    send_command(cli, ok, timeout=0)
+    assert cli.sent[-1]["print"]["sequence_id"] == "1795600000000"
+    sysmsg = {"system": {"command": "ledctrl", "sequence_id": "0"}}
+    send_command(cli, sysmsg, timeout=0)
+    assert cli.sent[-1]["system"]["sequence_id"] == "0"     # unsigned: left alone
+    assert int(command_payload("print", "pause")["print"]["sequence_id"]) >= SIGNED_SEQ_FLOOR

@@ -18,8 +18,6 @@ Payload builders for commands whose shape is easy to get wrong live here too.
 """
 from __future__ import annotations
 
-import itertools
-import time
 from typing import TYPE_CHECKING, Any
 
 from beambam.signing import SIGNATURE_OK_DOWNSTREAM, SIGNATURE_REJECTED, signing_status
@@ -39,7 +37,28 @@ __all__ = [
 ]
 
 DEFAULT_REPLY_TIMEOUT_S = 8.0
-_seq = itertools.count(int(time.time()) % 100000)
+# Signed `print.*` frames whose sequence_id is under this are refused by the
+# Jan-2025+ X2D/H2D verifier with 84033545 (the same code as an unauthorised
+# cert) before the cert is checked — see beambam/cli/_helpers.py.
+SIGNED_SEQ_FLOOR = 2000
+
+
+def _next_seq() -> str:
+    # The one process-wide counter (ms-seeded, monotonic); imported lazily so
+    # this module does not pull in the CLI package at import time.
+    from beambam.cli._helpers import _next_seq as next_seq
+    return next_seq()
+
+
+def _raise_low_seq(body: dict[str, Any]) -> None:
+    """Give a `print.*` body a sequence id above SIGNED_SEQ_FLOOR when it has
+    none or a lower one (payload builders used a literal "0")."""
+    try:
+        low = int(str(body.get("sequence_id", ""))) < SIGNED_SEQ_FLOOR
+    except ValueError:
+        low = True
+    if low:
+        body["sequence_id"] = _next_seq()
 
 
 class CommandRefused(RuntimeError):
@@ -52,7 +71,7 @@ class CommandRefused(RuntimeError):
 
 def command_payload(family: str, command: str, **fields: Any) -> dict[str, Any]:
     """`{family: {"command": command, "sequence_id": <n>, **fields}}`."""
-    return {family: {"command": command, "sequence_id": str(next(_seq)), **fields}}
+    return {family: {"command": command, "sequence_id": _next_seq(), **fields}}
 
 
 def ams_load_payload(ams_id: int, slot_id: int, *, curr_temp: int = 215,
@@ -107,6 +126,9 @@ def send_command(cli: "X2DClient", payload: dict[str, Any], *,
     from beambam.print_job import _publish_signed_or_legacy
 
     family = next(iter(payload))
+    if family == "print" and isinstance(payload[family], dict):
+        # Before the seq is read for correlation below; changes `payload`.
+        _raise_low_seq(payload[family])
     command = str(payload[family].get("command", ""))
     # Correlate the reply to this exact publish by the sequence_id the printer
     # echoes back, so a stale reply to an earlier identical command (or another

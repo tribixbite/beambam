@@ -269,6 +269,8 @@ class Printer(AbstractContextManager):
         RRGGBBAA hex (alpha auto-appended `FF` if 6 chars passed). When
         `tray_color` is None the firmware keeps the existing color.
 
+        Signed like the other `print.*` methods and acked: raises
+        beambam.commands.CommandRefused when the printer refuses it.
         Returns the payload that was published, for caller logging.
         For dry-run payload inspection (no MQTT connection), use
         `beambam.ams.build_tray_metadata_payload` directly.
@@ -283,7 +285,9 @@ class Printer(AbstractContextManager):
             tray_color=tray_color,
             setting_id=setting_id,
         )
-        self.mqtt.publish(payload)
+        # print.* must go through the signed path like every other control
+        # method here; a raw publish is refused by X2D/H2D (err 84033545).
+        self.publish(payload)
         return payload
 
     # --- FTPS (no MQTT) ---------------------------------------------------
