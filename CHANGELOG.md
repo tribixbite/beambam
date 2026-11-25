@@ -12,6 +12,9 @@ All notable changes to this project.
   nozzles, and the print plan then asked for a re-slice. Both are now passed on
   (`--has-filament-switcher=1`) when the project has them on. The upload's time
   prefix no longer ends up in the print file's name either.
+- Home Assistant: AMS trays first reported while the bridge was still
+  connecting to MQTT were never announced to Home Assistant (a race between the
+  connect handler and the first state frame).
 
 ## v1.6.1 — print from another app over HTTP, track-switch auto nozzle files, Home Assistant fixes (2026-11-25)
 

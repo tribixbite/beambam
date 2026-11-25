@@ -579,6 +579,10 @@ class HAPublisher:
         # _sync_ams_entities); keyed by entity key.
         self._ams_entities: dict[str, Entity] = {}
         self._connected = threading.Event()
+        # Orders _on_connect (MQTT thread: publishes every config, then sets
+        # _connected) against _sync_ams_entities (SSE thread): without it a
+        # tray that first appears in between is recorded but never published.
+        self._ams_lock = threading.Lock()
         self._sse_thread: threading.Thread | None = None
         self._snapshot_thread: threading.Thread | None = None
         # Snapshot poll cadence (seconds) — once every 10s by default;
@@ -650,6 +654,11 @@ class HAPublisher:
             return
         LOG.info("connected to %s:%d as %s",
                  self.broker_host, self.broker_port, self._client_id)
+        with self._ams_lock:
+            self._publish_on_connect(client)
+
+    def _publish_on_connect(self, client) -> None:
+        """_on_connect's work, under _ams_lock (see __init__)."""
         # Publish all discovery configs (retained).
         for ent in self._entities + list(self._ams_entities.values()):
             self._publish_discovery(client, ent)
@@ -682,17 +691,18 @@ class HAPublisher:
         config (HA: delete) for ones that went away."""
         want = {e.key: e for e in ams_entities(sorted(derived.get("ams") or {}),
                                                 sorted(derived.get("ams_units") or {}))}
-        if want.keys() == self._ams_entities.keys():
-            return
-        gone = [e for k, e in self._ams_entities.items() if k not in want]
-        added = [e for k, e in want.items() if k not in self._ams_entities]
-        self._ams_entities = want
-        if not self._connected.is_set():
-            return                      # _on_connect publishes the full set
-        for e in added:
-            self._publish_discovery(self._client, e)
-        for e in gone:
-            self._client.publish(self._discovery_topic(e), "", qos=1, retain=True)
+        with self._ams_lock:
+            if want.keys() == self._ams_entities.keys():
+                return
+            gone = [e for k, e in self._ams_entities.items() if k not in want]
+            added = [e for k, e in want.items() if k not in self._ams_entities]
+            self._ams_entities = want
+            if not self._connected.is_set():
+                return                  # the next _on_connect publishes the full set
+            for e in added:
+                self._publish_discovery(self._client, e)
+            for e in gone:
+                self._client.publish(self._discovery_topic(e), "", qos=1, retain=True)
 
     def _on_disconnect(self, _client, _userdata, _flags, reason_code, _props):
         self._connected.clear()

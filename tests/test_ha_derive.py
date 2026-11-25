@@ -130,3 +130,42 @@ def test_change_filament_payload_extruder_and_bounds():
             build_change_filament_payload(bad)
     with pytest.raises(ValueError):
         build_change_filament_payload(3, extruder=2)
+
+
+def test_trays_seen_while_connecting_are_published():
+    """The first state frame can arrive while _on_connect is still publishing (it sets
+    `_connected` last). Its AMS entities must still reach the broker: CI lost 5 of them once."""
+    import threading
+    import time
+
+    from runtime.ha.publisher import HAPublisher
+
+    class _Client:
+        def __init__(self):
+            self.topics: list[str] = []
+            self.first = threading.Event()
+            self.go = threading.Event()
+
+        def publish(self, topic, payload="", qos=0, retain=False):
+            if not self.first.is_set():
+                self.first.set()
+                self.go.wait(5)          # hold _on_connect mid-way
+            self.topics.append(topic)
+
+        def subscribe(self, *_a, **_k):
+            pass
+
+    pub = HAPublisher(broker_host="127.0.0.1", device_serial="00M09A000000000")
+    fake = _Client()
+    pub._client = fake
+    connecting = threading.Thread(target=pub._on_connect, args=(fake, None, None, 0, None))
+    connecting.start()
+    assert fake.first.wait(5)
+    frame = threading.Thread(target=pub.state_payload, args=(_x2d(),))
+    frame.start()
+    time.sleep(0.2)                      # the frame now waits for _on_connect (or, unfixed, drops)
+    fake.go.set()
+    connecting.join(5)
+    frame.join(5)
+    published = {t.split("/")[-2] for t in fake.topics if t.endswith("/config")}
+    assert {"ams_a1_color", "ams_d1_color", "ams_a_humidity", "ams_d_damp"} <= published
