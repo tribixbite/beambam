@@ -251,7 +251,9 @@ def test_slice_a_project_then_plan_it(tmp_path, daemon, monkeypatch):
     assert code == 202, body
     job = _wait(port, body["poll"])
     assert job["state"] == "done", job
-    assert job["file"].endswith("jolteon_pokefit.gcode.3mf") and Path(job["file"]).is_file()
+    # Named as sent (the printer shows it as the job), not after the stored upload's time prefix.
+    assert Path(job["file"]).name == "jolteon_pokefit.gcode.3mf" and Path(job["file"]).is_file()
+    assert job["source"] == "jolteon_pokefit.3mf"
     assert job["seconds"] == 3600.5 and job["grams"] == 12.5 and job["grams_per_filament"] == [10.0, 2.5]
     argv = json.loads((Path(job["file"]).parent / "argv.json").read_text())
     # The bundled machine profile replaces the project's (newer Bambu Studio start G-code).

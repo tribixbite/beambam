@@ -754,7 +754,7 @@ def _serve_http(bind: str,
             dest = upload_dir / f"{int(time.time())}_{fname}"
             dest.write_bytes(body)
             try:
-                sjob = slice_jobs.start(dest)
+                sjob = slice_jobs.start(dest, name=fname)
             except ValueError as e:
                 self._send_json({"error": str(e)}, status=400)
                 return

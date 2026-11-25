@@ -126,8 +126,9 @@ def _run(cmd: list[str], out_dir: Path, env: dict[str, str], timeout: float) -> 
 
 
 def slice_project(src: Path, out_dir: Path, *, timeout: float = SLICE_TIMEOUT_S,
-                  root: Path | None = None) -> dict[str, Any]:
-    """Slice every plate of `src` into `out_dir/<stem>.gcode.3mf`.
+                  root: Path | None = None, name: str | None = None) -> dict[str, Any]:
+    """Slice every plate of `src` into `out_dir/<stem>.gcode.3mf`, `<stem>` from
+    `name` (the caller's file name; the printer shows it as the job) or `src`.
 
     Returns {"ok", "file", "seconds", "grams", "grams_per_filament", "warnings",
     "error"}; slicer failures come back as `error`, never raised. ValueError
@@ -137,13 +138,14 @@ def slice_project(src: Path, out_dir: Path, *, timeout: float = SLICE_TIMEOUT_S,
     if not exe.is_file():
         return {"ok": False, "error": f"the headless Bambu Studio is not installed ({exe})"}
     out_dir.mkdir(parents=True, exist_ok=True)
-    stem = src.name[:-len(".3mf")] if src.name.lower().endswith(".3mf") else src.stem
-    name = f"{stem}.gcode.3mf"
+    base = Path(name or src.name).name
+    stem = base[:-len(".3mf")] if base.lower().endswith(".3mf") else Path(base).stem
+    out_name = f"{stem}.gcode.3mf"
     cmd = [str(exe), "--slice", "0", "--allow-newer-file=1"]
     machine = machine_profile(settings, root)
     if machine is not None:
         cmd += ["--load-settings", str(machine)]
-    cmd += ["--outputdir", str(out_dir), "--export-3mf", name, str(src.resolve())]
+    cmd += ["--outputdir", str(out_dir), "--export-3mf", out_name, str(src.resolve())]
     (out_dir / "result.json").unlink(missing_ok=True)
     t0 = time.time()
     try:
@@ -156,7 +158,7 @@ def slice_project(src: Path, out_dir: Path, *, timeout: float = SLICE_TIMEOUT_S,
         return {"ok": False, "error": f"the slicer {why} without a result ({out_dir / 'slicer.log'})"}
     plates = res.get("sliced_plates") or []
     warnings = [str(p["warning_message"]) for p in plates if p.get("warning_message")]
-    out = out_dir / name
+    out = out_dir / out_name
     if res.get("return_code") != 0 or not plates or not out.is_file():
         return {"ok": False, "warnings": warnings,
                 "error": f"{res.get('error_string') or 'slicing failed'} (code {res.get('return_code')})"}
@@ -170,6 +172,7 @@ def slice_project(src: Path, out_dir: Path, *, timeout: float = SLICE_TIMEOUT_S,
 class SliceJob:
     id: str
     source: str
+    name: str = ""                 # the caller's file name (the upload is stored with a time prefix)
     state: str = "queued"          # queued → slicing → done | failed
     message: str = ""
     result: dict[str, Any] = field(default_factory=dict)
@@ -177,7 +180,7 @@ class SliceJob:
     finished: float | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return {"id": self.id, "source": Path(self.source).name, "state": self.state,
+        return {"id": self.id, "source": self.name or Path(self.source).name, "state": self.state,
                 "message": self.message, "created": self.created, "finished": self.finished,
                 "done": self.state in TERMINAL, **self.result}
 
@@ -196,15 +199,16 @@ class SliceJobs:
         with self._lock:
             return self._jobs.get(job_id)
 
-    def start(self, src: Path) -> SliceJob:
+    def start(self, src: Path, name: str | None = None) -> SliceJob:
         """Check `src` is a project now (ValueError), then slice it in a thread
-        (RuntimeError when a slice is already running)."""
+        (RuntimeError when a slice is already running). `name`: the caller's
+        file name, which the print file is named after."""
         project_settings(src)
         with self._lock:
             if self._busy:
                 raise RuntimeError("a slice is already running; wait for it to finish")
             self._busy = True
-            job = SliceJob(id=uuid.uuid4().hex[:12], source=str(src))
+            job = SliceJob(id=uuid.uuid4().hex[:12], source=str(src), name=name or "")
             self._jobs[job.id] = job
         threading.Thread(target=self._run, args=(job, src), name=f"slice-{job.id}", daemon=True).start()
         return job
@@ -221,7 +225,7 @@ class SliceJobs:
         out_root = self._out_root or (Path.home() / ".x2d" / "uploads" / "sliced")
         try:
             self._set(job, "slicing", f"slicing {src.name}")
-            res = slice_project(src, out_root / job.id)
+            res = slice_project(src, out_root / job.id, name=job.name or None)
             if res.get("ok"):
                 self._set(job, "done", "sliced", res)
             else:
