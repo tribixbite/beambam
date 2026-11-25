@@ -48,7 +48,8 @@ def _report_start_ack(ack: dict | None, what: str, plan) -> None:
 
 
 def _plan_and_confirm(args: argparse.Namespace, live: dict, local: Path, *,
-                      use_ams: bool, force: bool, plate: int = 1):
+                      use_ams: bool, force: bool, plate: int = 1,
+                      extra_explicit: dict[int, int] | None = None):
     """Build the filament → tray plan for `local` against live printer state,
     show it, and get consent before the print starts.
 
@@ -59,6 +60,8 @@ def _plan_and_confirm(args: argparse.Namespace, live: dict, local: Path, *,
       `--yes` answers the prompt for you.
     * Without a terminal there is nobody to ask: soft warnings refuse unless
       `--force` (or `--yes`) is given, as the old slot check did.
+    `extra_explicit` ({filament_index: tray}) pins filaments that came from an
+    AMS colour sync (`slice-print --colors A1,B3`); `--map` entries win over it.
     Returns the PrintPlan to pass to start_print(plan=...)."""
     from beambam.filament_mapping import (
         MappingError, format_plan, parse_map, plan_print, read_project,
@@ -75,9 +78,11 @@ def _plan_and_confirm(args: argparse.Namespace, live: dict, local: Path, *,
         slot = parsed[0] if len(parsed) == 1 else parsed
     try:
         project = read_project(local, plate)
-        explicit = parse_map(args.map) if getattr(args, "map", None) else None
+        explicit = dict(extra_explicit or {})
+        if getattr(args, "map", None):
+            explicit.update(parse_map(args.map))
         plan = plan_print(project, live, use_ams=use_ams,
-                          slot=slot, explicit=explicit)
+                          slot=slot, explicit=explicit or None)
     except MappingError as e:
         raise SystemExit(f"[print] refused: {e}")
     tty = sys.stdin.isatty() and sys.stderr.isatty()
@@ -251,6 +256,65 @@ def cmd_print(args: argparse.Namespace) -> int:
     return 0
 
 
+def _template_filament_type(template: Path) -> str:
+    """First filament type of a slicing template ('' when unreadable)."""
+    import json as _json
+    import zipfile as _zf
+    try:
+        with _zf.ZipFile(template) as z:
+            ps = _json.loads(z.read("Metadata/project_settings.config"))
+    except (OSError, KeyError, ValueError, _zf.BadZipFile):
+        return ""
+    ft = ps.get("filament_type")
+    return str(ft[0]) if isinstance(ft, list) and ft else ""
+
+
+def _sync_colours_from_ams(args: argparse.Namespace, root: Path):
+    """Resolve tray references in `--color` / `--colors` against live AMS state.
+
+    Returns an AmsColourSync, or None when no entry names a tray (nothing to
+    sync — the colours go to the slicer unchanged). Exits with a message when
+    a tray is missing/empty or holds a different material than the slice
+    profile, before any slicing time is spent."""
+    from beambam.config import Creds
+    from beambam.filament_mapping import (
+        MappingError, has_tray_refs, material_conflicts, sync_colours_from_ams,
+    )
+    from beambam.mqtt import X2DClient
+
+    raw = getattr(args, "colors", None) or getattr(args, "color", None)
+    if not raw:
+        return None
+    entries = [e.strip() for e in str(raw).split(",") if e.strip()]
+    if not has_tray_refs(entries):
+        return None
+    creds = Creds.resolve(args)
+    cli = X2DClient(creds)
+    cli.connect()
+    try:
+        live = cli.request_state(timeout=15.0)
+    except TimeoutError:
+        raise SystemExit("could not read the AMS to sync colours from trays "
+                         f"({', '.join(entries)}); re-run when `beambam status` works.")
+    finally:
+        cli.disconnect()
+    try:
+        sync = sync_colours_from_ams(entries, live)
+    except MappingError as e:
+        raise SystemExit(f"[slice-print] refused: {e}")
+    template = Path(args.template) if getattr(args, "template", None) \
+        else root / "rumi_frame.gcode.3mf"
+    conflicts = material_conflicts(sync, _template_filament_type(template))
+    if conflicts:
+        raise SystemExit("[slice-print] refused: " + "; ".join(conflicts)
+                         + " — pick trays of that material, or slice from a template "
+                           "with the right filament profile (--template)")
+    sys.stderr.write("[slice-print] colours synced from the AMS: " + ", ".join(
+        f"{i + 1}={entries[i]}→{c}" if i in sync.explicit else f"{i + 1}={c}"
+        for i, c in enumerate(sync.colours)) + "\n")
+    return sync
+
+
 def cmd_slice_print(args: argparse.Namespace) -> int:
     """One-shot pipeline: slice an STL with x2d_slice.py + upload + start
     print on the configured X2D. Resolves #99 in IMPROVEMENTS.md.
@@ -286,6 +350,13 @@ def cmd_slice_print(args: argparse.Namespace) -> int:
     slice_bin = X2D_ROOT_PATH / "x2d_slice.py"
     if not slice_bin.exists():
         sys.exit(f"x2d_slice.py not found at {slice_bin}")
+
+    # AMS colour sync: tray references in --color / --colors (A1, B3,
+    # ext-left) are replaced by the colours loaded in those trays, and each
+    # such filament is pinned to its tray for the print.
+    sync = None
+    if stl.suffix.lower() != ".3mf":
+        sync = _sync_colours_from_ams(args, X2D_ROOT_PATH)
 
     with tempfile.TemporaryDirectory(prefix="x2d_sp_") as td:
         out_3mf = Path(td) / f"{stl.stem}.gcode.3mf"
@@ -346,10 +417,13 @@ def cmd_slice_print(args: argparse.Namespace) -> int:
                 cmd.extend(["--mm", str(args.mm)])
             if getattr(args, "copies", 1) and int(args.copies) != 1:
                 cmd.extend(["--copies", str(int(args.copies))])
-            if args.color:
-                cmd.extend(["--color", args.color])
-            if getattr(args, "colors", None):
-                cmd.extend(["--colors", args.colors])
+            if sync is not None:
+                cmd.extend(["--colors", ",".join(sync.colours)])
+            else:
+                if args.color:
+                    cmd.extend(["--color", args.color])
+                if getattr(args, "colors", None):
+                    cmd.extend(["--colors", args.colors])
             if getattr(args, "color_by_region", None):
                 cmd.extend(["--color-by-region", args.color_by_region])
             if getattr(args, "orient", "original") != "original":
@@ -405,7 +479,8 @@ def cmd_slice_print(args: argparse.Namespace) -> int:
             # slice-print has no --force: soft mismatches need a yes on
             # the terminal or --yes.
             plan = _plan_and_confirm(args, live, out_3mf,
-                                     use_ams=not args.no_ams, force=False)
+                                     use_ams=not args.no_ams, force=False,
+                                     extra_explicit=sync.explicit if sync else None)
             upload_file(creds, out_3mf, remote_name=args.remote, remote_dir="cache")
             ack = start_print(cli, name,
                               use_ams=plan.use_ams,

@@ -4,7 +4,25 @@ All notable changes to this project.
 
 ## [Unreleased]
 
+## v1.6.0 — filament mapping, AMS sync, man-page help (2026-11-24)
+
 ### Added
+- **AMS colour sync for `slice-print`.** `--color` / `--colors` accept AMS trays
+  (`A1`–`D4`, `ext-left`, `ext-right`) alongside hex and Bambu colour names:
+  `beambam slice-print part.stl --copies 2 --colors A1,B3` reads the colours
+  loaded in those trays from the live printer, slices with them, and pins each
+  of those filaments to its tray for the print (`--map` still overrides). A
+  missing or empty tray, or a tray whose material differs from the slice
+  profile's, is refused before any slicing time is spent.
+- **`--slot` takes one slot per used filament** (`--slot 4,0,12`) on `print`,
+  `slice-print` and `ams map`, in the order of the plate's used filaments; a
+  single slot keeps its old meaning. (Merged from the `--slot`-list work on
+  main and routed through the filament planner, so every slot is checked
+  against its own filament.)
+- `beambam <command> help` (e.g. `beambam ams map help`) opens that command's
+  page, like `--help`.
+- `beambam help <word>` with no command of that name suggests near-miss names
+  and lists every command whose summary mentions the word.
 - **Full filament → tray mapping with confirmation before every print**
   (`beambam/filament_mapping.py`). `beambam print` and `beambam slice-print`
   now read the plate's *used* filaments and their nozzle assignments from the
@@ -18,7 +36,7 @@ All notable changes to this project.
 - **`--map F=TRAY,…` and `--plate N`** on `print` / `slice-print`: choose trays
   per filament (`--map 1=B3,4=ext-right`, using the touchscreen A1–D4 labels or
   a global slot), and select which sliced plate to print. `--slot` now defaults
-  to auto-mapping and is for single-filament plates.
+  to auto-mapping.
 - **`beambam ams map FILE`** — preview the exact filament→tray plan (with the
   `ams_mapping` arrays) for a sliced file without printing. Exit 0 clean, 2
   warnings, 1 errors.
@@ -41,9 +59,11 @@ All notable changes to this project.
   topic and documents ENVIRONMENT, FILES and EXIT STATUS.
 - `beambam help --all` (every page), `beambam help --man` (roff source) and
   `beambam help --install-man [DIR]` (writes `beambam.1` so `man beambam` works).
-- Running a command with a missing or invalid argument now prints that
-  command's full page followed by the error (exit 2); an unknown command prints
-  "did you mean" suggestions instead.
+- Running a command with a missing argument prints that command's full page
+  followed by the error (exit 2). A mistyped option or bad value prints the
+  command's synopsis, the error, the closest real option (`--slto: did you mean
+  --slot?`) and a pointer to the manual; an unknown command prints "did you
+  mean" suggestions.
 - Help text for the ~130 arguments that had none (`beambam/cli/arghelp.py`);
   `tests/test_cli_manhelp.py` fails if a new argument ships without help.
 - `beambam slice` and `beambam slice-print` now expose the **full slicer option
@@ -59,6 +79,26 @@ All notable changes to this project.
   nozzle cycle when nozzles aren't specified.
 
 ### Fixed
+- **Commands that need a printer now say how to set one up.** With no printer
+  configured they print `no printer configured (missing: …)` and point at
+  `beambam init`, `beambam find --add` and `beambam config add`, instead of an
+  INI-file template. `beambam doctor` no longer exits on that error — it reports
+  it as a failed check and runs the local environment checks — and `beambam
+  doctor` output is no longer coloured when piped or under `NO_COLOR`.
+- `beambam boo` printed a Python tuple list when no printer was reachable; it now
+  prints one line per printer with the reason.
+- Cloud commands without a session now say to run `beambam cloud-login` first
+  (several still named the old `x2d_bridge.py`, others just "not logged in");
+  `cloud-pause/resume/stop` without a resolvable printer explain how to choose
+  one; `history` / `whoami` give the same login hint.
+- `beambam cam` / `cam watch` with no camera proxy running now say to start it
+  with `beambam cam start` instead of a bare "Connection refused".
+- A missing input file is reported as `file not found: PATH` (some paths
+  printed only the bare file name).
+- `beambam jog` validates the axis (X/Y/Z/E, any case) at parse time.
+- `CloudClient.login_code_only` asked Bambu to email a login code *before*
+  checking it had a way to read the code, so a call without a resolver sent a
+  useless email (and its unit test made a live request). It now fails first.
 - **Every `cloud-*` REST command failed with an unreadable HTTP 403.** Bambu's
   Cloudflare WAF began blocking requests whose `X-BBL-Client-Name` header is
   `OrcaSlicer`; it is now `BambuStudio` (what BambuStudio's own client sends).
@@ -104,6 +144,9 @@ All notable changes to this project.
   `libbambu_networking.so` shim has a modern `python -m beambam.cli` to spawn.
 
 ### Changed
+- Removed the repo's Claude Code Stop hooks (`.claude/hooks/loop-*.sh`): their
+  `#!/usr/bin/env bash` shebang failed under the hook runner on Termux, so they
+  errored at the end of every session.
 - **Relicensed from MIT to AGPL-3.0-or-later.** The pure-Python tree (previously
   MIT) is now AGPL-3.0, matching the already-AGPL BambuStudio fork +
   `runtime/network_shim/`. Bars closed-source forks and, via AGPL §13, closed

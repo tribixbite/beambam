@@ -332,10 +332,13 @@ def test_login_code_only_calls_sendemail_then_login(cli, monkeypatch):
     assert calls[1][3] == "123456"
 
 
-def test_login_code_only_without_resolver_raises(cli):
-    """Missing resolver should fail-fast, not silently no-op."""
+def test_login_code_only_without_resolver_raises(cli, monkeypatch):
+    """Missing resolver should fail fast, before any request — not send the
+    user a login email it can never read (and not touch the network here)."""
+    cap = _patch_request(monkeypatch, {})
     with pytest.raises(cloud_client.CloudError, match="code_resolver"):
         cli.login_code_only("user@example.com", region="us", code_resolver=None)
+    assert cap.calls == []
 
 
 # ----- /f3mf robot wall (GeeTest v4 captcha) ------------------------------

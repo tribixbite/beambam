@@ -315,6 +315,73 @@ def test_confirm_prompt_no_cancels_and_errors_never_pass(tmp_path, x2d_state, mo
 
 
 # --------------------------------------------------------------------------
+# AMS colour sync (slice-print --colors A1,B3)
+# --------------------------------------------------------------------------
+
+def test_parse_tray_forms():
+    assert fm.parse_tray("B3") == 6 and fm.parse_tray("a1") == 0
+    assert fm.parse_tray("ext-left") == fm.EXT_SPOOL_DEPUTY
+    assert fm.parse_tray("ext") == fm.EXT_SPOOL_MAIN
+    assert fm.parse_tray("6") == 6
+    # In a colour list a bare number or a colour name is never a tray.
+    assert fm.parse_tray("6", allow_number=False) is None
+    assert fm.parse_tray("Gold", allow_number=False) is None
+    assert fm.parse_tray("#A1B2C3", allow_number=False) is None
+    assert fm.has_tray_refs(["Red", "B3"]) and not fm.has_tray_refs(["Red", "#00FF00"])
+
+
+def test_sync_replaces_tray_refs_with_live_colours(x2d_state):
+    sync = fm.sync_colours_from_ams(["A2", "#FF0000", "B4"], x2d_state)
+    assert sync.colours == ["#7C4B00", "#FF0000", "#FFFFFF"]
+    assert sync.explicit == {0: 1, 2: 7}          # filament 1 → A2, filament 3 → B4
+    assert sync.types == {0: "PLA", 2: "PLA"}
+    assert fm.material_conflicts(sync, "PLA") == []
+    petg = fm.sync_colours_from_ams(["A1"], x2d_state)          # A1 holds PETG
+    assert fm.material_conflicts(petg, "PLA") == ["colour 1 is PETG but the slice profile is PLA"]
+
+
+def test_sync_refuses_missing_and_empty_trays(x2d_state):
+    with pytest.raises(fm.MappingError, match="does not exist"):
+        fm.sync_colours_from_ams(["D1"], x2d_state)              # only AMS A and B fitted
+    x2d_state["print"]["ams"]["ams"][0]["tray"][1]["tray_type"] = ""
+    with pytest.raises(fm.MappingError, match="is empty"):
+        fm.sync_colours_from_ams(["A2"], x2d_state)
+
+
+def test_slice_print_sync_pins_trays_and_map_wins(tmp_path, x2d_state, monkeypatch):
+    import beambam.cli.lan as lan
+    import beambam.mqtt as mqtt
+
+    class _Client:
+        def __init__(self, creds): pass
+        def connect(self): pass
+        def disconnect(self): pass
+        def request_state(self, timeout=15.0): return x2d_state
+
+    monkeypatch.setattr(mqtt, "X2DClient", _Client)
+    monkeypatch.setattr("beambam.config.Creds.resolve", staticmethod(lambda a: None))
+    template = make_3mf(tmp_path, [("PLA", "#FFFFFF", "GFA00", "1")], name="tpl.gcode.3mf")
+    args = _args(colors="A2,B4", color=None, template=str(template))
+    sync = lan._sync_colours_from_ams(args, tmp_path)
+    assert sync is not None and sync.explicit == {0: 1, 1: 7}
+    # No tray reference → nothing to sync, and the printer is not contacted.
+    assert lan._sync_colours_from_ams(_args(colors="Red,Blue", color=None), tmp_path) is None
+    # A PETG tray for a PLA template is refused before slicing.
+    with pytest.raises(SystemExit, match="PETG but the slice profile is PLA"):
+        lan._sync_colours_from_ams(_args(colors="A1", color=None, template=str(template)),
+                                   tmp_path)
+    # The sliced file then prints from the synced trays; --map overrides one of them.
+    sliced = make_3mf(tmp_path, [("PLA", "#7C4B00", "GFL99", "1"), ("PLA", "#FFFFFF", "GFA19", "2")],
+                      used={1: [1, 2]})
+    plan = lan._plan_and_confirm(_args(yes=True), x2d_state, sliced, use_ams=True, force=False,
+                                 extra_explicit=sync.explicit)
+    assert {a.filament.number: a.tray.tray_id for a in plan.assignments} == {1: 1, 2: 7}
+    plan = lan._plan_and_confirm(_args(yes=True, map="2=A4"), x2d_state, sliced, use_ams=True,
+                                 force=False, extra_explicit=sync.explicit)
+    assert {a.filament.number: a.tray.tray_id for a in plan.assignments} == {1: 1, 2: 3}
+
+
+# --------------------------------------------------------------------------
 # signed-command failures
 # --------------------------------------------------------------------------
 

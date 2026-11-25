@@ -195,16 +195,18 @@ def cmd_daemon(args: argparse.Namespace) -> int:
             print(f"[x2d-bridge] {name or '<default>'}: connected to "
                   f"{creds.ip}", file=sys.stderr)
         except SystemExit as e:
-            failed.append(
-                (name, f"creds resolve failed (exit {e.code})"))
+            # Creds.resolve() exits with the full setup instructions; keep
+            # them whole (printed once below) rather than repr()-ing them.
+            failed.append((name, str(e.code)))
         except Exception as e:
             failed.append((name, str(e)))
             print(f"[x2d-bridge] {name or '<default>'}: connect "
                   f"failed: {e} — other printers continue",
                   file=sys.stderr)
     if not clients:
-        print(f"[x2d-bridge] no printers reachable: {failed}",
-              file=sys.stderr)
+        print("[x2d-bridge] no printers reachable:", file=sys.stderr)
+        for fname, why in failed:
+            print(f"  {fname or '<default>'}: {why}", file=sys.stderr)
         return 2
 
     def _safe_pushall(name: str, cli: X2DClient) -> None:

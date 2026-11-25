@@ -204,11 +204,52 @@ def test_status_unreachable_is_a_message_not_a_traceback():
     assert "beambam find" in r.stderr
 
 
-def test_unrecognized_flag_shows_the_subcommands_page():
-    """argparse reports leftover args from the root parser; the page shown
-    must still be the one for the command the user typed."""
+def test_unrecognized_flag_shows_the_subcommands_usage_and_a_suggestion():
+    """argparse reports leftover args from the root parser; the usage shown
+    must still be the typed command's, short enough to keep the mistake in
+    view, with the closest real option and a pointer to the manual."""
     r = _run("install-completion", "--print", "bash")
     assert r.returncode == 2
-    assert r.stderr.startswith("BEAMBAM-INSTALL-COMPLETION(1)")
-    assert r.stderr.rstrip().endswith(
-        "beambam install-completion: error: unrecognized arguments: --print")
+    assert r.stderr.startswith("usage: beambam install-completion ")
+    assert "beambam install-completion: error: unrecognized arguments: --print" in r.stderr
+    assert "--print: did you mean --install?" in r.stderr
+    assert r.stderr.rstrip().endswith("run `beambam install-completion --help` for the full manual")
+    assert "OPTIONS" not in r.stderr                       # not the whole page
+
+
+def test_bad_value_is_short_too():
+    r = _run("print", "x.gcode.3mf", "--slot", "99")
+    assert r.returncode == 2
+    assert r.stderr.startswith("usage: beambam print ")
+    assert "AMS slots are 0..15" in r.stderr and "OPTIONS" not in r.stderr
+
+
+def test_trailing_help_word_opens_the_page():
+    for argv in (("ams", "map", "help"), ("print", "help"), ("--printer", "x", "ams", "help")):
+        r = _run(*argv)
+        assert r.returncode == 0, (argv, r.stderr)
+        name = "-".join(a for a in argv if a not in ("help", "--printer", "x")).upper()
+        assert r.stdout.startswith(f"BEAMBAM-{name}(1)"), argv
+
+
+def test_help_unknown_topic_suggests_and_searches():
+    r = _run("help", "ams", "mpa")
+    assert r.returncode == 1 and "did you mean: beambam ams map?" in r.stderr
+    r = _run("help", "filament")
+    assert "commands mentioning 'filament':" in r.stderr and "beambam ams map" in r.stderr
+
+
+def test_missing_creds_points_at_init(tmp_path):
+    r = _run("status", env={"HOME": str(tmp_path), "X2D_IP": "", "X2D_CODE": "",
+                            "X2D_SERIAL": "", "X2D_PRINTER": ""})
+    assert r.returncode == 1 and "Traceback" not in r.stderr
+    assert "no printer configured (missing: ip, code, serial)" in r.stderr
+    assert "beambam init" in r.stderr
+
+
+def test_doctor_runs_without_a_configured_printer(tmp_path):
+    r = _run("doctor", "--no-color", env={"HOME": str(tmp_path), "X2D_IP": "", "X2D_CODE": "",
+                                          "X2D_SERIAL": "", "X2D_PRINTER": ""})
+    assert r.returncode == 2 and "Traceback" not in r.stderr
+    assert "Printer configured" in r.stdout and "beambam init" in r.stdout
+    assert "\033[" not in r.stdout

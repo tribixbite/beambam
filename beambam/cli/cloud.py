@@ -20,6 +20,10 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     import paho.mqtt.client as mqtt
 
+# Shown by every cloud-* command that needs a session it doesn't have.
+NOT_LOGGED_IN = ("not logged in to Bambu cloud — run `beambam cloud-login` first "
+                 "(`beambam cloud-status` shows the session)")
+
 
 def cmd_cloud_logout(_args: argparse.Namespace) -> int:
     """Clear the persisted Bambu Cloud session."""
@@ -200,7 +204,7 @@ def cmd_cloud_printers(args: argparse.Namespace) -> int:
     import cloud_client
     cli = cloud_client.CloudClient.load_or_anonymous()
     if cli.session.empty:
-        print("not logged in — run `x2d_bridge.py cloud-login` first",
+        print("not logged in to Bambu cloud — run `beambam cloud-login` first",
               file=sys.stderr)
         return 1
     try:
@@ -294,7 +298,7 @@ def cmd_cloud_spool_add(args: argparse.Namespace) -> int:
         return rc
     cli = cloud_client.CloudClient.load_or_anonymous()
     if cli.session.empty:
-        print("not logged in", file=sys.stderr)
+        print(NOT_LOGGED_IN, file=sys.stderr)
         return 1
     body = _spool_body_from_args(args)
     try:
@@ -317,7 +321,7 @@ def cmd_cloud_spool_update(args: argparse.Namespace) -> int:
         return rc
     cli = cloud_client.CloudClient.load_or_anonymous()
     if cli.session.empty:
-        print("not logged in", file=sys.stderr)
+        print(NOT_LOGGED_IN, file=sys.stderr)
         return 1
     body = _spool_body_from_args(args)
     # path-segment, not body field for PUT
@@ -349,7 +353,7 @@ def cmd_cloud_spool_delete(args: argparse.Namespace) -> int:
         return rc
     cli = cloud_client.CloudClient.load_or_anonymous()
     if cli.session.empty:
-        print("not logged in", file=sys.stderr)
+        print(NOT_LOGGED_IN, file=sys.stderr)
         return 1
     try:
         cli.delete_spool(args.filament_id)
@@ -366,7 +370,7 @@ def cmd_cloud_search_suggest(_args: argparse.Namespace) -> int:
     import cloud_client
     cli = cloud_client.CloudClient.load_or_anonymous()
     if cli.session.empty:
-        print("not logged in", file=sys.stderr); return 1
+        print(NOT_LOGGED_IN, file=sys.stderr); return 1
     sugs = cli.get_search_suggestions()
     print("\n".join(sugs))
     return 0
@@ -378,7 +382,7 @@ def cmd_cloud_profile(args: argparse.Namespace) -> int:
     import cloud_client
     cli = cloud_client.CloudClient.load_or_anonymous()
     if cli.session.empty:
-        print("not logged in", file=sys.stderr); return 1
+        print(NOT_LOGGED_IN, file=sys.stderr); return 1
     try:
         prof = cli.get_my_profile()
     except cloud_client.CloudError as e:
@@ -408,7 +412,7 @@ def cmd_cloud_points(args: argparse.Namespace) -> int:
     import cloud_client
     cli = cloud_client.CloudClient.load_or_anonymous()
     if cli.session.empty:
-        print("not logged in", file=sys.stderr); return 1
+        print(NOT_LOGGED_IN, file=sys.stderr); return 1
     try:
         progress = cli.get_points_progress()
     except cloud_client.CloudError as e:
@@ -430,7 +434,7 @@ def cmd_cloud_unread(args: argparse.Namespace) -> int:
     import cloud_client
     cli = cloud_client.CloudClient.load_or_anonymous()
     if cli.session.empty:
-        print("not logged in", file=sys.stderr); return 1
+        print(NOT_LOGGED_IN, file=sys.stderr); return 1
     try:
         trouble = cli.get_trouble_unread_count()
         makerworld = cli.get_makerworld_unread_count()
@@ -450,7 +454,7 @@ def cmd_cloud_app_config(args: argparse.Namespace) -> int:
     import cloud_client
     cli = cloud_client.CloudClient.load_or_anonymous()
     if cli.session.empty:
-        print("not logged in", file=sys.stderr); return 1
+        print(NOT_LOGGED_IN, file=sys.stderr); return 1
     try:
         r = cli.get_app_configuration()
     except cloud_client.CloudError as e:
@@ -475,7 +479,7 @@ def cmd_cloud_history(args: argparse.Namespace) -> int:
     import cloud_client
     cli = cloud_client.CloudClient.load_or_anonymous()
     if cli.session.empty:
-        print("not logged in — run `x2d_bridge.py cloud-login` first",
+        print("not logged in to Bambu cloud — run `beambam cloud-login` first",
               file=sys.stderr)
         return 1
     try:
@@ -508,7 +512,7 @@ def cmd_cloud_task(args: argparse.Namespace) -> int:
     import cloud_client
     cli = cloud_client.CloudClient.load_or_anonymous()
     if cli.session.empty:
-        print("not logged in", file=sys.stderr); return 1
+        print(NOT_LOGGED_IN, file=sys.stderr); return 1
     try:
         t = cli.get_task(args.task_id)
     except cloud_client.CloudError as e:
@@ -522,7 +526,7 @@ def cmd_cloud_messages(args: argparse.Namespace) -> int:
     import cloud_client
     cli = cloud_client.CloudClient.load_or_anonymous()
     if cli.session.empty:
-        print("not logged in", file=sys.stderr); return 1
+        print(NOT_LOGGED_IN, file=sys.stderr); return 1
     msgs: dict = {}
     try:
         counts = cli.get_message_count()
@@ -555,7 +559,7 @@ def cmd_cloud_tickets(args: argparse.Namespace) -> int:
     import cloud_client
     cli = cloud_client.CloudClient.load_or_anonymous()
     if cli.session.empty:
-        print("not logged in", file=sys.stderr); return 1
+        print(NOT_LOGGED_IN, file=sys.stderr); return 1
     try:
         r = cli.get_trouble_tickets(limit=int(args.limit))
         unread_t = cli.get_trouble_unread_count()
@@ -581,7 +585,7 @@ def cmd_cloud_firmware(args: argparse.Namespace) -> int:
     import cloud_client
     cli = cloud_client.CloudClient.load_or_anonymous()
     if cli.session.empty:
-        print("not logged in", file=sys.stderr); return 1
+        print(NOT_LOGGED_IN, file=sys.stderr); return 1
     try:
         devs = cli.get_device_firmware_versions()
     except cloud_client.CloudError as e:
@@ -602,7 +606,7 @@ def cmd_cloud_filaments(args: argparse.Namespace) -> int:
     import cloud_client
     cli = cloud_client.CloudClient.load_or_anonymous()
     if cli.session.empty:
-        print("not logged in", file=sys.stderr); return 1
+        print(NOT_LOGGED_IN, file=sys.stderr); return 1
     try:
         rows = cli.get_filament_inventory()
     except cloud_client.CloudError as e:
@@ -643,7 +647,7 @@ def cmd_cloud_search(args: argparse.Namespace) -> int:
     import cloud_client
     cli = cloud_client.CloudClient.load_or_anonymous()
     if cli.session.empty:
-        print("not logged in", file=sys.stderr); return 1
+        print(NOT_LOGGED_IN, file=sys.stderr); return 1
     try:
         r = cli.search_designs(args.query, limit=int(args.limit),
                                 offset=int(args.offset))
@@ -662,7 +666,7 @@ def cmd_cloud_browse(args: argparse.Namespace) -> int:
     import cloud_client
     cli = cloud_client.CloudClient.load_or_anonymous()
     if cli.session.empty:
-        print("not logged in", file=sys.stderr); return 1
+        print(NOT_LOGGED_IN, file=sys.stderr); return 1
     try:
         r = cli.browse_designs_by_nav(args.nav, limit=int(args.limit),
                                        offset=int(args.offset))
@@ -681,7 +685,7 @@ def cmd_cloud_design(args: argparse.Namespace) -> int:
     import cloud_client
     cli = cloud_client.CloudClient.load_or_anonymous()
     if cli.session.empty:
-        print("not logged in", file=sys.stderr); return 1
+        print(NOT_LOGGED_IN, file=sys.stderr); return 1
     try:
         r = cli.get_design(args.design_id)
     except cloud_client.CloudError as e:
@@ -710,7 +714,7 @@ def cmd_cloud_design_remixes(args: argparse.Namespace) -> int:
     import cloud_client
     cli = cloud_client.CloudClient.load_or_anonymous()
     if cli.session.empty:
-        print("not logged in", file=sys.stderr); return 1
+        print(NOT_LOGGED_IN, file=sys.stderr); return 1
     try:
         r = cli.get_design_remixes(args.design_id)
     except cloud_client.CloudError as e:
@@ -728,7 +732,7 @@ def cmd_cloud_favorites(args: argparse.Namespace) -> int:
     import cloud_client
     cli = cloud_client.CloudClient.load_or_anonymous()
     if cli.session.empty:
-        print("not logged in", file=sys.stderr); return 1
+        print(NOT_LOGGED_IN, file=sys.stderr); return 1
     try:
         r = cli.get_favorites()
     except cloud_client.CloudError as e:
@@ -749,7 +753,7 @@ def cmd_cloud_liked(args: argparse.Namespace) -> int:
     import cloud_client
     cli = cloud_client.CloudClient.load_or_anonymous()
     if cli.session.empty:
-        print("not logged in", file=sys.stderr); return 1
+        print(NOT_LOGGED_IN, file=sys.stderr); return 1
     try:
         r = cli.get_liked_designs()
     except cloud_client.CloudError as e:
@@ -766,7 +770,7 @@ def cmd_cloud_presets(args: argparse.Namespace) -> int:
     import cloud_client
     cli = cloud_client.CloudClient.load_or_anonymous()
     if cli.session.empty:
-        print("not logged in", file=sys.stderr); return 1
+        print(NOT_LOGGED_IN, file=sys.stderr); return 1
     try:
         r = cli.get_slicer_presets(version=args.version,
                                     public=bool(args.public))
@@ -906,7 +910,7 @@ def _cloud_publish_payload(serial: str, payload: dict,
     import cloud_client
     cli = cloud_client.CloudClient.load_or_anonymous()
     if cli.session.empty:
-        print("not logged in — run `x2d_bridge.py cloud-login` first",
+        print("not logged in to Bambu cloud — run `beambam cloud-login` first",
               file=sys.stderr)
         return 1
     topic_request = f"device/{serial}/request"
@@ -1070,7 +1074,9 @@ def _resolve_serial_or_exit(args: argparse.Namespace) -> str:
     used by every cloud-control verb whose printer target is required."""
     serial = _resolve_cloud_serial(args)
     if not serial:
-        sys.exit("--serial required")
+        sys.exit("which printer? pass --serial SERIAL (or set X2D_SERIAL, or save one with "
+                 "`beambam init`). `beambam cloud-printers` lists the printers on your account; "
+                 "if you are not logged in, run `beambam cloud-login` first.")
     return serial
 
 
@@ -1105,7 +1111,7 @@ def cmd_cloud_get_access_code(args: argparse.Namespace) -> int:
 
     cli = cloud_client.CloudClient.load_or_anonymous()
     if cli.session.empty:
-        print("not logged in — run `x2d_bridge.py cloud-login` first",
+        print("not logged in to Bambu cloud — run `beambam cloud-login` first",
               file=sys.stderr)
         return 1
     serial = _resolve_cloud_serial(args)
@@ -1328,7 +1334,7 @@ def cmd_capture_params(args: argparse.Namespace) -> int:
 
     cli = cloud_client.CloudClient.load_or_anonymous()
     if cli.session.empty:
-        print("not logged in — run `beambam cloud-login` first", file=sys.stderr)
+        print("not logged in to Bambu cloud — run `beambam cloud-login` first", file=sys.stderr)
         return 1
 
     task_id = getattr(args, "task_id", None)
@@ -1394,7 +1400,7 @@ def cmd_cloud_print(args: argparse.Namespace) -> int:
 
     cli = cloud_client.CloudClient.load_or_anonymous()
     if cli.session.empty:
-        print("not logged in — run `x2d_bridge.py cloud-login` first",
+        print("not logged in to Bambu cloud — run `beambam cloud-login` first",
               file=sys.stderr)
         return 1
 
@@ -1510,7 +1516,7 @@ def cmd_cloud_publish(args: argparse.Namespace) -> int:
 
     cli = cloud_client.CloudClient.load_or_anonymous()
     if cli.session.empty:
-        print("not logged in — run `x2d_bridge.py cloud-login` first",
+        print("not logged in to Bambu cloud — run `beambam cloud-login` first",
               file=sys.stderr)
         return 1
     serial = args.serial or os.environ.get("X2D_SERIAL")
@@ -1902,7 +1908,7 @@ def cmd_cloud_task_export(args: argparse.Namespace) -> int:
 
     cli = cloud_client.CloudClient.load_or_anonymous()
     if cli.session.empty:
-        print("not logged in", file=sys.stderr)
+        print(NOT_LOGGED_IN, file=sys.stderr)
         return 1
     try:
         t = cli.get_task(args.task_id)
@@ -1990,7 +1996,7 @@ def cmd_cloud_pull_design(args: argparse.Namespace) -> int:
 
     cli = cloud_client.CloudClient.load_or_anonymous()
     if cli.session.empty:
-        print("not logged in", file=sys.stderr)
+        print(NOT_LOGGED_IN, file=sys.stderr)
         return 1
     out_dir = Path(args.out_dir).expanduser()
     try:
@@ -2130,7 +2136,7 @@ def cmd_cloud_state(args: argparse.Namespace) -> int:
 
     cli = cloud_client.CloudClient.load_or_anonymous()
     if cli.session.empty:
-        print("not logged in — run `x2d_bridge.py cloud-login` first",
+        print("not logged in to Bambu cloud — run `beambam cloud-login` first",
               file=sys.stderr)
         return 1
     serial = args.serial or os.environ.get("X2D_SERIAL")
@@ -2261,7 +2267,7 @@ def cmd_cloud_feed(args: argparse.Namespace) -> int:
     import cloud_client
     cli = cloud_client.CloudClient.load_or_anonymous()
     if cli.session.empty:
-        print("not logged in", file=sys.stderr); return 1
+        print(NOT_LOGGED_IN, file=sys.stderr); return 1
     seed = args.seed if args.seed else random.randint(1, 2**31 - 1)
     try:
         r = cli.get_for_you(seed=seed, limit=int(args.limit))
@@ -2291,7 +2297,7 @@ def cmd_cloud_like(args: argparse.Namespace) -> int:
     import cloud_client
     cli = cloud_client.CloudClient.load_or_anonymous()
     if cli.session.empty:
-        print("not logged in", file=sys.stderr); return 1
+        print(NOT_LOGGED_IN, file=sys.stderr); return 1
     try:
         cli.toggle_design_like(args.design_id)
     except cloud_client.CloudError as e:
@@ -2306,7 +2312,7 @@ def cmd_cloud_comments(args: argparse.Namespace) -> int:
     import cloud_client
     cli = cloud_client.CloudClient.load_or_anonymous()
     if cli.session.empty:
-        print("not logged in", file=sys.stderr); return 1
+        print(NOT_LOGGED_IN, file=sys.stderr); return 1
     try:
         r = cli.get_design_comments(args.design_id,
                                     limit=int(args.limit),
@@ -2336,7 +2342,7 @@ def cmd_cloud_comment_reply(args: argparse.Namespace) -> int:
     import cloud_client
     cli = cloud_client.CloudClient.load_or_anonymous()
     if cli.session.empty:
-        print("not logged in", file=sys.stderr); return 1
+        print(NOT_LOGGED_IN, file=sys.stderr); return 1
     try:
         r = cli.reply_to_comment(args.comment_id, args.text)
     except cloud_client.CloudError as e:
@@ -2360,7 +2366,7 @@ def cmd_cloud_ttcode(args: argparse.Namespace) -> int:
     import cloud_client
     cli = cloud_client.CloudClient.load_or_anonymous()
     if cli.session.empty:
-        print("not logged in", file=sys.stderr); return 1
+        print(NOT_LOGGED_IN, file=sys.stderr); return 1
     try:
         r = cli.get_ttcode(args.serial)
     except cloud_client.CloudError as e:

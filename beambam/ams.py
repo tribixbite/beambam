@@ -302,6 +302,7 @@ def build_tray_metadata_payload(
 
 
 def add_subparser(sub: "argparse._SubParsersAction") -> argparse.ArgumentParser:
+    from beambam.print_job import slot_arg
     p = sub.add_parser(
         "ams",
         help="AMS state + control. Subcommands: status, info <slot>, "
@@ -332,8 +333,9 @@ def add_subparser(sub: "argparse._SubParsersAction") -> argparse.ArgumentParser:
                     "the printer apart from the state request.")
     mp.add_argument("file", help="Sliced .gcode.3mf to map")
     mp.add_argument("--plate", type=int, default=1, help="Which sliced plate to map.")
-    mp.add_argument("--slot", type=int, default=None,
-                    help="Force one tray for a single-filament plate (as print --slot).")
+    mp.add_argument("--slot", type=slot_arg, default=None, metavar="SLOT[,SLOT...]",
+                    help="Force trays by global slot, one per used filament in order "
+                         "(as print --slot), e.g. 4 or 4,0,12.")
     mp.add_argument("--map", metavar="F=TRAY,...",
                     help="Explicit FILAMENT=TRAY choices, as print --map.")
     mp.add_argument("--no-ams", action="store_true",

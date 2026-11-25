@@ -496,6 +496,16 @@ def cmd_doctor(args: argparse.Namespace) -> int:
             with Printer() as printer:
                 state = printer.state(timeout=10.0)
             checks.extend(run_all_checks(state))
+        except SystemExit as e:
+            # Creds.resolve() exits when no printer is configured. doctor is
+            # what people run when nothing works, so report it as a failed
+            # check (with the setup instructions) instead of exiting.
+            msg = str(e.code) if e.code is not None else "no printer configured"
+            print(msg, file=sys.stderr)
+            checks.append(Check("Connectivity", "Printer configured", "fail",
+                                msg.splitlines()[0] + " — run `beambam init`"))
+            if not want_env:
+                checks.extend(check_environment())
         except Exception as e:                              # noqa: BLE001
             # Preserve the legacy contract: tests + callers may grep
             # stderr for the unreachable-printer error before deciding
@@ -516,7 +526,9 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         print(_json.dumps([dataclasses.asdict(c) for c in checks], indent=2))
     else:
         text = format_report(checks)
-        if args.no_color:
+        # Colour only for a terminal, and never with --no-color / NO_COLOR.
+        from beambam.cli.manhelp import use_color
+        if args.no_color or not use_color(sys.stdout):
             import re
             text = re.sub(r"\033\[[0-9;]*m", "", text)
         print(text)

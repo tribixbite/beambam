@@ -173,6 +173,8 @@ EXAMPLES: dict[str, list[tuple[str, str]]] = {
     "print": [
         ("beambam print part.gcode.3mf", "Auto-map the filaments, show the plan, ask, then print."),
         ("beambam print part.gcode.3mf --slot 5 --timelapse", "One-filament plate from slot 5 (B2), with a timelapse."),
+        ("beambam print multi.gcode.3mf --slot 4,0,12",
+         "Three used filaments from slots 4 (B1), 0 (A1) and 12 (D1), in order."),
         ("beambam print multi.gcode.3mf --map 1=B3,2=ext-right --yes",
          "Choose trays per filament and skip the prompt."),
         ("beambam print project.gcode.3mf --plate 2", "Print the second sliced plate."),
@@ -200,7 +202,9 @@ EXAMPLES: dict[str, list[tuple[str, str]]] = {
                 ("beambam ams map part.gcode.3mf --map 1=C1 --json",
                  "Check a chosen tray and see the ams_mapping arrays.")],
     "slice-print": [("beambam slice-print part.stl --dry-run", "Slice only; keep the .gcode.3mf locally."),
-                    ("beambam slice-print part.stl --mm 40 --copies 4 --slot 1", "40 mm tall, four copies, slot 1.")],
+                    ("beambam slice-print part.stl --mm 40 --copies 4 --slot 1", "40 mm tall, four copies, slot 1."),
+                    ("beambam slice-print part.stl --copies 2 --colors A1,B3",
+                     "Two copies in the colours loaded in A1 and B3, printed from those trays.")],
     "cloud-login": [("beambam cloud-login --email you@example.com", "Log in; prompts for the password / code.")],
     "cloud-search": [("beambam cloud-search 'cable clip' --limit 5", "Top five MakerWorld results.")],
     "fetch": [("beambam fetch https://www.printables.com/model/12345", "Download a model's files.")],
@@ -680,6 +684,40 @@ def _fill_tokens(tokens: list[str], first: int, rest: int) -> list[str]:
     return rows
 
 
+def _short_usage(parser: argparse.ArgumentParser, st: Style, width: int) -> str:
+    """`usage: beambam print FILE [--slot SLOT] …`, wrapped like SYNOPSIS."""
+    page = build_page(parser)
+    out: list[str] = []
+    for i, syn in enumerate(page.synopsis):
+        head = page.name if syn.startswith(page.name) else syn.split(" ", 1)[0]
+        tail = syn[len(head):].strip()
+        lead = "usage: " if i == 0 else "       "
+        hang = len(lead) + len(head) + 1
+        if width - hang < 24:
+            hang = len(lead) + 4
+        rows = _fill_tokens(_usage_tokens(tail), width - (len(lead) + len(head) + 1), width - hang)
+        out.append(lead + st.flag(head) + (" " + rows[0] if rows else ""))
+        out += [" " * hang + r for r in rows[1:]]
+    return "\n".join(out) + "\n"
+
+
+def _option_suggestions(parser: argparse.ArgumentParser,
+                        message: str) -> list[tuple[str, list[str]]]:
+    """For "unrecognized arguments: --slto 3", the known options it resembles."""
+    m = re.match(r"unrecognized arguments: (.+)$", message)
+    if not m:
+        return []
+    known = [o for a in parser._actions for o in a.option_strings if o.startswith("--")]
+    out: list[tuple[str, list[str]]] = []
+    for word in m.group(1).split():
+        if word.startswith("-"):
+            flag = word.split("=", 1)[0]
+            close = difflib.get_close_matches(flag, known, n=2, cutoff=0.6)
+            if close:
+                out.append((flag, close))
+    return out
+
+
 def render_terminal(page: Page, st: Style, width: int = 80) -> str:
     narrow = width < 64
     ind = 2 if narrow else 4          # section body indent
@@ -896,8 +934,19 @@ class ManParser(argparse.ArgumentParser):
             # were typed after a subcommand; show the page that was meant.
             target = self._deepest_command(sys.argv[1:])
             name = " ".join(("beambam",) + _path_of(target))
-        err.write(render_terminal(build_page(target), st, page_width()))
-        err.write(f"\n{st.error(name + ': error:')} {self._friendly(message)}\n")
+        if message.startswith("the following arguments are required"):
+            # Nothing (or not enough) typed: the whole page is the answer —
+            # what the command does, every argument, examples.
+            err.write(render_terminal(build_page(target), st, page_width()))
+            err.write(f"\n{st.error(name + ': error:')} {self._friendly(message)}\n")
+            self.exit(2)
+        # A mistyped option or a bad value: keep the mistake on screen with
+        # the synopsis and a suggestion, and point at the manual.
+        err.write(_short_usage(target, st, page_width()))
+        err.write(f"{st.error(name + ': error:')} {self._friendly(message)}\n")
+        for bad, close in _option_suggestions(target, message):
+            err.write(f"  {bad}: did you mean " + " or ".join(st.flag(c) for c in close) + "?\n")
+        err.write(f"  run `{name} --help` for the full manual\n")
         self.exit(2)
 
     def _deepest_command(self, argv: list[str]) -> argparse.ArgumentParser:

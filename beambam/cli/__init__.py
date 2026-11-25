@@ -138,20 +138,6 @@ _COMMAND_GROUPS: list[tuple[str, list[tuple[str, str]]]] = [
 ]
 
 
-def _print_slots(text: str) -> int | list[int]:
-    """argparse type for `print --slot`: beambam.print_job.parse_slots, message kept.
-
-    One slot comes back as an int (a single-filament plate, the historical form);
-    several (`4,0,12`) as a list in the order of the plate's used filaments.
-    """
-    from beambam.print_job import parse_slots
-    try:
-        slots = parse_slots(text)
-    except ValueError as e:
-        raise argparse.ArgumentTypeError(str(e))
-    return slots[0] if len(slots) == 1 else slots
-
-
 # ---------------------------------------------------------------------------
 # main() — argparse builder + dispatcher, moved from x2d_bridge.py in
 # Phase 5e batch 5. x2d_bridge.py re-exports `main` so the GUI shim's
@@ -170,6 +156,7 @@ from beambam.cli.manhelp import (
     ROOT_SUMMARY, ManParser, Style, use_color, install as install_manhelp,
 )
 from beambam.mqtt import PrinterUnreachableError
+from beambam.print_job import slot_arg
 from beambam.cli.control import (
     cmd_pause, cmd_resume, cmd_stop, cmd_gcode,
     cmd_home, cmd_level, cmd_set_temp, cmd_chamber_light,
@@ -243,7 +230,7 @@ def build_parser() -> argparse.ArgumentParser:
     pr = sub.add_parser("print", help="Upload + start_print")
     pr.add_argument("file")
     pr.add_argument("--remote")
-    pr.add_argument("--slot", type=_print_slots, default=None,
+    pr.add_argument("--slot", type=slot_arg, default=None, metavar="SLOT[,SLOT...]",
                     help="AMS global slot (AMS_index*4 + tray_in_ams, 0..15); for a plate "
                          "that uses several filaments, one per used filament in order, "
                          "comma-separated (e.g. 4,0,12). Default: auto-map every used "
@@ -446,7 +433,8 @@ def build_parser() -> argparse.ArgumentParser:
     al.set_defaults(fn=cmd_ams_load)
 
     jg = sub.add_parser("jog", help="Relative axis jog via G91/G1/G90")
-    jg.add_argument("axis", help="X / Y / Z / E")
+    jg.add_argument("axis", type=str.upper, choices=("X", "Y", "Z", "E"),
+                    help="Axis to move: X, Y, Z or E (extruder); case-insensitive")
     jg.add_argument("distance", type=float, help="mm to move (negative for reverse)")
     jg.add_argument("--feed", type=int, default=1500, help="Feedrate in mm/min")
     jg.set_defaults(fn=cmd_jog)
@@ -553,12 +541,15 @@ def build_parser() -> argparse.ArgumentParser:
                     help="How many copies of the model to tile on the plate. "
                          "Forwards to x2d_slice.py --copies; ignored for 3MF input.")
     sp.add_argument("--color",
-                    help="Primary filament color #RRGGBB (forwards to "
-                         "x2d_slice.py --color; ignored for 3MF input)")
+                    help="Primary filament color: #RRGGBB, a Bambu colour name, or "
+                         "an AMS tray (A1..D4, ext-left, ext-right) to slice in the "
+                         "colour loaded there and print from that tray. (STL input)")
     sp.add_argument("--colors",
-                    help="Multi-AMS-slot color list, comma-separated (hex or "
-                         "Bambu names). With --copies N the Nth copy gets the "
-                         "Nth slot. Mirrors x2d_slice.py --colors. (STL input)")
+                    help="One colour per filament, comma-separated: #RRGGBB, Bambu "
+                         "names, or AMS trays (A1..D4, ext-left, ext-right) — a tray "
+                         "is read from the live AMS and that filament prints from it "
+                         "(AMS sync). With --copies N the Nth copy gets the Nth "
+                         "colour. e.g. --colors A1,B3 (STL input)")
     sp.add_argument("--color-by-region", dest="color_by_region",
                     help="JSON file of per-object/region color assignments. "
                          "Mirrors x2d_slice.py --color-by-region. (STL input)")
@@ -604,7 +595,7 @@ def build_parser() -> argparse.ArgumentParser:
                          "bambu-studio --repetitions. (3MF input only)")
     sp.add_argument("--remote", help="Remote filename on printer "
                                      "(default: input basename)")
-    sp.add_argument("--slot", type=_print_slots, default=None,
+    sp.add_argument("--slot", type=slot_arg, default=None, metavar="SLOT[,SLOT...]",
                     help="AMS global slot: AMS_index*4 + tray (0..15); one per used "
                          "filament in order, comma-separated (e.g. 4,0,12). Default: "
                          "auto-map to the best matching tray.")
@@ -1325,15 +1316,51 @@ def _report_failure(args: argparse.Namespace, exc: BaseException) -> int:
         err.write("  - run `beambam doctor` to check connectivity; "
                   "set BEAMBAM_DEBUG=1 for the traceback\n")
         return 3
+    if isinstance(exc, (FileNotFoundError, IsADirectoryError, PermissionError)):
+        # Some callers raise FileNotFoundError(path) with no errno, so str()
+        # is the bare path; name the problem either way.
+        what = {FileNotFoundError: "file not found", IsADirectoryError: "is a directory",
+                PermissionError: "permission denied"}[type(exc)]
+        path = exc.filename or (exc.args[0] if exc.args else "")
+        err.write(f"{st.error(cmd + ':')} {what}: {path}\n")
+        return 1
     err.write(f"{st.error(cmd + ':')} {exc}\n")
     err.write("  - set BEAMBAM_DEBUG=1 for the traceback\n")
     return 1
 
 
+# Global options that take a value and may precede the command name.
+_GLOBAL_VALUE_OPTS = ("--ip", "--code", "--serial", "--printer")
+
+
+def _trailing_help(root: argparse.ArgumentParser, argv: list[str]) -> list[str]:
+    """`beambam ams map help` → `beambam ams map --help`.
+
+    People type `help` after a command as often as before it; argparse would
+    otherwise read it as a file name or an unknown subcommand. Only rewritten
+    when everything before it is a command path (after any global options)."""
+    if len(argv) < 2 or argv[-1] != "help":
+        return argv
+    i = 0
+    while i < len(argv) - 1 and argv[i].startswith("--"):
+        opt = argv[i].split("=", 1)[0]
+        if opt not in _GLOBAL_VALUE_OPTS:
+            return argv
+        i += 1 if "=" in argv[i] else 2
+    words = argv[i:-1]
+    if not words or any(w.startswith("-") for w in words):
+        return argv
+    from beambam.cli.manhelp import find_parser
+    target = find_parser(root, words)
+    if target is None or target is root or words == ["help"]:
+        return argv
+    return argv[:-1] + ["--help"]
+
+
 def main() -> int:
     """`beambam` console-script entry point: parse argv and dispatch."""
     p = build_parser()
-    args = p.parse_args()
+    args = p.parse_args(_trailing_help(p, sys.argv[1:]))
     try:
         return args.fn(args)
     except KeyboardInterrupt:

@@ -495,14 +495,17 @@ class CloudClient:
         a Bambu password into an arbitrary terminal is hostile UX. The
         email-code roundtrip proves possession of the inbox instead.
         """
-        region = self._resolve_region(email, region)
-        self._send_email_code(region, email)
+        # Check the resolver BEFORE asking Bambu to email a code: without
+        # one the code could never be read, and the request would send the
+        # user a login email for nothing.
         if not code_resolver:
             raise CloudError(
                 "code-only login needs a code_resolver callback to read "
                 "the 6-digit code from the user. Use cmd_cloud_login "
                 "--code-only for interactive entry.",
                 status=200, body="")
+        region = self._resolve_region(email, region)
+        self._send_email_code(region, email)
         code = code_resolver(email)
         self._submit_email_code(region, email, code)
 

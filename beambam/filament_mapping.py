@@ -466,12 +466,33 @@ def auto_assign(project: ProjectInfo, topo: Topology, *, use_ams: bool = True
     return result
 
 
+_TRAY_LABEL = re.compile(r"([a-p])([1-4])")
+
+
+def parse_tray(token: str, *, allow_number: bool = True) -> int | None:
+    """One tray token → global tray id, or None if it is not a tray.
+
+    Forms: the touchscreen label `B3` (AMS B, slot 3 → 6), `ext` /
+    `ext-right` (255) or `ext-left` (254), and — when `allow_number` — a
+    bare global slot (`6`). `--colors` passes allow_number=False so that a
+    plain number is never mistaken for a tray."""
+    r = token.strip().lower()
+    if r in ("ext", "ext-right", "external"):
+        return EXT_SPOOL_MAIN
+    if r == "ext-left":
+        return EXT_SPOOL_DEPUTY
+    if (m := _TRAY_LABEL.fullmatch(r)):
+        return (ord(m.group(1)) - ord("a")) * 4 + int(m.group(2)) - 1
+    if allow_number and r.isdigit():
+        return int(r)
+    return None
+
+
 def parse_map(spec: str) -> dict[int, int]:
     """`--map "1=6,5=B3,2=ext-left"` → {filament_index: tray_id}.
 
-    Filament numbers are 1-based (as Bambu Studio shows them). Tray forms:
-    a global slot (`6`), the touchscreen label `B3` (AMS B, slot 3),
-    `ext` / `ext-right` (255) or `ext-left` (254)."""
+    Filament numbers are 1-based (as Bambu Studio shows them). Tray forms
+    are those of parse_tray()."""
     out: dict[int, int] = {}
     for part in filter(None, (p.strip() for p in spec.split(","))):
         if "=" not in part:
@@ -481,22 +502,74 @@ def parse_map(spec: str) -> dict[int, int]:
             fidx = int(left) - 1
         except ValueError as e:
             raise MappingError(f"--map: {left!r} is not a filament number") from e
-        r = right.lower()
-        if r in ("ext", "ext-right", "external"):
-            tid = EXT_SPOOL_MAIN
-        elif r == "ext-left":
-            tid = EXT_SPOOL_DEPUTY
-        elif (m := re.fullmatch(r"([a-p])([1-4])", r)):
-            tid = (ord(m.group(1)) - ord("a")) * 4 + int(m.group(2)) - 1
-        elif r.isdigit():
-            tid = int(r)
-        else:
+        tid = parse_tray(right)
+        if tid is None:
             raise MappingError(f"--map: tray {right!r} not understood "
                                f"(use a global slot, a label like B3, ext-left or ext-right)")
         if fidx < 0:
             raise MappingError(f"--map: filament numbers start at 1, got {left}")
         out[fidx] = tid
     return out
+
+
+def has_tray_refs(entries: list[str]) -> bool:
+    """True when any --color/--colors entry names a tray (B3, ext-left, …)."""
+    return any(parse_tray(e, allow_number=False) is not None for e in entries)
+
+
+@dataclass(frozen=True)
+class AmsColourSync:
+    """`--colors A1,#FF0000,B3` resolved against the live AMS.
+
+    colours  — what to slice with, one per filament in order (tray entries
+               replaced by the loaded tray's colour; others left as given).
+    explicit — {filament_index: tray_id} for the tray entries, so the print
+               maps each of those filaments to exactly the tray it came from.
+    types    — {filament_index: loaded material type} for the tray entries."""
+    colours: list[str]
+    explicit: dict[int, int]
+    types: dict[int, str]
+
+
+def sync_colours_from_ams(entries: list[str], state: dict) -> AmsColourSync:
+    """Replace tray references in a colour list with the trays' live colours.
+
+    Refuses (MappingError) when a named tray does not exist or is empty, or
+    reports no colour — slicing in a guessed colour would defeat the sync."""
+    topo = read_topology(state)
+    colours: list[str] = []
+    explicit: dict[int, int] = {}
+    types: dict[int, str] = {}
+    for i, entry in enumerate(entries):
+        tid = parse_tray(entry, allow_number=False)
+        if tid is None:
+            colours.append(entry.strip())
+            continue
+        t = topo.tray(tid)
+        if t is None:
+            have = ", ".join(x.label() for x in topo.trays) or "none"
+            raise MappingError(f"colour {i + 1}: tray {entry.strip()} does not exist on "
+                               f"this printer (trays: {have})")
+        if t.empty and not t.external:
+            raise MappingError(f"colour {i + 1}: {t.label()} is empty — load it first")
+        if not t.colour:
+            raise MappingError(f"colour {i + 1}: {t.label()} reports no colour; give a "
+                               f"#RRGGBB for it instead")
+        colours.append(t.colour)
+        explicit[i] = tid
+        if t.type:
+            types[i] = t.type
+    return AmsColourSync(colours=colours, explicit=explicit, types=types)
+
+
+def material_conflicts(sync: AmsColourSync, sliced_type: str) -> list[str]:
+    """Trays in `sync` holding a different material class than the profile
+    the slice will use — each one would be refused after slicing, so callers
+    check before spending minutes on the slice."""
+    want = _material_class(sliced_type) if sliced_type else ""
+    return [f"colour {i + 1} is {ttype} but the slice profile is {sliced_type}"
+            for i, ttype in sorted(sync.types.items())
+            if want and _material_class(ttype) != want]
 
 
 def _check(a: Assignment, project: ProjectInfo, topo: Topology) -> None:

@@ -361,6 +361,20 @@ def parse_slots(text: str | int) -> list[int]:
     return slots
 
 
+def slot_arg(text: str) -> int | list[int]:
+    """argparse `type=` for every `--slot` (print, slice-print, ams map).
+
+    One slot comes back as an int (a single-filament plate, the historical
+    form); several (`4,0,12`) as a list in the order of the plate's used
+    filaments. parse_slots' message is kept for the usage error."""
+    import argparse
+    try:
+        slots = parse_slots(text)
+    except ValueError as e:
+        raise argparse.ArgumentTypeError(str(e)) from e
+    return slots[0] if len(slots) == 1 else slots
+
+
 def _validate_ams_slot(state: dict, ams_global_slot: int,
                        expected: dict, *, force: bool) -> None:
     """Refuse to send a use_ams=True print when the named AMS slot is empty

@@ -517,14 +517,56 @@ def cmd_help(args: argparse.Namespace) -> int:
         return 0
     target = manhelp.find_parser(parser, list(args.topic))
     if target is None:
-        action = manhelp._subparsers_action(parser)
-        avail = sorted(action.choices) if action is not None else []
-        topic = " ".join(args.topic)
-        print(f"unknown topic {topic!r}\n", file=sys.stderr)
-        print(f"available topics: {', '.join(avail)}", file=sys.stderr)
-        return 1
+        return _unknown_topic(parser, list(args.topic))
     target.print_help()
     return 0
+
+
+def _unknown_topic(root: argparse.ArgumentParser, words: list[str]) -> int:
+    """`beambam help <unknown>`: near-miss names at the level that failed,
+    then every command whose name or summary mentions the words."""
+    import difflib
+    import sys
+
+    from beambam.cli import manhelp
+
+    # Walk as far as the words name real commands; the next one is the typo.
+    parent, depth = root, 0
+    while depth < len(words):
+        nxt = manhelp.find_parser(parent, [words[depth]])
+        if nxt is None:
+            break
+        parent, depth = nxt, depth + 1
+    prefix = " ".join(("beambam",) + manhelp._path_of(parent))
+    action = manhelp._subparsers_action(parent)
+    choices = sorted(action.choices) if action is not None else []
+    bad = words[depth] if depth < len(words) else ""
+    print(f"no help topic {' '.join(words)!r}", file=sys.stderr)
+    # apropos: commands whose name or one-line summary mention every word.
+    terms = [w.lower() for w in words]
+    hits = []
+    for sub in manhelp.iter_parsers(root):
+        page = manhelp.build_page(sub)
+        hay = f"{page.name} {page.summary}".lower()
+        if all(t in hay for t in terms):
+            hits.append((page.name, page.summary))
+    # A near-miss name is the likely intent unless the word reads as a search
+    # term that matched commands; then only strong near-misses are offered.
+    cutoff = 0.8 if hits else 0.5
+    close = difflib.get_close_matches(bad, choices, n=4, cutoff=cutoff) if bad else []
+    if close:
+        print("  did you mean: " + ", ".join(f"{prefix} {c}" for c in close) + "?",
+              file=sys.stderr)
+    if hits:
+        print(f"\ncommands mentioning {' '.join(words)!r}:", file=sys.stderr)
+        width = max(len(n) for n, _ in hits[:12])
+        for name, summary in hits[:12]:
+            print(f"  {name:<{width}}  {summary}", file=sys.stderr)
+        if len(hits) > 12:
+            print(f"  … and {len(hits) - 12} more", file=sys.stderr)
+    print(f"\nrun `{prefix} --help` to list the commands, or `beambam help --all` "
+          f"for the whole manual", file=sys.stderr)
+    return 1
 
 
 def _install_man(parser: argparse.ArgumentParser, dest: str) -> int:

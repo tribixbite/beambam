@@ -110,11 +110,20 @@ def add_subparser(sub: "argparse._SubParsersAction") -> None:
     w.set_defaults(fn=cmd_whoami)
 
 
+def _report_failure(cmd: str, e: Exception) -> None:
+    """One line on stderr; a missing session gets the login instructions."""
+    if "not logged in" in str(e):
+        from beambam.cli.cloud import NOT_LOGGED_IN
+        print(NOT_LOGGED_IN, file=sys.stderr)
+    else:
+        print(f"{cmd} failed: {type(e).__name__}: {e}", file=sys.stderr)
+
+
 def cmd_history(args: argparse.Namespace) -> int:
     try:
         tasks = fetch_history(limit=min(args.limit, 100))
     except Exception as e:                                  # noqa: BLE001
-        print(f"history failed: {type(e).__name__}: {e}", file=sys.stderr)
+        _report_failure("history", e)
         return 1
     if args.json_out:
         print(json.dumps(tasks, indent=2))
@@ -127,7 +136,7 @@ def cmd_whoami(args: argparse.Namespace) -> int:
     try:
         profile = fetch_whoami()
     except Exception as e:                                  # noqa: BLE001
-        print(f"whoami failed: {type(e).__name__}: {e}", file=sys.stderr)
+        _report_failure("whoami", e)
         return 1
     if args.json_out:
         print(json.dumps(profile, indent=2))

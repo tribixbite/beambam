@@ -48,14 +48,13 @@ def test_help_topic_matches_topic_dash_dash_help(topic):
 
 
 def test_help_unknown_topic_exits_1():
-    """Unknown topic → exit 1 + stderr lists the available subcommands."""
+    """Unknown topic → exit 1, near-miss names and a pointer to the command list."""
     r = _run("help", "nonesuch-zzz")
     assert r.returncode == 1
-    assert "unknown topic" in r.stderr
-    assert "available topics" in r.stderr
-    # The list should include real topics we know exist.
-    assert "print" in r.stderr
-    assert "ams" in r.stderr
+    assert "no help topic 'nonesuch-zzz'" in r.stderr
+    assert "run `beambam --help` to list the commands" in r.stderr
+    r = _run("help", "stauts")
+    assert "did you mean: beambam status" in r.stderr
 
 
 def test_help_help_works():
