@@ -21,6 +21,53 @@ are tracked in their own deep-dive plan files.
 
 ## Shipped
 
+**v1.6.2** (2026-11-25) — [changelog](CHANGELOG.md)
+- `POST /slice` keeps the project's Filament Track Switch setting: the headless
+  CLI resets it unless passed as `--has-filament-switcher=1`. Print files are
+  named after the uploaded file.
+- Home Assistant: AMS entities first seen while the bridge was connecting are
+  announced (race fixed, regression test).
+
+**v1.6.1** (2026-11-25) — [changelog](CHANGELOG.md)
+- Print from another app over the daemon's HTTP API: `POST /slice` (headless
+  Bambu Studio on the daemon's machine), `/print/plan`, `/print` with
+  `confirm` / `accept_warnings`, job polling, `/print/upload`
+  ([HTTP_API.md](docs/HTTP_API.md)). pokefit.party uses it from a phone that
+  runs beambam.
+- The daemon refuses POSTs from web origins not allowed with `--cors-origin`;
+  allowed ones get CORS and the Private Network Access preflight answer.
+- Files sliced in the track switch's automatic nozzle mode print (Bambu
+  Studio's checks, not a refusal).
+- Home Assistant: X2D-correct temperatures, both nozzles, IP, speed, firmware,
+  all 16 trays and 4 AMS units, load/unload buttons; the daemon merges
+  reports instead of replacing them.
+
+**v1.6.0** (2026-11-24) — [changelog](CHANGELOG.md)
+- Filament → tray mapping with confirmation before every print, `ams map`,
+  AMS colour sync for `slice-print`, track switch modelled, man-page help.
+
+## Open now (2026-11-25, for the next agent)
+
+- [ ] **First real print through the signed LAN path.** The Handy app cert was
+  renewed (valid to 2028-01-25; a signed command now passes the signature and
+  certificate checks, err 84033544 at stage 4). No `project_file` has been sent
+  since, so a real start is unverified. Needs the user's OK per print.
+- [ ] **pokefit.party → daemon in a real browser.** The flow (connect, slice,
+  plan, picker, error gating) was driven in Chrome on the phone against a local
+  copy of the page. The deployed https origin (Chrome's Local Network Access
+  prompt, then the PNA preflight) is untested; it needs the phone unlocked and
+  the user's tap on the prompt.
+- [ ] **A camera route on the daemon** for web apps (pokefit's Printer card shows
+  status only through the daemon).
+- [ ] **Keep the daemon alive on the phone.** It runs from a shell, so Android's
+  low-memory killer takes it with Termux; an operad/boot service entry is
+  needed for pokefit.party to find it reliably.
+- [ ] Dynamic nozzle mode: tested on synthetic files only. The headless slicer
+  can now write one (`--enable-filament-dynamic-map=1` is passed when the
+  project has it), so a real file can be made and printed.
+- [ ] HA: tested end to end against amqtt and live state; not in a real Home
+  Assistant install, and load/unload not pressed on the printer.
+
 **v1.5.0** (2026-06) — [changelog](CHANGELOG.md)
 - **Signed printer control + pure-LAN print on authorization-control firmware,
   no Developer Mode, no live cloud at runtime** — the capability no other open
@@ -440,8 +487,7 @@ IMPROVEMENTS is closed.
 ## How this file flows with TaskList
 
 The [TaskCreate tool](#) is **session-local** scratch space — it tracks the
-agent's current work, and the loop hook (`~/.claude/hooks/loop-tasks.sh`) keeps
-sessions going while tasks are pending. ROADMAP.md is the **durable** record.
+agent's current work. ROADMAP.md is the **durable** record.
 On session start, a new agent should read ROADMAP.md first, pick a v1.3.0
 candidate, and create a TaskCreate entry for the in-session work. On session
 end (everything completed), update ROADMAP.md so the next agent can see what

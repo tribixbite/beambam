@@ -4,7 +4,161 @@ All notable changes to this project.
 
 ## [Unreleased]
 
+## v1.6.2 — slicing keeps the track switch, Home Assistant AMS race (2026-11-25)
+
+### Fixed
+- `POST /slice` keeps the project's Filament Track Switch setting. Bambu
+  Studio's headless CLI resets `has_filament_switcher` and
+  `enable_filament_dynamic_map` to false unless they are passed as options,
+  whatever the project says. The switch changes how filaments are grouped onto
+  nozzles, and the print plan then asked for a re-slice. Both are now passed on
+  (`--has-filament-switcher=1`) when the project has them on. The upload's time
+  prefix no longer ends up in the print file's name either.
+- Home Assistant: AMS trays first reported while the bridge was still
+  connecting to MQTT were never announced to Home Assistant (a race between the
+  connect handler and the first state frame).
+
+### Docs
+- Commands in the guides (Quick start, Home Assistant, cloud, MCP, WebRTC,
+  queue, timelapse, multi-printer, assistant, web UI) are `beambam <command>`;
+  they still named `x2d_bridge.py`, removed in 1.5.0. ROADMAP lists what
+  shipped in 1.6.x and what is open.
+
+## v1.6.1 — print from another app over HTTP, track-switch auto nozzle files, Home Assistant fixes (2026-11-25)
+
 ### Added
+- **Print through the daemon's HTTP API** (`docs/HTTP_API.md`), for web apps
+  and scripts that have no terminal: `POST /print/plan` returns the filament →
+  tray plan against the live AMS without touching the printer; `POST /print`
+  with `"confirm": true` (and `"accept_warnings": true` once the user has seen
+  the plan's warnings) uploads and starts it in the background;
+  `GET /print/jobs/<id>` follows it to accepted / rejected. `POST /print/upload`
+  takes a `.gcode.3mf` from another machine. Same rules as `beambam print`
+  (`beambam/print_service.py`): errors always refuse, the bed comes from the file.
+- **`POST /slice` slices a Bambu Studio project on the daemon's machine**
+  (`beambam/slice_service.py`, bundled headless Bambu Studio), as a job
+  (`GET /slice/jobs/<id>`); the resulting `.gcode.3mf` goes straight into
+  `/print/plan` and `/print`. The project keeps its own process and filament
+  settings, and its printer profile is reloaded from the bundled one of the
+  same name. That profile is needed for projects saved by a newer Bambu Studio,
+  whose start G-code this build cannot parse (pokefit's X2D export failed with
+  "Not a variable name"). This lets a site that cannot slice (pokefit.party)
+  print from a phone running beambam.
+- `beambam daemon --cors-origin ORIGIN` (repeatable; `$BEAMBAM_CORS_ORIGINS`):
+  CORS headers and preflight answers for a browser app on that origin,
+  including Chrome's Private Network Access opt-in, so a public https site can
+  call a daemon on `127.0.0.1`.
+- `beambam ams map --json` and `/print/plan` include flat `errors` / `warnings`
+  lists.
+
+### Security
+- **The daemon refuses POSTs from other web origins.** A loopback daemon needs
+  no token, and it parsed any POST body as JSON, so any web page open in the
+  browser could POST `/control/stop` (or, now, a print) to `127.0.0.1`. A POST
+  with an `Origin` header that is neither the daemon's own nor allowed with
+  `--cors-origin` now gets 403. Clients that send no Origin are unaffected.
+
+### Fixed
+- `POST /slice-print` never sliced anything: it ran `serve_http.py` (which has
+  no command line) instead of beambam's CLI, and forced `--slot 1`. It now runs
+  `python -m beambam.cli slice-print`, maps trays automatically unless `X-Slot`
+  is given, and takes `X-Accept-Warnings: 1`.
+- **Files sliced in the Filament Track Switch's automatic nozzle mode now
+  print** (`enable_filament_dynamic_map`, read from the plate's
+  `slice_info.config` first, then `project_settings.config`, as Bambu Studio
+  does). Bambu Studio asks the printer for a nozzle mapping only on printers
+  with a hotend rack (`fun` bit 60); the X2D and H2D have none, so nothing
+  extra is sent. beambam now applies Bambu Studio's checks instead of
+  refusing: the switch must be installed and set up, and since the gcode may
+  move a filament between nozzles, each filament needs a tray that reaches
+  both (any switch-routed AMS tray; an external spool feeds only one nozzle).
+  The plan shows such filaments on nozzle `both`. Rack printers are still
+  refused with an explanation.
+- **Home Assistant bridge, audited against a live X2D.** Most X2D values were
+  wrong or missing: the chamber temperature read a field the X2D does not send,
+  the left nozzle had no sensors, the IP showed as an integer, the speed as `2`,
+  "Firmware version" read a non-existent field, only the first AMS unit was
+  exposed, the `light` entity had no state topic, and "Door open" was really the
+  external-spool filament sensor. The publisher now derives these in Python
+  (`derive_state`, unit-tested) and publishes them under `beambam` in the
+  state JSON: both nozzles' temperatures, targets and loaded tray, the chamber,
+  dotted IP, speed name, firmware (from a `get_version` request the daemon now
+  sends on connect and hourly) and available update, the track switch, and
+  every AMS tray (A1–D4) and unit (humidity %RH, temperature, damp). AMS
+  entities are discovered for the units the printer reports; renamed entities
+  are removed from HA. New: left-nozzle setpoint, tray-labelled load buttons
+  (`x2d/<id>/ams/b3/load`) and an unload button.
+- **The daemon no longer replaces its state with every MQTT message.**
+  Command acks, `info` replies and delta pushes are merged into the cached
+  report (`state_hub.merge_report`), so HA, `/state`, SSE, the queue and the
+  timelapse recorder never see a state stripped of temperatures and AMS.
+- `ams_change_filament` (`POST /control/ams_load`, `Printer.ams_load`, HA)
+  now sends `ams_id` / `slot_id` / `target` as Bambu Studio does, taking a
+  global tray id (`{"tray": 5}` = B2; legacy `{"slot": 1..16}` still works) and
+  an optional `extruder`; new `POST /control/ams_unload`.
+
+## v1.6.0 — filament mapping, AMS sync, man-page help (2026-11-24)
+
+### Added
+- **AMS colour sync for `slice-print`.** `--color` / `--colors` accept AMS trays
+  (`A1`–`D4`, `ext-left`, `ext-right`) alongside hex and Bambu colour names:
+  `beambam slice-print part.stl --copies 2 --colors A1,B3` reads the colours
+  loaded in those trays from the live printer, slices with them, and pins each
+  of those filaments to its tray for the print (`--map` still overrides). A
+  missing or empty tray, or a tray whose material differs from the slice
+  profile's, is refused before any slicing time is spent.
+- **`--slot` takes one slot per used filament** (`--slot 4,0,12`) on `print`,
+  `slice-print` and `ams map`, in the order of the plate's used filaments; a
+  single slot keeps its old meaning. (Merged from the `--slot`-list work on
+  main and routed through the filament planner, so every slot is checked
+  against its own filament.)
+- `beambam <command> help` (e.g. `beambam ams map help`) opens that command's
+  page, like `--help`.
+- `beambam help <word>` with no command of that name suggests near-miss names
+  and lists every command whose summary mentions the word.
+- **Full filament → tray mapping with confirmation before every print**
+  (`beambam/filament_mapping.py`). `beambam print` and `beambam slice-print`
+  now read the plate's *used* filaments and their nozzle assignments from the
+  `.gcode.3mf`, read the printer's AMS trays, external spools and Filament
+  Track Switch routing from live state, auto-map each filament to the best
+  matching loaded tray (type-first, colour-first for 3+ colour prints —
+  CIE76 ΔE, mirroring BambuStudio's `DevMappingUtil`), print the plan and ask
+  before starting. Hard mismatches (empty tray, wrong material class, a tray
+  that can't reach the sliced nozzle) always refuse; soft ones (brand /
+  profile / colour) need a `y` on the terminal or `--yes`.
+- **`--map F=TRAY,…` and `--plate N`** on `print` / `slice-print`: choose trays
+  per filament (`--map 1=B3,4=ext-right`, using the touchscreen A1–D4 labels or
+  a global slot), and select which sliced plate to print. `--slot` now defaults
+  to auto-mapping.
+- **`beambam ams map FILE`** — preview the exact filament→tray plan (with the
+  `ams_mapping` arrays) for a sliced file without printing. Exit 0 clean, 2
+  warnings, 1 errors.
+- **The Filament Track Switch is now modelled.** `beambam ams status` shows
+  which nozzle(s) each AMS feeds and the switch state; AMS units are labelled
+  A–D and trays A1–D4 to match the printer. Files sliced for the switch's
+  automatic nozzle mode (`enable_filament_dynamic_map`) are refused with a clear
+  message (the printer-computed nozzle map isn't reproducible yet).
+- The LAN print path now **waits for the printer's `project_file` reply** and
+  reports acceptance vs. rejection (mapping the signed-command error ladder —
+  84033543/5/8/4 — to plain English via `beambam.mqtt_sign.explain_ack`), and
+  `beambam doctor --env` **checks the signing certificate's expiry** (an expired
+  Handy app cert makes every signed command fail with err 84033545).
+
+- **Man-page help for every command.** `beambam --help`, `beambam <cmd> --help`
+  and `beambam help <cmd> [<sub>]` now render NAME / SYNOPSIS / DESCRIPTION /
+  ARGUMENTS / OPTIONS / EXAMPLES / SEE ALSO pages (bold flags, underlined
+  values, colour on a TTY honouring `NO_COLOR` / `FORCE_COLOR`, paged through
+  `$PAGER` when longer than the screen). The root page groups all commands by
+  topic and documents ENVIRONMENT, FILES and EXIT STATUS.
+- `beambam help --all` (every page), `beambam help --man` (roff source) and
+  `beambam help --install-man [DIR]` (writes `beambam.1` so `man beambam` works).
+- Running a command with a missing argument prints that command's full page
+  followed by the error (exit 2). A mistyped option or bad value prints the
+  command's synopsis, the error, the closest real option (`--slto: did you mean
+  --slot?`) and a pointer to the manual; an unknown command prints "did you
+  mean" suggestions.
+- Help text for the ~130 arguments that had none (`beambam/cli/arghelp.py`);
+  `tests/test_cli_manhelp.py` fails if a new argument ships without help.
 - `beambam slice` and `beambam slice-print` now expose the **full slicer option
   set** for STL input — `--colors`, `--color-by-region`, and `--orient` — matching
   `x2d_slice.py`. Previously only `--color` was forwarded.
@@ -18,6 +172,53 @@ All notable changes to this project.
   nozzle cycle when nozzles aren't specified.
 
 ### Fixed
+- **Commands that need a printer now say how to set one up.** With no printer
+  configured they print `no printer configured (missing: …)` and point at
+  `beambam init`, `beambam find --add` and `beambam config add`, instead of an
+  INI-file template. `beambam doctor` no longer exits on that error — it reports
+  it as a failed check and runs the local environment checks — and `beambam
+  doctor` output is no longer coloured when piped or under `NO_COLOR`.
+- `beambam boo` printed a Python tuple list when no printer was reachable; it now
+  prints one line per printer with the reason.
+- Cloud commands without a session now say to run `beambam cloud-login` first
+  (several still named the old `x2d_bridge.py`, others just "not logged in");
+  `cloud-pause/resume/stop` without a resolvable printer explain how to choose
+  one; `history` / `whoami` give the same login hint.
+- `beambam cam` / `cam watch` with no camera proxy running now say to start it
+  with `beambam cam start` instead of a bare "Connection refused".
+- A missing input file is reported as `file not found: PATH` (some paths
+  printed only the bare file name).
+- **Windows:** `beambam help --install-man` crashed writing the page (cp1252
+  can't encode `→`); it is written as UTF-8. Help, plans and errors no longer
+  raise `UnicodeEncodeError` when stdout/stderr is a narrow-codec stream (a
+  redirected Windows console); unencodable characters print as `?`.
+- `beambam jog` validates the axis (X/Y/Z/E, any case) at parse time.
+- `CloudClient.login_code_only` asked Bambu to email a login code *before*
+  checking it had a way to read the code, so a call without a resolver sent a
+  useless email (and its unit test made a live request). It now fails first.
+- **Every `cloud-*` REST command failed with an unreadable HTTP 403.** Bambu's
+  Cloudflare WAF began blocking requests whose `X-BBL-Client-Name` header is
+  `OrcaSlicer`; it is now `BambuStudio` (what BambuStudio's own client sends).
+  The HTTP-error path also gzip-decodes the response body, so a future block
+  shows the real message instead of binary mojibake. (`cloud_client.py`)
+- `beambam print --slot N` and the BambuStudio GUI shim / print queue sent the
+  filament mapping **indexed from 0 regardless of which project filament the
+  plate uses** — a single-colour plate printing filament 5 of 5 mapped
+  filament 1, and the GUI shim used only `ams_mapping[0]`. Mapping is now
+  indexed by project filament throughout, and bed-temp derivation reads the
+  plate's actual first filament.
+- `build_x2d_project_file` now honours bed-levelling / flow-cali / vibration-cali
+  and the plate index (previously hard-coded to auto / plate 1).
+- **`beambam status` (and every command that opens the printer's MQTT session)
+  no longer dumps a Python traceback when the printer is unreachable.** It
+  prints the target, the socket error and next steps — including "you are
+  probably on a different network" when this device's address is outside the
+  printer's /24 (seen when the phone joined a car's Android Auto Wi-Fi) — and
+  exits 3. Other network / file errors (`OSError`) from any command print one
+  line instead of a traceback (exit 3 for timeouts and connection errors, 1
+  otherwise). Set `BEAMBAM_DEBUG=1` for the traceback.
+- `slice-print --slot` help said "0-3"; it is the AMS global slot (0..15), as
+  the code already validated.
 - **`list_files` on a busy printer (`[SSL: INVALID_ALERT]`)**: subdir listings
   (e.g. `/cache`) failed with an invalid-alert during the data-channel handshake
   while a print was active — `list_files` used a bare `SSLContext(PROTOCOL_TLS_
@@ -40,6 +241,9 @@ All notable changes to this project.
   `libbambu_networking.so` shim has a modern `python -m beambam.cli` to spawn.
 
 ### Changed
+- Removed the repo's Claude Code Stop hooks (`.claude/hooks/loop-*.sh`): their
+  `#!/usr/bin/env bash` shebang failed under the hook runner on Termux, so they
+  errored at the end of every session.
 - **Relicensed from MIT to AGPL-3.0-or-later.** The pure-Python tree (previously
   MIT) is now AGPL-3.0, matching the already-AGPL BambuStudio fork +
   `runtime/network_shim/`. Bars closed-source forks and, via AGPL §13, closed

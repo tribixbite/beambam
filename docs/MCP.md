@@ -200,7 +200,7 @@ over SSH stdio.
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `X2D_BRIDGE` | `<repo>/beambam` | Path to the bridge CLI the MCP server shells out to. |
+| `X2D_BRIDGE` | unset: `python -m beambam.cli` | Path to a bridge CLI the MCP server shells out to instead. |
 | `X2D_BRIDGE_PYTHON` | `sys.executable` | Python interpreter used to invoke the bridge. |
 | `X2D_DAEMON_HTTP` | `http://127.0.0.1:8765` | Base URL of the bridge daemon for `x2d://state`, `camera_snapshot`, `healthz`, `metrics`. |
 | `X2D_DAEMON_TOKEN` | _(none)_ | Bearer token sent to the daemon's HTTP if it was launched with `--auth-token`. |
@@ -224,5 +224,5 @@ LAN.
 |---|---|---|
 | MCP indicator shows red dot | Server crashed on startup. Check Claude Desktop's Logs (Help → Logs → MCP). | Usually a missing dep — `pip install paho-mqtt cryptography`. |
 | `tools/call status` returns "credentials missing" | `~/.x2d/credentials` not present in the cwd Python opens. | Verify `cwd` in the config block points at the repo root and that `~/.x2d/credentials` exists. |
-| `camera_snapshot` errors "daemon unreachable" | The camera daemon isn't running. | Run `beambam camera --bind 127.0.0.1:8766 &` first (the camera proxy is a separate server from the HTTP daemon; set `X2D_DAEMON_HTTP=http://127.0.0.1:8766` so `camera_snapshot` reaches it). |
+| `camera_snapshot` errors "daemon unreachable" | The camera daemon isn't running. | Run `beambam camera --bind 127.0.0.1:8765 &` first. |
 | Tool call hangs >30s | MQTT connect to printer timed out (printer offline / wrong creds / firewall). | `beambam status` from a shell to debug. |

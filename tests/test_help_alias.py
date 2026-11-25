@@ -25,12 +25,12 @@ def _run(*argv: str) -> subprocess.CompletedProcess:
 
 
 def test_help_subcommand_exists():
-    """`beambam --help` should mention the new `help` subcommand in the
-    top-level usage block."""
+    """`beambam --help` lists the `help` subcommand and its SYNOPSIS form."""
     r = _run("--help")
     assert r.returncode == 0, r.stderr
-    # The usage line lists every subcommand between {…}; "help" must be there.
-    assert ",help," in r.stdout or ",help}" in r.stdout or "{help," in r.stdout
+    assert "beambam help [<command> [<subcommand>]]" in r.stdout
+    assert any(line.split()[:1] == ["help"] for line in r.stdout.splitlines()), \
+        "`help` missing from the COMMANDS table"
 
 
 @pytest.mark.parametrize("topic", ["print", "ams", "cloud-search", "doctor"])
@@ -48,14 +48,13 @@ def test_help_topic_matches_topic_dash_dash_help(topic):
 
 
 def test_help_unknown_topic_exits_1():
-    """Unknown topic → exit 1 + stderr lists the available subcommands."""
+    """Unknown topic → exit 1, near-miss names and a pointer to the command list."""
     r = _run("help", "nonesuch-zzz")
     assert r.returncode == 1
-    assert "unknown topic" in r.stderr
-    assert "available topics" in r.stderr
-    # The list should include real topics we know exist.
-    assert "print" in r.stderr
-    assert "ams" in r.stderr
+    assert "no help topic 'nonesuch-zzz'" in r.stderr
+    assert "run `beambam --help` to list the commands" in r.stderr
+    r = _run("help", "stauts")
+    assert "did you mean: beambam status" in r.stderr
 
 
 def test_help_help_works():

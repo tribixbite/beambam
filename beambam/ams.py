@@ -106,13 +106,45 @@ def _humidity_bar(raw: Any) -> str:
 # ----- formatting ---------------------------------------------------------
 
 
-def format_status(ams_block: dict[str, Any], *, color: bool = True) -> str:
-    """Pretty-print the print.ams block to a multi-line string."""
+def unit_routing(state: dict[str, Any]) -> tuple[dict[int, str], str]:
+    """Per-AMS "which nozzle(s) can this unit feed" labels plus a one-line
+    printer summary (nozzles + Filament Track Switch), from a full pushall
+    state. Empty when the state has no AMS (or is just an `ams` block)."""
+    from beambam.filament_mapping import nozzle_name, read_topology
+    topo = read_topology(state)
+    routes: dict[int, str] = {}
+    for t in topo.trays:
+        if t.external or t.ams_id in routes:
+            continue
+        if not t.extruders:
+            routes[t.ams_id] = "feeds no nozzle (switch not set up)"
+        elif len(t.extruders) > 1:
+            routes[t.ams_id] = ("feeds both nozzles"
+                                + (f" via switch input {t.switch_input}" if t.switch_input else ""))
+        else:
+            routes[t.ams_id] = f"feeds the {nozzle_name(next(iter(t.extruders)), topo.nozzle_count)} nozzle"
+    sw = ("not installed" if not topo.switch_installed
+          else "installed, set up" if topo.switch_ready else "installed, NOT set up")
+    summary = f"{topo.nozzle_count} nozzle(s); Filament Track Switch {sw}"
+    return routes, summary
+
+
+def tray_letter_label(slot_global: int) -> str:
+    """Global slot → 'A1'..'D4' (re-exported from beambam.filament_mapping)."""
+    from beambam.filament_mapping import tray_letter_label as _label
+    return _label(slot_global)
+
+
+def format_status(ams_block: dict[str, Any], *, color: bool = True,
+                  routing: dict[int, str] | None = None,
+                  summary: str = "") -> str:
+    """Pretty-print the print.ams block to a multi-line string. `routing`
+    (from `unit_routing`) adds which nozzle(s) each unit feeds."""
     units = ams_block.get("ams") or []
     if not units:
         return "no AMS units reported by the printer"
 
-    lines = []
+    lines = [summary, ""] if summary else []
     for unit in units:
         uid = unit.get("id", "?")
         humidity = _humidity_bar(unit.get("humidity", "?"))
@@ -120,8 +152,6 @@ def format_status(ams_block: dict[str, Any], *, color: bool = True) -> str:
         if pct is not None:
             humidity += f" {pct}%"
         temp = unit.get("temp", "?")
-        lines.append(f"AMS {uid}  humidity {humidity}  temp {temp}°C  "
-                     f"version {unit.get('info', '?')}")
         # AMS HT units and external/virtual slots can carry a non-numeric
         # id; show the tray id alone there instead of crashing the whole
         # `beambam ams` output on int("?").
@@ -129,6 +159,16 @@ def format_status(ams_block: dict[str, Any], *, color: bool = True) -> str:
             unit_base = int(uid) * 4
         except (TypeError, ValueError):
             unit_base = None
+        try:
+            route = (routing or {}).get(int(uid), "")
+        except (TypeError, ValueError):
+            route = ""
+        try:
+            unit_name = f"AMS {chr(ord('A') + int(uid))}" if int(uid) < 16 else f"AMS HT {int(uid) - 127}"
+        except (TypeError, ValueError):
+            unit_name = f"AMS {uid}"
+        lines.append(f"{unit_name}  humidity {humidity}  temp {temp}°C"
+                     + (f"  {route}" if route else f"  info {unit.get('info', '?')}"))
         trays = unit.get("tray") or []
         for t in trays:
             try:
@@ -143,7 +183,7 @@ def format_status(ams_block: dict[str, Any], *, color: bool = True) -> str:
             idx = t.get("tray_info_idx", "—") or "—"
             state_label = _tray_state_label(int(t.get("state", 0)))
             mark = " ◀" if state_label == "ACTIVE" else "  "
-            lines.append(f"  slot {slot_global:>2} [{t.get('id', '?')}]"
+            lines.append(f"  {tray_letter_label(slot_global)} slot {slot_global:>2}"
                          f" {color_str}  {tray_type:<8} {idx:<6}"
                          f" {remain_str:>4}  {state_label}{mark}")
         lines.append("")
@@ -333,10 +373,11 @@ def build_tray_metadata_payload(
 
 
 def add_subparser(sub: "argparse._SubParsersAction") -> argparse.ArgumentParser:
+    from beambam.print_job import slot_arg
     p = sub.add_parser(
         "ams",
         help="AMS state + control. Subcommands: status, info <slot>, "
-             "load <slot>, unload, dry <unit>, set <slot> <profile>, "
+             "map <file>, load <slot>, unload, dry <unit>, set <slot> <profile>, "
              "sync [<map>].",
     )
     ams_sub = p.add_subparsers(dest="ams_cmd", required=True)
@@ -351,6 +392,28 @@ def add_subparser(sub: "argparse._SubParsersAction") -> argparse.ArgumentParser:
     i.add_argument("slot", type=int,
                    help="Global slot (unit*4 + tray, 0..15)")
     i.add_argument("--no-color", action="store_true")
+
+    mp = ams_sub.add_parser(
+        "map",
+        help="Preview how a sliced file's filaments would map to the loaded "
+             "trays (the same plan `beambam print` confirms) without printing.",
+        description="Reads the plate's used filaments and their nozzles from the "
+                    ".gcode.3mf, reads the AMS units, external spools and Filament "
+                    "Track Switch from the printer, and shows the tray each filament "
+                    "would print from, with errors and warnings. Sends nothing to "
+                    "the printer apart from the state request.")
+    mp.add_argument("file", help="Sliced .gcode.3mf to map")
+    mp.add_argument("--plate", type=int, default=1, help="Which sliced plate to map.")
+    mp.add_argument("--slot", type=slot_arg, default=None, metavar="SLOT[,SLOT...]",
+                    help="Force trays by global slot, one per used filament in order "
+                         "(as print --slot), e.g. 4 or 4,0,12.")
+    mp.add_argument("--map", metavar="F=TRAY,...",
+                    help="Explicit FILAMENT=TRAY choices, as print --map.")
+    mp.add_argument("--no-ams", action="store_true",
+                    help="Map to the external spools instead of the AMS.")
+    mp.add_argument("--no-color", action="store_true", help="Disable ANSI colour.")
+    mp.add_argument("--json", dest="json_out", action="store_true",
+                    help="Emit the plan, including the ams_mapping arrays, as JSON.")
 
     ld = ams_sub.add_parser("load", help="Load filament from a slot (alias)")
     ld.add_argument("slot", type=int)
@@ -440,6 +503,34 @@ def fetch_printer_state(args: argparse.Namespace, *,
         return None
 
 
+def _cmd_ams_map(args: argparse.Namespace) -> int:
+    """`beambam ams map FILE` — show the filament → tray plan, print nothing.
+    Exit 0 when the plan is clean, 1 when it has errors, 2 for warnings only."""
+    from beambam.filament_mapping import (
+        MappingError, format_plan, parse_map, plan_print, plan_to_json, read_project,
+    )
+    try:
+        project = read_project(args.file, args.plate)
+        explicit = parse_map(args.map) if args.map else None
+    except MappingError as e:
+        print(f"ams map: {e}", file=sys.stderr)
+        return 1
+    state = fetch_printer_state(args, timeout=10.0)
+    if state is None:
+        return 1
+    try:
+        plan = plan_print(project, state, use_ams=not args.no_ams,
+                          slot=args.slot, explicit=explicit)
+    except MappingError as e:
+        print(f"ams map: {e}", file=sys.stderr)
+        return 1
+    if args.json_out:
+        print(json.dumps(plan_to_json(plan), indent=2))
+    else:
+        print(format_plan(plan, color=not args.no_color and sys.stdout.isatty()), end="")
+    return 1 if plan.errors else 2 if plan.warnings else 0
+
+
 def cmd_ams(args: argparse.Namespace) -> int:
     from beambam import Printer
 
@@ -453,11 +544,16 @@ def cmd_ams(args: argparse.Namespace) -> int:
             if args.json_out:
                 print(json.dumps(ams_block, indent=2))
             else:
-                print(format_status(ams_block, color=not args.no_color))
+                routing, summary = unit_routing(state)
+                print(format_status(ams_block, color=not args.no_color,
+                                    routing=routing, summary=summary))
         else:                                               # info
             print(format_tray_info(ams_block, args.slot,
                                     color=not args.no_color))
         return 0
+
+    if args.ams_cmd == "map":
+        return _cmd_ams_map(args)
 
     if args.ams_cmd == "load":
         with Printer() as printer:
@@ -664,3 +760,33 @@ def cmd_ams(args: argparse.Namespace) -> int:
 
     print(f"unknown ams subcommand: {args.ams_cmd}", file=sys.stderr)
     return 2
+
+
+def build_change_filament_payload(tray: int | None, *, curr_temp: int = 215,
+                                  tar_temp: int = 215,
+                                  extruder: int | None = None) -> dict[str, Any]:
+    """`print.ams_change_filament` — load global tray `tray`, or unload (None).
+
+    Mirrors MachineObject::command_ams_change_filament (DeviceManager.cpp:1537):
+    `ams_id` / `slot_id` name the tray, `target` is the global tray id
+    (ams*4 + slot; the external spools 254/255 send their own id with slot 0),
+    and unload is `target = slot_id = 255`. `extruder` (0 right, 1 left) is
+    sent as `extruder_id` on dual-nozzle printers, as Bambu Studio does when a
+    nozzle is chosen. Raises ValueError for a tray id that cannot exist."""
+    from beambam.cli._helpers import _print_cmd
+    body: dict[str, Any] = {"curr_temp": int(curr_temp), "tar_temp": int(tar_temp)}
+    if tray is None:
+        # Unload: ams_id is ignored by the firmware for the unload sentinel;
+        # Bambu Studio sends the loaded tray's unit, 255 when unknown.
+        body.update(ams_id=255, target=255, slot_id=255)
+    elif tray in (254, 255):
+        body.update(ams_id=tray, target=tray, slot_id=0)
+    elif 0 <= tray < 64:
+        body.update(ams_id=tray // 4, target=tray, slot_id=tray % 4)
+    else:
+        raise ValueError(f"tray {tray} is not an AMS tray (0..63) or external spool (254/255)")
+    if extruder is not None:
+        if extruder not in (0, 1):
+            raise ValueError("extruder must be 0 (right) or 1 (left)")
+        body["extruder_id"] = int(extruder)
+    return _print_cmd("ams_change_filament", **body)

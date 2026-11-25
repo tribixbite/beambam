@@ -108,6 +108,7 @@ def cmd_daemon(args: argparse.Namespace) -> int:
     """
     import argparse as _argparse
     import json
+    import os
     import signal as _signal
     import sys
     import time
@@ -117,12 +118,8 @@ def cmd_daemon(args: argparse.Namespace) -> int:
     from beambam.config import Creds
     from beambam.ftps import upload_file
     from beambam.mqtt import X2DClient
-    from beambam.print_job import (
-        _derive_print_params_from_3mf,
-        _validate_ams_slot,
-        resolve_plate_idx,
-        start_print,
-    )
+    from beambam.filament_mapping import plan_print, read_project
+    from beambam.print_job import PrintRefusal, start_print
     from beambam.state_hub import StateHub
     # Canonical homes for everything we need:
     #   * `_serve_http`     — beambam.serve_http
@@ -207,18 +204,19 @@ def cmd_daemon(args: argparse.Namespace) -> int:
                     # start_print() auto-derive bed_type/bed_temp so
                     # heat profile matches the slice.
                     queued_3mf = Path(job.gcode)
-                    derived = _derive_print_params_from_3mf(
-                        queued_3mf, filament_index=0)
                     live = cli.request_state(timeout=15.0)
-                    _validate_ams_slot(live, int(job.slot), derived,
-                                        force=False)
-                    # Plate 1, or the sole plate of a `plate select` file
-                    # (refuses an ambiguous multi-plate file).
+                    # Unattended: hard errors AND soft mismatches refuse
+                    # (nobody is there to confirm a different colour/brand).
+                    plan = plan_print(read_project(queued_3mf), live,
+                                      slot=int(job.slot))
+                    if plan.errors or plan.warnings:
+                        raise PrintRefusal(
+                            "filament mapping not clean: "
+                            + "; ".join(plan.errors + plan.warnings))
                     start_print(cli, queued_3mf.name,
-                                use_ams=True,
-                                ams_slot=int(job.slot),
-                                plate_idx=resolve_plate_idx(queued_3mf, None),
-                                local_path=queued_3mf)
+                                use_ams=plan.use_ams,
+                                local_path=queued_3mf,
+                                plan=plan)
                 LOG_QUEUE.info(
                     "queue dispatched %s → %s slot %d",
                     job.label or job.gcode, job.printer, job.slot)
@@ -253,16 +251,18 @@ def cmd_daemon(args: argparse.Namespace) -> int:
             print(f"[x2d-bridge] {name or '<default>'}: connected to "
                   f"{creds.ip}", file=sys.stderr)
         except SystemExit as e:
-            failed.append(
-                (name, f"creds resolve failed (exit {e.code})"))
+            # Creds.resolve() exits with the full setup instructions; keep
+            # them whole (printed once below) rather than repr()-ing them.
+            failed.append((name, str(e.code)))
         except Exception as e:
             failed.append((name, str(e)))
             print(f"[x2d-bridge] {name or '<default>'}: connect "
                   f"failed: {e} — other printers continue",
                   file=sys.stderr)
     if not clients:
-        print(f"[x2d-bridge] no printers reachable: {failed}",
-              file=sys.stderr)
+        print("[x2d-bridge] no printers reachable:", file=sys.stderr)
+        for fname, why in failed:
+            print(f"  {fname or '<default>'}: {why}", file=sys.stderr)
         return 2
 
     def _safe_pushall(name: str, cli: X2DClient) -> None:
@@ -273,8 +273,19 @@ def cmd_daemon(args: argparse.Namespace) -> int:
             print(f"[x2d-bridge] {name or '<default>'}: pushall "
                   f"failed: {e}", file=sys.stderr)
 
+    def _request_versions(name: str, cli: X2DClient) -> None:
+        # Firmware versions (printer, each AMS, buffer, …) only arrive as the
+        # reply to `info.get_version`; merged into the cached state as `info`.
+        try:
+            cli.publish({"info": {"sequence_id": _next_seq(),
+                                  "command": "get_version"}})
+        except Exception as e:
+            print(f"[x2d-bridge] {name or '<default>'}: get_version "
+                  f"failed: {e}", file=sys.stderr)
+
     for name, cli in clients.items():
         _safe_pushall(name, cli)
+        _request_versions(name, cli)
 
     if args.http:
         def get_state(printer: str):
@@ -300,7 +311,10 @@ def cmd_daemon(args: argparse.Namespace) -> int:
                        "timelapse_rec": timelapse_rec,
                        "get_hub": get_hub,
                        "allowed_hosts": list(
-                           getattr(args, "allow_host", None) or [])},
+                           getattr(args, "allow_host", None) or []),
+                       "cors_origins": list(getattr(args, "cors_origin", None) or [])
+                                       + [o for o in os.environ.get(
+                                           "BEAMBAM_CORS_ORIGINS", "").split(",") if o]},
                daemon=True).start()
 
     period = max(1, int(args.interval))
@@ -316,11 +330,17 @@ def cmd_daemon(args: argparse.Namespace) -> int:
     _signal.signal(_signal.SIGINT, _handle_sig)
     _signal.signal(_signal.SIGTERM, _handle_sig)
 
+    last_versions = time.time()
     while not stop.is_set():
         if stop.wait(period):
             break
+        refresh_versions = time.time() - last_versions >= 3600
         for name, cli in clients.items():
             _safe_pushall(name, cli)
+            if refresh_versions:
+                _request_versions(name, cli)
+        if refresh_versions:
+            last_versions = time.time()
     for cli in clients.values():
         try:
             cli.disconnect()

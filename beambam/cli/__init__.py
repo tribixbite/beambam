@@ -22,12 +22,10 @@ in v1.5.0; `x2d_bridge` survives only as a console-script alias of
 from __future__ import annotations
 
 
-# Top-level command catalog. argparse only supports ONE add_subparsers
-# block so all subcommands appear together in the default help — we
-# append this grouped TOC as the epilog so users can scan by topic.
-# Group entries are advisory: the actual command set comes from the
-# add_parser() calls in x2d_bridge.main(), so a new command shows up in
-# the auto help even if we forget to list it here.
+# Top-level command catalog, rendered as the grouped COMMANDS section of
+# `beambam --help` (beambam.cli.manhelp). Entries are advisory: the real
+# command set comes from the add_parser() calls in build_parser(), and any
+# registered command missing here is still listed, under "Other".
 _COMMAND_GROUPS: list[tuple[str, list[tuple[str, str]]]] = [
     ("LAN control", [
         ("status",         "One-shot pushall — current bed/nozzle/print state"),
@@ -133,35 +131,6 @@ _COMMAND_GROUPS: list[tuple[str, list[tuple[str, str]]]] = [
 ]
 
 
-def _print_slots(text: str) -> list[int]:
-    """argparse type for `print --slot`: beambam.print_job.parse_slots, with its message kept."""
-    import argparse as _ap
-    from beambam.print_job import parse_slots
-    try:
-        return parse_slots(text)
-    except ValueError as e:
-        raise _ap.ArgumentTypeError(str(e))
-
-
-def _build_epilog() -> str:
-    """Format _COMMAND_GROUPS into a `beambam --help` epilog.
-
-    argparse only supports ONE add_subparsers block, so all subcommands
-    appear together in the default help. We append this grouped TOC as
-    the epilog so users can scan by topic. Group entries are advisory:
-    the actual command set comes from add_parser() calls in
-    x2d_bridge.main(), so a new command shows up in the auto help even
-    if we forget to list it here."""
-    lines = ["", "Commands by topic:"]
-    for group, cmds in _COMMAND_GROUPS:
-        lines.append(f"\n  {group}")
-        for name, blurb in cmds:
-            lines.append(f"    {name:<24} {blurb}")
-    lines.append("")
-    lines.append("Run `beambam <command> --help` for full per-command flags.")
-    return "\n".join(lines)
-
-
 # ---------------------------------------------------------------------------
 # main() — argparse builder + dispatcher, moved from x2d_bridge.py in
 # Phase 5e batch 5. x2d_bridge.py re-exports `main` so the GUI shim's
@@ -175,6 +144,12 @@ import sys
 from pathlib import Path
 
 from beambam._version import PACKAGE_VERSION
+from beambam.cli.arghelp import fill_missing_help
+from beambam.cli.manhelp import (
+    ROOT_SUMMARY, ManParser, Style, use_color, install as install_manhelp,
+)
+from beambam.mqtt import PrinterUnreachableError
+from beambam.print_job import slot_arg
 from beambam.cli.control import (
     cmd_pause, cmd_resume, cmd_stop, cmd_gcode,
     cmd_home, cmd_level, cmd_set_temp, cmd_chamber_light,
@@ -206,13 +181,24 @@ from beambam.cli.lan import (
 )
 from beambam.paths import config_path
 
-def main() -> int:
-    # UTF-8 output on Windows consoles/pipes (help text has em dashes, ≈, °).
-    from beambam.console import utf8_stdio
-    utf8_stdio()
-    p = argparse.ArgumentParser(prog="beambam", description=__doc__,
-                                formatter_class=argparse.RawDescriptionHelpFormatter,
-                                epilog=_build_epilog())
+def build_parser() -> argparse.ArgumentParser:
+    """Build the complete `beambam` argument parser (every subcommand).
+
+    Kept separate from main() so tests and `beambam help --man` can walk
+    the tree without parsing argv or running a command."""
+    # On Windows the default console codepage (cp1252) can't encode the
+    # em-dashes / arrows / degree signs in our help + status text, which
+    # crashes `--help` (and any unicode output) with UnicodeEncodeError.
+    # Force UTF-8 on the std streams so the CLI prints cleanly on any console.
+    if sys.platform == "win32":                       # pragma: no cover (POSIX CI)
+        for _stream in (sys.stdout, sys.stderr):
+            _reconfigure = getattr(_stream, "reconfigure", None)
+            if _reconfigure is not None:
+                try:
+                    _reconfigure(encoding="utf-8")
+                except (ValueError, OSError):
+                    pass
+    p = ManParser(prog="beambam", description=ROOT_SUMMARY)
     p.add_argument("--version", action="version",
                    version=f"beambam {PACKAGE_VERSION}")
     p.add_argument("--ip", help="Printer LAN IP (overrides env / file)")
@@ -238,17 +224,27 @@ def main() -> int:
     pr = sub.add_parser("print", help="Upload + start_print")
     pr.add_argument("file")
     pr.add_argument("--remote")
-    pr.add_argument("--slot", type=_print_slots, default="0",
-                    help="AMS global slot (AMS_index*4 + tray_in_ams), 0..15; for a multi-colour "
-                         "file one per filament in order, comma-separated (e.g. 4,0,12)")
+    pr.add_argument("--slot", type=slot_arg, default=None, metavar="SLOT[,SLOT...]",
+                    help="AMS global slot (AMS_index*4 + tray_in_ams, 0..15); for a plate "
+                         "that uses several filaments, one per used filament in order, "
+                         "comma-separated (e.g. 4,0,12). Default: auto-map every used "
+                         "filament to the best matching loaded tray (type, then "
+                         "colour; colour first for 3+ colour prints).")
+    pr.add_argument("--map", metavar="F=TRAY,...",
+                    help="Choose trays per filament: comma-separated FILAMENT=TRAY, filament "
+                         "numbers as Bambu Studio shows them (1-based); TRAY is a global "
+                         "slot (AMS_index*4 + tray), the touchscreen label (B3 = AMS B, "
+                         "slot 3), ext-left or ext-right. Filaments not named are "
+                         "auto-mapped. e.g. --map 1=B3,4=ext-right")
+    pr.add_argument("--plate", type=int, default=1,
+                    help="Which sliced plate of the .gcode.3mf to print.")
+    pr.add_argument("-y", "--yes", action="store_true",
+                    help="Accept the filament mapping without asking (it is still "
+                         "printed). Without a terminal, needed to accept mapping "
+                         "warnings.")
     pr.add_argument("--no-upload", action="store_true",
                     help="Skip upload — file is already on the printer")
     pr.add_argument("--no-ams", action="store_true")
-    pr.add_argument("--plate", type=int, default=None,
-                    help="Plate index to print (default: auto — plate 1, or "
-                         "the sole plate if the file was reduced with "
-                         "`plate select`). The project_file param + md5 track "
-                         "this plate.")
     pr.add_argument("--no-bed-level", action="store_true")
     pr.add_argument("--bed-type", default=None,
                     help="MQTT bed_type enum string. By default this is "
@@ -321,6 +317,13 @@ def main() -> int:
                         "machine's own names are always accepted; any "
                         "other Host header is refused as DNS rebinding. "
                         "Also read from $X2D_ALLOWED_HOSTS (comma-separated).")
+    d.add_argument("--cors-origin", action="append", default=[], metavar="ORIGIN",
+                   help="Let a browser web app on ORIGIN (e.g. https://pokefit.party "
+                        "or http://localhost:5173) call the HTTP API: it gets CORS "
+                        "headers, and its POSTs are accepted. Other web pages are "
+                        "refused. Repeatable; also $BEAMBAM_CORS_ORIGINS "
+                        "(comma-separated). Programs that send no Origin header "
+                        "(curl, Home Assistant, a server-side app) are unaffected.")
     d.add_argument("--queue", action="store_true",
                    help="Enable the multi-printer print queue (item #55). "
                         "Auto-dispatches the next pending job to a printer "
@@ -456,7 +459,8 @@ def main() -> int:
     al.set_defaults(fn=cmd_ams_load)
 
     jg = sub.add_parser("jog", help="Relative axis jog via G91/G1/G90")
-    jg.add_argument("axis", help="X / Y / Z / E")
+    jg.add_argument("axis", type=str.upper, choices=("X", "Y", "Z", "E"),
+                    help="Axis to move: X, Y, Z or E (extruder); case-insensitive")
     jg.add_argument("distance", type=float, help="mm to move (negative for reverse)")
     jg.add_argument("--feed", type=int, default=1500, help="Feedrate in mm/min")
     jg.set_defaults(fn=cmd_jog)
@@ -563,12 +567,15 @@ def main() -> int:
                     help="How many copies of the model to tile on the plate. "
                          "Forwards to x2d_slice.py --copies; ignored for 3MF input.")
     sp.add_argument("--color",
-                    help="Primary filament color #RRGGBB (forwards to "
-                         "x2d_slice.py --color; ignored for 3MF input)")
+                    help="Primary filament color: #RRGGBB, a Bambu colour name, or "
+                         "an AMS tray (A1..D4, ext-left, ext-right) to slice in the "
+                         "colour loaded there and print from that tray. (STL input)")
     sp.add_argument("--colors",
-                    help="Multi-AMS-slot color list, comma-separated (hex or "
-                         "Bambu names). With --copies N the Nth copy gets the "
-                         "Nth slot. Mirrors x2d_slice.py --colors. (STL input)")
+                    help="One colour per filament, comma-separated: #RRGGBB, Bambu "
+                         "names, or AMS trays (A1..D4, ext-left, ext-right) — a tray "
+                         "is read from the live AMS and that filament prints from it "
+                         "(AMS sync). With --copies N the Nth copy gets the Nth "
+                         "colour. e.g. --colors A1,B3 (STL input)")
     sp.add_argument("--color-by-region", dest="color_by_region",
                     help="JSON file of per-object/region color assignments. "
                          "Mirrors x2d_slice.py --color-by-region. (STL input)")
@@ -614,8 +621,18 @@ def main() -> int:
                          "bambu-studio --repetitions. (3MF input only)")
     sp.add_argument("--remote", help="Remote filename on printer "
                                      "(default: input basename)")
-    sp.add_argument("--slot", type=int, default=0,
-                    help="AMS tray slot 0-3 (default: 0)")
+    sp.add_argument("--slot", type=slot_arg, default=None, metavar="SLOT[,SLOT...]",
+                    help="AMS global slot: AMS_index*4 + tray (0..15); one per used "
+                         "filament in order, comma-separated (e.g. 4,0,12). Default: "
+                         "auto-map to the best matching tray.")
+    sp.add_argument("--map", metavar="F=TRAY,...",
+                    help="Choose trays per filament: comma-separated FILAMENT=TRAY, filament "
+                         "numbers as Bambu Studio shows them (1-based); TRAY is a global "
+                         "slot (AMS_index*4 + tray), the touchscreen label (B3 = AMS B, "
+                         "slot 3), ext-left or ext-right. Filaments not named are "
+                         "auto-mapped. e.g. --map 1=B3,4=ext-right")
+    sp.add_argument("-y", "--yes", action="store_true",
+                    help="Accept the filament mapping without asking (it is still printed).")
     sp.add_argument("--no-ams", action="store_true",
                     help="Print without AMS (use external spool)")
     sp.add_argument("--no-bed-level", action="store_true",
@@ -1296,16 +1313,121 @@ def main() -> int:
     # `beambam help <topic>` alias for `beambam <topic> --help`.
     help_sub = sub.add_parser(
         "help",
-        help="Show help for a topic (alias for `<topic> --help`).",
+        help="Show the manual page for a command (same as `<command> --help`), "
+             "or the whole manual.",
     )
     help_sub.add_argument(
-        "topic",
-        help="Subcommand name to print help for. e.g. `beambam help print`.",
+        "topic", nargs="*",
+        help="Command (and subcommand) to show, e.g. `beambam help print` or "
+             "`beambam help cam start`. With no topic, shows the overview.",
     )
+    help_mode = help_sub.add_mutually_exclusive_group()
+    help_mode.add_argument("--all", action="store_true",
+                           help="Show the pages for every command, one after another.")
+    help_mode.add_argument("--man", action="store_true",
+                           help="Print the complete manual as roff (man(7)) source on stdout.")
+    help_mode.add_argument("--install-man", nargs="?", const="", metavar="DIR",
+                           help="Write beambam.1 so `man beambam` works. DIR defaults "
+                                "to $PREFIX/share/man/man1 when writable, else "
+                                "~/.local/share/man/man1.")
     help_sub.set_defaults(fn=cmd_help, _root_parser=p)
 
-    args = p.parse_args()
-    return args.fn(args)
+    fill_missing_help(p)
+    install_manhelp(p)
+    return p
+
+
+def _report_failure(args: argparse.Namespace, exc: BaseException) -> int:
+    """Print a one-paragraph diagnosis for an expected runtime failure.
+
+    Network problems and missing files are user-environment issues, not
+    bugs, so they get a message and exit status instead of a traceback.
+    BEAMBAM_DEBUG=1 re-raises for the full stack."""
+    if os.environ.get("BEAMBAM_DEBUG"):
+        raise exc
+    st = Style(use_color(sys.stderr))
+    cmd = " ".join(["beambam", *[w for w in [getattr(args, "cmd", None)] if w]])
+    err = sys.stderr
+    if isinstance(exc, PrinterUnreachableError):
+        err.write(f"{st.error(cmd + ':')} {exc}\n")
+        for hint in exc.hints():
+            err.write(f"  - {hint}\n")
+        return 3
+    if isinstance(exc, (TimeoutError, ConnectionError)):
+        err.write(f"{st.error(cmd + ':')} {exc or exc.__class__.__name__}\n")
+        err.write("  - run `beambam doctor` to check connectivity; "
+                  "set BEAMBAM_DEBUG=1 for the traceback\n")
+        return 3
+    if isinstance(exc, (FileNotFoundError, IsADirectoryError, PermissionError)):
+        # Some callers raise FileNotFoundError(path) with no errno, so str()
+        # is the bare path; name the problem either way.
+        what = {FileNotFoundError: "file not found", IsADirectoryError: "is a directory",
+                PermissionError: "permission denied"}[type(exc)]
+        path = exc.filename or (exc.args[0] if exc.args else "")
+        err.write(f"{st.error(cmd + ':')} {what}: {path}\n")
+        return 1
+    err.write(f"{st.error(cmd + ':')} {exc}\n")
+    err.write("  - set BEAMBAM_DEBUG=1 for the traceback\n")
+    return 1
+
+
+# Global options that take a value and may precede the command name.
+_GLOBAL_VALUE_OPTS = ("--ip", "--code", "--serial", "--printer")
+
+
+def _trailing_help(root: argparse.ArgumentParser, argv: list[str]) -> list[str]:
+    """`beambam ams map help` → `beambam ams map --help`.
+
+    People type `help` after a command as often as before it; argparse would
+    otherwise read it as a file name or an unknown subcommand. Only rewritten
+    when everything before it is a command path (after any global options)."""
+    if len(argv) < 2 or argv[-1] != "help":
+        return argv
+    i = 0
+    while i < len(argv) - 1 and argv[i].startswith("--"):
+        opt = argv[i].split("=", 1)[0]
+        if opt not in _GLOBAL_VALUE_OPTS:
+            return argv
+        i += 1 if "=" in argv[i] else 2
+    words = argv[i:-1]
+    if not words or any(w.startswith("-") for w in words):
+        return argv
+    from beambam.cli.manhelp import find_parser
+    target = find_parser(root, words)
+    if target is None or target is root or words == ["help"]:
+        return argv
+    return argv[:-1] + ["--help"]
+
+
+def _tolerate_narrow_stdio() -> None:
+    """Never crash on output a stream can't encode.
+
+    Help pages and plans use → ✓ ✗ — and box characters. A redirected or
+    piped Windows console is cp1252, where printing those raises
+    UnicodeEncodeError mid-command; substitute '?' there instead. UTF-8
+    streams are left as they are."""
+    for stream in (sys.stdout, sys.stderr):
+        enc = (getattr(stream, "encoding", None) or "").lower().replace("-", "")
+        reconfigure = getattr(stream, "reconfigure", None)
+        if enc != "utf8" and reconfigure is not None:
+            try:
+                reconfigure(errors="replace")
+            except (ValueError, OSError):   # detached / already-closed stream
+                pass
+
+
+def main() -> int:
+    """`beambam` console-script entry point: parse argv and dispatch."""
+    _tolerate_narrow_stdio()
+    p = build_parser()
+    args = p.parse_args(_trailing_help(p, sys.argv[1:]))
+    try:
+        return args.fn(args)
+    except KeyboardInterrupt:
+        sys.stderr.write("\ninterrupted\n")
+        return 130
+    except OSError as exc:  # unreachable printer, timeouts, missing files
+        return _report_failure(args, exc)
 
 
 if __name__ == "__main__":

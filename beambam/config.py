@@ -35,6 +35,26 @@ from beambam.paths import credentials_path
 __all__ = ["Creds"]
 
 
+def missing_creds_message(missing: list[str]) -> str:
+    """What to tell someone whose command needs a printer that isn't set up.
+
+    Leads with the wizard (it finds the printer and asks for the code), then
+    the non-interactive ways, so every command that needs a printer gives the
+    same instructions."""
+    return (
+        f"no printer configured (missing: {', '.join(missing)})\n"
+        "\n"
+        "  Set one up:   beambam init                 guided: finds the printer, asks for the code\n"
+        "                beambam find --add NAME      save a printer found on this network\n"
+        "                beambam config add NAME --ip IP --code CODE --serial SERIAL\n"
+        "  Just once:    beambam --ip IP --code CODE --serial SERIAL <command>\n"
+        "                (or set X2D_IP, X2D_CODE, X2D_SERIAL)\n"
+        "\n"
+        "  The 8-digit access code and the serial are on the printer's touchscreen,\n"
+        "  in its network / LAN settings. Saved printers live in ~/.x2d/credentials."
+    )
+
+
 @dataclass
 class Creds:
     """Printer connection credentials. Use `Creds.resolve()` with an
@@ -147,15 +167,6 @@ class Creds:
             code = getattr(args, "code", None) or env_code or ini_code
             serial = getattr(args, "serial", None) or env_serial or ini_serial
         if not (ip and code and serial):
-            sys.exit(
-                "credentials missing — provide --ip --code --serial, or\n"
-                "set X2D_IP / X2D_CODE / X2D_SERIAL env vars, or write\n"
-                "  ~/.x2d/credentials\n\n"
-                "  # default printer\n"
-                "  [printer]\n"
-                "  ip = 192.168.x.y\n  code = 12345678\n  serial = 03ABC...\n"
-                "\n"
-                "  # OR multiple, selected via --printer NAME / X2D_PRINTER\n"
-                "  [printer:studio]\n  ip = …\n  code = …\n  serial = …\n"
-            )
+            missing = [n for n, v in (("ip", ip), ("code", code), ("serial", serial)) if not v]
+            sys.exit(missing_creds_message(missing))
         return cls(ip=ip, code=code, serial=serial, name=chosen_name)

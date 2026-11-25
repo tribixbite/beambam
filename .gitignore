@@ -101,15 +101,8 @@ runtime/probes/probe_vendor_window
 # Old draft notes
 UNANSWERED_QUESTIONS.md
 
-# .claude — keep most of it ignored, but the Stop-hook + settings
-# need to travel with the repo so the IMPROVEMENTS.md loop is
-# reproducible for anyone who clones.
-.claude/*
-!.claude/settings.json
-!.claude/hooks/
-.claude/hooks/*
-!.claude/hooks/loop-improvements.sh
-!.claude/hooks/loop-tasks.sh
+# .claude — local session state only (the old Stop-hook loop was removed)
+.claude/
 
 # network_shim build artefacts
 runtime/network_shim/src/*.o

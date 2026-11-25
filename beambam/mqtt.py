@@ -169,6 +169,54 @@ class PublishTimeout(ConnectionError):
     """The broker did not acknowledge a QoS-1 publish in time."""
 
 
+def _local_ip_toward(ip: str) -> str | None:
+    """Local interface address the kernel would use to reach `ip`, or None.
+
+    A UDP connect() sends nothing; it only selects the route, so this is
+    safe to call on an unreachable target."""
+    import socket
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.connect((ip, 9))
+            return s.getsockname()[0]
+    except OSError:
+        return None
+
+
+class PrinterUnreachableError(ConnectionError):
+    """TCP connect to the printer's MQTT port failed.
+
+    Carries the target and the underlying socket error so the CLI can print
+    a one-line diagnosis instead of a paho/socket traceback."""
+
+    def __init__(self, ip: str, port: int, cause: OSError):
+        self.ip = ip
+        self.port = port
+        self.cause = cause
+        self.local_ip = _local_ip_toward(ip)
+        super().__init__(f"cannot reach printer at {ip}:{port} "
+                         f"({cause.__class__.__name__}: {cause or 'timed out'})")
+
+    def hints(self) -> list[str]:
+        """Human-readable next steps, most likely cause first."""
+        out: list[str] = []
+        # Compare /24 prefixes: home routers almost always hand out /24s, so a
+        # different first three octets is a strong "wrong Wi-Fi" signal.
+        if self.local_ip and self.local_ip.rsplit(".", 1)[0] != self.ip.rsplit(".", 1)[0]:
+            out.append(f"this device is on {self.local_ip}, the printer is configured as "
+                       f"{self.ip} — you are probably on a different network "
+                       f"(hotspot, car Wi-Fi, VPN)")
+        if isinstance(self.cause, ConnectionRefusedError):
+            out.append("the host answered but refused port 8883 — is that IP really the "
+                       "printer, and is LAN mode / developer mode enabled?")
+        else:
+            out.append("make sure the printer is powered on and on the same LAN")
+        out.append("the printer's IP may have changed (DHCP): run `beambam find` "
+                   "to rediscover it, then `beambam config` or pass `--ip`")
+        out.append("run `beambam doctor` for a full connectivity check")
+        return out
+
+
 class X2DClient:
     PORT = 8883
     # Persistent last-message timestamp (items #19, #37). Lets /healthz
@@ -339,12 +387,24 @@ class X2DClient:
     # --- public API -------------------------------------------------------
 
     def connect(self, timeout: float = 8.0) -> None:
-        self.client.connect(self.creds.ip, self.PORT, keepalive=60)
+        """Open the TLS MQTT session to the printer.
+
+        Raises PrinterUnreachableError when the TCP connect itself fails
+        (timeout, refused, no route, bad hostname), and TimeoutError when
+        TCP connects but the broker never sends CONNACK — that second case
+        almost always means a wrong access code or serial."""
+        try:
+            self.client.connect(self.creds.ip, self.PORT, keepalive=60)
+        except OSError as e:  # TimeoutError, ConnectionRefusedError, gaierror, …
+            raise PrinterUnreachableError(self.creds.ip, self.PORT, e) from e
         self.client.loop_start()
         if not self._connected.wait(timeout):
+            self.client.loop_stop()
             raise TimeoutError(
-                f"MQTT did not connect to {self.creds.ip}:{self.PORT} "
-                f"within {timeout}s")
+                f"printer {self.creds.ip}:{self.PORT} accepted the TCP "
+                f"connection but MQTT login did not complete within "
+                f"{timeout:g}s — check the access code and serial "
+                f"(`beambam printers`, `beambam config`)")
 
     @property
     def message_seq(self) -> int:

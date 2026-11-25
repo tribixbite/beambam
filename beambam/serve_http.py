@@ -87,18 +87,21 @@ CONTROL_REPLY_TIMEOUT_S = 4.0
 # /control verbs whose command the firmware always answers (print job
 # control + AMS load); silence there is an error (504). Other verbs may
 # legitimately go unanswered (202).
-_CONTROL_VERBS_THAT_REPLY = frozenset({"pause", "resume", "stop", "ams_load"})
+_CONTROL_VERBS_THAT_REPLY = frozenset({"pause", "resume", "stop", "ams_load", "ams_unload"})
 
 
 def _slice_print_argv(model: Path, *, printer: str, slot: int | None,
-                      bed_type: str, no_ams: bool) -> list[str]:
+                      bed_type: str, no_ams: bool,
+                      accept_warnings: bool = False) -> list[str]:
     """argv for the `beambam slice-print` child of POST /slice-print.
 
     Runs the real CLI module with this interpreter. (The route used to
     spawn ``python serve_http.py slice-print``, which only defines
     functions and exits 0 without doing anything, behind a 202.)
     `slice-print` defines its own --printer, so it follows the
-    subcommand; flags left unset keep the CLI's defaults.
+    subcommand; flags left unset keep the CLI's defaults. Nobody is at a
+    terminal, so soft filament-mapping warnings refuse unless the caller
+    (X-Accept-Warnings) says it showed them to the user.
     """
     argv = [sys.executable, "-m", "beambam.cli", "slice-print", str(model),
             "--bed-type", bed_type]
@@ -108,6 +111,8 @@ def _slice_print_argv(model: Path, *, printer: str, slot: int | None,
         argv += ["--slot", str(slot)]
     if no_ams:
         argv.append("--no-ams")
+    if accept_warnings:
+        argv.append("--yes")
     return argv
 
 
@@ -202,7 +207,8 @@ def _serve_http(bind: str,
                 queue_mgr=None,
                 timelapse_rec=None,
                 get_hub: Callable[[str], "StateHub | None"] | None = None,
-                allowed_hosts: list[str] | None = None) -> None:
+                allowed_hosts: list[str] | None = None,
+                cors_origins: list[str] | None = None) -> None:
     """Multi-printer HTTP server (item #36).
 
     `get_state` and `get_last_ts` now take a printer name (empty string
@@ -236,6 +242,15 @@ def _serve_http(bind: str,
       POST /slice-print       → upload STL/3MF and spawn slice-print
                                  (HA-friendly; raw bytes body + headers)
       GET  /slice-print/jobs/<pid> → check spawned slice-print status
+      POST /print/upload      → raw .gcode.3mf body (X-Filename) → {"file": path}
+      POST /print/plan        → {"file", "plate"?, "slot"?, "map"?, "use_ams"?}
+                                 → the filament → tray plan; touches nothing
+      POST /print             → same + {"confirm": true, "accept_warnings"?}
+                                 → 202 {"job", "poll"}; upload + start in the background
+      GET  /print/jobs/<id>   → that job's state (uploading / accepted / rejected / …)
+      POST /slice             → raw project .3mf body (X-Filename) → 202 {"job", "poll"};
+                                 slices it here (bs-bionic) into a .gcode.3mf
+      GET  /slice/jobs/<id>   → queued / slicing / done {"file", "seconds", "grams"} / failed
 
     `clients` (optional) maps printer name → live X2DClient so the
     POST /control/* routes can publish without re-dialing MQTT each time.
@@ -245,8 +260,11 @@ def _serve_http(bind: str,
     first (Host allow-list against DNS rebinding; for POST: same-origin
     Origin and a JSON / octet-stream Content-Type against cross-site
     forgery). `allowed_hosts` adds host names beyond IP literals,
-    localhost and this machine's names. Malformed bodies and fields
-    answer 400 via `BadRequest`.
+    localhost and this machine's names; `cors_origins` (`--cors-origin`)
+    allowlists browser origins (e.g. https://pokefit.party) — they pass the
+    Origin guard and get CORS headers + preflight answers, including Chrome's
+    Private Network Access opt-in. Malformed bodies and fields answer 400
+    via `BadRequest`.
     """
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
     import urllib.parse
@@ -263,11 +281,65 @@ def _serve_http(bind: str,
         web_dir = _WEB_DIR_DEFAULT
     clients = clients or {}
     host_allow = allowed_host_names(host, allowed_hosts)
+    allowed_origins = {o.rstrip("/") for o in (cors_origins or []) if o}
     slice_jobs = SliceJobRegistry()
+    # Remote 1.6.x daemon print/slice API (additive): plan+start a print and
+    # slice a project in-process. `inproc_slicer` is kept distinct from the
+    # subprocess `slice_jobs` (/slice-print) above.
+    from beambam.filament_mapping import MappingError
+    from beambam.print_service import (
+        PrintJobs, PrintRequest, fresh_state, plan_request, plan_summary,
+    )
+    from beambam.slice_service import SliceJobs
+    print_jobs = PrintJobs()
+    inproc_slicer = SliceJobs()
 
     class Handler(BaseHTTPRequestHandler):
+        _x2d_printer: "str | None" = None
+
         def log_message(self, *_):  # silence default stderr access log
             return
+
+        # ---- browser origins (CORS response headers + preflight) ----------
+        # The Origin *refusal* for cross-site POSTs is done by request_guard_error
+        # in _guard (threaded with allowed_origins); these add the matching CORS
+        # response headers and answer preflights for allowlisted origins.
+        def _request_origin(self) -> str:
+            return (self.headers.get("Origin") or "").rstrip("/")
+
+        def _origin_ok(self) -> bool:
+            """No Origin (curl, HA, a server-side app) or our own origin, or an
+            allowlisted one. Anything else is a cross-site browser request."""
+            origin = self._request_origin()
+            if not origin or origin in allowed_origins or "*" in allowed_origins:
+                return True
+            own = urllib.parse.urlparse(origin)
+            return bool(own.netloc) and own.netloc == (self.headers.get("Host") or "")
+
+        def end_headers(self) -> None:
+            origin = self._request_origin()
+            if origin and (origin in allowed_origins or "*" in allowed_origins):
+                self.send_header("Access-Control-Allow-Origin", origin)
+                self.send_header("Vary", "Origin")
+            super().end_headers()
+
+        def do_OPTIONS(self):
+            # CORS preflight for allowlisted origins (no auth: browsers send
+            # preflights without credentials).
+            if not self._origin_ok():
+                self.send_response(403); self.end_headers(); return
+            self.send_response(204)
+            self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+            self.send_header("Access-Control-Allow-Headers",
+                             "Authorization, Content-Type, X-Filename, X-Printer, "
+                             "X-Slot, X-Bed-Type, X-No-AMS, X-Accept-Warnings")
+            self.send_header("Access-Control-Max-Age", "600")
+            # Chrome's Private Network Access: a public site (https://pokefit.party)
+            # calling a loopback daemon asks first; only allowlisted origins get here.
+            if (self.headers.get("Access-Control-Request-Private-Network") or "").lower() == "true":
+                self.send_header("Access-Control-Allow-Private-Network", "true")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
 
         def log_request(self, code='-', size='-'):
             # Item #39: emit one JSON line per request to
@@ -446,7 +518,7 @@ def _serve_http(bind: str,
             route (including the auth-free ones) runs."""
             path = urllib.parse.urlparse(self.path).path
             err = request_guard_error(self.command, path, self.headers,
-                                      host_allow)
+                                      host_allow, allowed_origins)
             if err is None:
                 return True
             status, reason = err
@@ -711,6 +783,20 @@ def _serve_http(bind: str,
                 self.send_header("Cache-Control", "public, max-age=31536000, immutable")
                 self.end_headers()
                 self.wfile.write(body)
+            elif path.startswith("/print/jobs/"):
+                job = print_jobs.get(path[len("/print/jobs/"):])
+                if job is None:
+                    self._send_json({"error": "no such print job"}, status=404)
+                else:
+                    self._send_json(job.to_dict())
+                return
+            elif path.startswith("/slice/jobs/"):
+                sjob = inproc_slicer.get(path[len("/slice/jobs/"):])
+                if sjob is None:
+                    self._send_json({"error": "no such slice job"}, status=404)
+                else:
+                    self._send_json(sjob.to_dict())
+                return
             elif path.startswith("/slice-print/jobs/"):
                 # GET status of a slice-print job THIS daemon spawned
                 # (Popen.poll — portable, no /proc). Any other PID is
@@ -832,6 +918,119 @@ def _serve_http(bind: str,
                                  f"available: {names}")
             return name
 
+        def _read_upload(self, suffix: str, hint: str) -> tuple[str, bytes] | None:
+            """The raw zip body of an upload and its sanitised X-Filename, or
+            None after answering 400."""
+            fname = re.sub(r"[^a-zA-Z0-9._-]", "_",
+                           self.headers.get("X-Filename") or f"upload{suffix}")[:120]
+            if not fname.lower().endswith(suffix):
+                self._send_json({"error": f"X-Filename must end in {suffix} ({hint})"}, status=400)
+                return None
+            cl = int(self.headers.get("Content-Length", 0) or 0)
+            if cl <= 0 or cl > 200 * 1024 * 1024:
+                self._send_json({"error": "Content-Length must be 1..200 MiB"}, status=400)
+                return None
+            body = self.rfile.read(cl)
+            if len(body) != cl or body[:2] != b"PK":
+                self._send_json({"error": f"body is not a complete {suffix} (zip)"}, status=400)
+                return None
+            return fname, body
+
+        def _handle_slice(self) -> None:
+            """POST /slice — see the docstring above."""
+            got = self._read_upload(".3mf", "a Bambu Studio project")
+            if got is None:
+                return
+            fname, body = got
+            if fname.lower().endswith(".gcode.3mf"):
+                self._send_json({"error": "this file is already sliced: plan it with "
+                                          "POST /print/upload + /print/plan"}, status=400)
+                return
+            upload_dir = Path.home() / ".x2d" / "uploads"
+            upload_dir.mkdir(parents=True, exist_ok=True)
+            dest = upload_dir / f"{int(time.time())}_{fname}"
+            dest.write_bytes(body)
+            try:
+                sjob = inproc_slicer.start(dest, name=fname)
+            except ValueError as e:
+                self._send_json({"error": str(e)}, status=400)
+                return
+            except RuntimeError as e:
+                self._send_json({"error": str(e)}, status=409)
+                return
+            self._send_json({"ok": True, "job": sjob.to_dict(),
+                             "poll": f"/slice/jobs/{sjob.id}"}, status=202)
+
+        def _handle_print(self, path: str) -> None:
+            """POST /print/upload | /print/plan | /print — see the docstring above."""
+            if path == "/print/upload":
+                got = self._read_upload(".gcode.3mf", "slice the model first")
+                if got is None:
+                    return
+                fname, body = got
+                cl = len(body)
+                upload_dir = Path.home() / ".x2d" / "uploads"
+                upload_dir.mkdir(parents=True, exist_ok=True)
+                dest = upload_dir / f"{int(time.time())}_{fname}"
+                dest.write_bytes(body)
+                self._send_json({"ok": True, "file": str(dest), "bytes": cl})
+                return
+            printer = self._parse_printer()
+            self._x2d_printer = printer
+            if printer not in names:
+                self._send_json({"error": f"unknown printer {printer!r}",
+                                 "available": names}, status=404)
+                return
+            body_json = self._json_body()
+            try:
+                req = PrintRequest.from_json(body_json)
+            except ValueError as e:
+                self._send_json({"error": str(e)}, status=400)
+                return
+            cli = (clients or {}).get(printer)
+            cached = get_state(printer)
+            if cli is None and not cached:
+                self._send_json({"error": "no live connection to the printer "
+                                          "(run the daemon with --http)"}, status=503)
+                return
+            try:
+                state = (fresh_state(cached, get_last_ts(printer) if get_last_ts else 0.0, cli)
+                         if cli is not None else cached or {})
+            except TimeoutError:
+                self._send_json({"error": "the printer did not send its state; "
+                                          "check `beambam status`"}, status=504)
+                return
+            if path == "/print/plan":
+                try:
+                    self._send_json(plan_summary(plan_request(req, state)))
+                except MappingError as e:
+                    self._send_json({"ok": False, "error": str(e)}, status=422)
+                return
+            if body_json.get("confirm") is not True:
+                self._send_json({"error": 'starting a print needs "confirm": true — '
+                                          "get the plan from POST /print/plan, show it "
+                                          "to the user, then resend"}, status=400)
+                return
+            if cli is None:
+                self._send_json({"error": "no live MQTT client for this printer"},
+                                status=503)
+                return
+            try:
+                job = print_jobs.start(printer, req, cli, state,
+                                       accept_warnings=body_json.get("accept_warnings") is True)
+            except MappingError as e:
+                self._send_json({"ok": False, "error": f"refused: {e}"}, status=409)
+                return
+            except PermissionError as e:
+                self._send_json({"ok": False, "error": str(e), "needs_confirmation": True},
+                                status=409)
+                return
+            except RuntimeError as e:
+                self._send_json({"ok": False, "error": str(e)}, status=409)
+                return
+            self._send_json({"ok": True, "job": job.to_dict(),
+                             "poll": f"/print/jobs/{job.id}"}, status=202)
+
         def _send_json(self, payload: dict, status: int = 200) -> None:
             body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
             self.send_response(status)
@@ -899,6 +1098,13 @@ def _serve_http(bind: str,
                 return
             url = urllib.parse.urlparse(self.path)
             path = url.path
+            # Remote 1.6.x daemon print/slice API (additive).
+            if path in ("/print", "/print/plan", "/print/upload"):
+                self._handle_print(path)
+                return
+            if path == "/slice":
+                self._handle_slice()
+                return
             # Item #57: AI assistant — POST chat.
             if path == "/assistant/chat":
                 body = self._json_body()
@@ -1088,6 +1294,8 @@ def _serve_http(bind: str,
                     raise BadRequest(f"bad X-Bed-Type {bed_type!r}")
                 no_ams = (self.headers.get("X-No-AMS") or "").lower() in (
                     "1", "true", "yes", "on")
+                accept_warnings = (self.headers.get("X-Accept-Warnings") or "").lower() in (
+                    "1", "true", "yes", "on")
                 body = self._raw_body(200 * 1024 * 1024, "model")
                 upload_dir = config_path("uploads")
                 upload_dir.mkdir(parents=True, exist_ok=True)
@@ -1097,7 +1305,8 @@ def _serve_http(bind: str,
                 cmd_argv = _slice_print_argv(
                     stl_path, printer=printer_name,
                     slot=int(slot_hdr) if slot_hdr else None,
-                    bed_type=bed_type, no_ams=no_ams)
+                    bed_type=bed_type, no_ams=no_ams,
+                    accept_warnings=accept_warnings)
                 log_path = upload_dir / (stl_path.stem + ".log")
                 try:
                     job = slice_jobs.spawn(cmd_argv, log_path=log_path,
@@ -1164,24 +1373,37 @@ def _serve_http(bind: str,
                 else:  # chamber
                     payload = _print_cmd(
                         "gcode_line", param=f"M141 S{temp}\n")
-            elif verb == "ams_load":
-                slot = body.get("slot")
-                if isinstance(slot, bool) or not isinstance(slot, int) \
-                        or not 1 <= slot <= 16:
-                    self._send_json({"error":
-                        "slot must be int 1..16"}, status=400)
+            elif verb in ("ams_load", "ams_unload"):
+                # {"tray": 0..63 | 254 | 255} (global tray id, as `beambam ams`
+                # prints it: A1 = 0 … D4 = 15) or the legacy {"slot": 1..16};
+                # optional "extruder" 0 right / 1 left, curr_temp / tar_temp.
+                # This is the shape the HA publisher's AMS buttons send
+                # (ams/<a1..d4>/load → {"tray": N}; ams/unload). Built via
+                # build_change_filament_payload and signed by _publish_via_client
+                # below (print.ams_change_filament).
+                from beambam.ams import build_change_filament_payload
+                tray: int | None = None
+                if verb == "ams_load":
+                    if isinstance(body.get("tray"), int) and not isinstance(body.get("tray"), bool):
+                        tray = body["tray"]
+                    elif (isinstance(body.get("slot"), int) and not isinstance(body.get("slot"), bool)
+                          and 1 <= body["slot"] <= 16):
+                        tray = body["slot"] - 1
+                    else:
+                        self._send_json({"error":
+                            'expected {"tray": 0..63|254|255} or {"slot": 1..16}'},
+                            status=400)
+                        return
+                try:
+                    payload = build_change_filament_payload(
+                        tray,
+                        curr_temp=int(body.get("curr_temp", 215)),
+                        tar_temp=int(body.get("tar_temp", 215)),
+                        extruder=(int(body["extruder"]) if body.get("extruder") is not None
+                                  else None))
+                except (TypeError, ValueError) as e:
+                    self._send_json({"error": f"bad input: {e}"}, status=400)
                     return
-                # The UI labels trays 1..16; the printer wants the AMS
-                # unit + tray. Same builder as `beambam ams-load` (Bambu
-                # Studio's command_ams_change_filament shape: ams_id,
-                # slot_id, target with the tray-0 special case) instead
-                # of the old bare target=slot-1.
-                from beambam.commands import ams_load_payload
-                global_slot = int(slot) - 1
-                payload = ams_load_payload(
-                    global_slot // 4, global_slot % 4,
-                    curr_temp=get_int(body, "curr_temp", 215, lo=0, hi=400),
-                    tar_temp=get_int(body, "tar_temp", 215, lo=0, hi=400))
             elif verb == "ams_set":
                 # Push tray_info_idx + nozzle range + color to a single
                 # AMS slot. UI sends raw fields (no profile loading on
@@ -1244,7 +1466,8 @@ def _serve_http(bind: str,
                 self._send_json({"error": f"unknown control verb {verb!r}",
                                   "supported": ["pause", "resume", "stop",
                                                 "light", "temp", "ams_load",
-                                                "ams_set", "gcode", "sound"]},
+                                                "ams_unload", "ams_set", "gcode",
+                                                "sound"]},
                                   status=404)
                 return
             status, resp = self._publish_via_client(

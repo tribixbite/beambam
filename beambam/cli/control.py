@@ -108,6 +108,7 @@ def _try_cloud_signed(args: argparse.Namespace, payload: dict):
         return None
     try:
         import cloud_client
+        from beambam import mqtt_sign
         from beambam.cloud_control import CloudPrinter
     except Exception:
         return None
@@ -130,6 +131,13 @@ def _try_cloud_signed(args: argparse.Namespace, payload: dict):
     print(json.dumps({"transport": "cloud-signed",
                       "command": f"{family}.{command.get('command')}",
                       "ack": ack}, indent=2))
+    problem = mqtt_sign.explain_ack(ack)
+    if problem:
+        # Don't fall back to LAN: X-series firmware verifies the same
+        # signature there, so the result would be identical.
+        print(f"[cloud-signed] {family}.{command.get('command')} was NOT accepted: "
+              f"{problem}", file=sys.stderr)
+        return 1
     return 0
 
 
@@ -363,20 +371,20 @@ def cmd_fod_check(args: argparse.Namespace) -> int:
 def cmd_ams_unload(args: argparse.Namespace) -> int:
     """MachineObject::command_ams_change_filament with !load —
     DeviceManager.cpp:1537. `target=255` is the unload sentinel."""
-    from beambam.commands import ams_unload_payload
-    payload = ams_unload_payload(int(args.ams), curr_temp=int(args.curr_temp),
-                                 tar_temp=int(args.tar_temp))
+    from beambam.ams import build_change_filament_payload
+    payload = build_change_filament_payload(
+        None, curr_temp=int(args.curr_temp), tar_temp=int(args.tar_temp))
+    payload["print"]["ams_id"] = int(args.ams)
     return _publish(args, payload)
 
 
 def cmd_ams_load(args: argparse.Namespace) -> int:
     """MachineObject::command_ams_change_filament with load —
-    DeviceManager.cpp:1537. `target` is the global tray id
-    (ams_id*4 + slot_id), with a special case for ams_id=0 / slot=0
-    where the firmware expects bare ams_id, not 0."""
-    from beambam.commands import ams_load_payload
-    payload = ams_load_payload(int(args.ams), int(args.slot), curr_temp=int(args.curr_temp),
-                               tar_temp=int(args.tar_temp))
+    DeviceManager.cpp:1537 (see beambam.ams.build_change_filament_payload)."""
+    from beambam.ams import build_change_filament_payload
+    payload = build_change_filament_payload(
+        int(args.ams) * 4 + int(args.slot),
+        curr_temp=int(args.curr_temp), tar_temp=int(args.tar_temp))
     return _publish(args, payload)
 
 

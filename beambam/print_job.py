@@ -32,6 +32,7 @@ from typing import TYPE_CHECKING
 from beambam.paths import config_path, signing_path
 
 if TYPE_CHECKING:
+    from beambam.filament_mapping import PrintPlan
     from beambam.mqtt import X2DClient
 
 
@@ -128,6 +129,44 @@ def _publish_signed_or_legacy(client: "X2DClient", payload: dict) -> None:
         client.publish_raw(topic, wire, qos=1)     # waits for the broker's ack
     else:
         client.client.publish(topic, wire, qos=1)
+
+
+def _await_ack(client: "X2DClient", family: str, command: str, seq: str,
+               timeout: float, publish) -> dict | None:
+    """Run `publish()` and wait up to `timeout` s for the printer's reply to
+    it: the `<family>` report whose `command` and `sequence_id` echo ours.
+
+    Chains to the client's existing on_message so state tracking keeps
+    working while we listen. Returns the reply object, or None on timeout
+    (or when the client has no raw paho handle, e.g. test doubles)."""
+    import threading
+    paho = getattr(client, "client", None)
+    if paho is None:
+        publish()
+        return None
+    got: dict = {}
+    done = threading.Event()
+    prev = paho.on_message
+
+    def _on(c, d, m):
+        try:
+            body = _json.loads(m.payload).get(family)
+        except Exception:                                  # noqa: BLE001
+            body = None
+        if (isinstance(body, dict) and body.get("command") == command
+                and str(body.get("sequence_id")) == seq):
+            got.update(body)
+            done.set()
+        if prev is not None:
+            prev(c, d, m)
+
+    paho.on_message = _on
+    try:
+        publish()
+        done.wait(timeout)
+    finally:
+        paho.on_message = prev
+    return got or None
 
 
 def request_auto_nozzle_mapping(client: "X2DClient", group_info: list[dict], *,
@@ -243,13 +282,21 @@ _BED_TEMP_KEY_BY_MQTT = {
 
 
 def _derive_print_params_from_3mf(local_path: Path,
-                                  filament_index: int = 0) -> dict:
+                                  filament_index: int | None = None,
+                                  plate: int = 1) -> dict:
     """Pull authoritative bed_type / bed_temp / filament expectations
     from the .gcode.3mf so cmd_print sends exactly what the slicer
-    intended. `filament_index` selects the per-slot value when the
-    project has multiple filaments; defaults to 0 (single-color)."""
+    intended. `filament_index` selects the per-filament value; by default
+    it is the FIRST filament plate `plate` actually uses (a single-colour
+    plate printing with filament 5 of 5 must be read as filament 5)."""
     if not local_path.is_file():
         raise PrintRefusal(f"3MF not found locally: {local_path}")
+    if filament_index is None:
+        from beambam.filament_mapping import MappingError, read_project
+        try:
+            filament_index = read_project(local_path, plate).used[0].index
+        except MappingError as e:
+            raise PrintRefusal(str(e)) from e
     try:
         with _zf.ZipFile(local_path) as z:
             try:
@@ -381,6 +428,20 @@ def parse_slots(text: str | int) -> list[int]:
     if not slots or any(s < 0 or s > 15 for s in slots):
         raise ValueError(f"--slot {text!r}: AMS slots are 0..15 (AMS_index*4 + tray)")
     return slots
+
+
+def slot_arg(text: str) -> int | list[int]:
+    """argparse `type=` for every `--slot` (print, slice-print, ams map).
+
+    One slot comes back as an int (a single-filament plate, the historical
+    form); several (`4,0,12`) as a list in the order of the plate's used
+    filaments. parse_slots' message is kept for the usage error."""
+    import argparse
+    try:
+        slots = parse_slots(text)
+    except ValueError as e:
+        raise argparse.ArgumentTypeError(str(e)) from e
+    return slots[0] if len(slots) == 1 else slots
 
 
 def _validate_ams_slot(state: dict, ams_global_slot: int,
@@ -519,14 +580,17 @@ def _device_url_enc(url: str, device_cert_path: Path | None = None) -> str:
 
 
 def build_x2d_project_file(gcode_filename: str, md5_hex: str, *,
-                           ams_slots: list[int], bed_type: str,
+                           ams_slots: list[int] | None = None,
+                           bed_type: str,
                            use_ams: bool = True,
                            subtask_name: str | None = None,
                            timelapse: bool = False,
                            bed_levelling: bool = True,
                            flow_cali: bool = False,
                            vibration_cali: bool = False,
-                           plate_idx: int = 1,
+                           plate: int = 1,
+                           ams_mapping: list[int] | None = None,
+                           ams_mapping2: list[dict] | None = None,
                            device_cert_path: Path | None = None) -> dict:
     """Build the X2D/H2D `print.project_file` body — the exact field shape
     captured from a real Bambu Studio desktop LAN print (verified live: the
@@ -538,14 +602,20 @@ def build_x2d_project_file(gcode_filename: str, md5_hex: str, *,
     `{ams_id,slot_id}` padded with `{255,255}`; task/subtask/project ids are all
     `"0"`; `cfg` is `"4"`; and `bed_temp`/`plate_idx`/`dev_id`/`job_type`/
     `nozzle_mapping` are absent (the firmware reads them from the gcode). Keys
-    are sorted to match BS's serialization."""
-    width = 10
-    ams_mapping = [-1] * width
-    ams_mapping2: list[dict] = [{"ams_id": 255, "slot_id": 255}
-                                for _ in range(width)]
-    for i, s in enumerate(ams_slots[:width]):
-        ams_mapping[i] = int(s)
-        ams_mapping2[i] = {"ams_id": int(s) // 4, "slot_id": int(s) % 4}
+    are sorted to match BS's serialization.
+
+    Mapping: pass the filament-indexed `ams_mapping` / `ams_mapping2` from a
+    `beambam.filament_mapping.PrintPlan` (entry i = project filament i, -1 /
+    {255,255} when unused). `ams_slots` is the older form — slots in list order
+    from index 0 — kept for callers that have no project to index against.
+
+    Option ints follow Bambu Studio's print dialog (off=0, on=1, auto=2): the
+    captured defaults are auto bed levelling and auto flow calibration, so
+    `bed_levelling=False` sends 0 and `flow_cali=True` sends 1."""
+    if ams_mapping is None or ams_mapping2 is None:
+        from beambam.filament_mapping import arrays_from_indexed
+        ams_mapping, ams_mapping2 = arrays_from_indexed(
+            dict(enumerate(int(s) for s in (ams_slots or []))), 0)
     if subtask_name is None:
         subtask_name = gcode_filename
         for suf in (".gcode.3mf", ".3mf"):
@@ -572,7 +642,7 @@ def build_x2d_project_file(gcode_filename: str, md5_hex: str, *,
         "layer_inspect": True,
         "md5": md5_hex,
         "nozzle_offset_cali": 0,
-        "param": f"Metadata/plate_{int(plate_idx)}.gcode",
+        "param": f"Metadata/plate_{int(plate)}.gcode",
         "profile_id": "0",
         "project_id": "0",
         "sequence_id": str(int(time.time() * 1000)),
@@ -595,8 +665,10 @@ def start_print(client: "X2DClient", gcode_filename: str, *,
                 timelapse: bool = False, vibration_cali: bool = False,
                 bed_type: str | None = None,
                 bed_temp: int | None = None,
-                plate_idx: int = 1,
-                local_path: Path | None = None) -> None:
+                local_path: Path | None = None,
+                plate: int = 1,
+                plan: PrintPlan | None = None,
+                wait_ack: float = 0.0) -> dict | None:
     """Submit a project_file print command to the printer.
 
     Payload now matches the full Jan-2025+ firmware-required shape captured
@@ -624,11 +696,18 @@ def start_print(client: "X2DClient", gcode_filename: str, *,
     URL scheme: the .gcode.3mf is FTP-uploaded into the printer's `cache/` dir
     and referenced as `ftp:///cache/<name>` — exactly what the Windows BS LAN
     flow does (verified from a captured wire diff). A root-level `ftp:///<name>`
-    is NOT found by the firmware (file-verify stage → err 84033544)."""
+    is NOT found by the firmware (file-verify stage → err 84033544).
+
+    With `wait_ack` > 0, waits that long for the printer's reply to the
+    project_file command and returns it (None on timeout) — pass it to
+    `beambam.mqtt_sign.explain_ack` to tell acceptance from rejection.
+    Without it the publish is fire-and-forget and None is returned."""
     if local_path is None:
         local_path = Path.cwd() / gcode_filename
-    plate_idx = int(plate_idx)
-    md5_hex = _inner_gcode_md5(local_path, plate_idx) if local_path.is_file() else ""
+    if plan is not None:
+        plate = plan.project.plate
+    plate = int(plate)
+    md5_hex = _inner_gcode_md5(local_path, plate) if local_path.is_file() else ""
 
     # Safety: derive bed_type / bed_temp from the .gcode.3mf when callers
     # don't pass them. The pre-2026-05 defaults ("textured_plate" / 65 °C)
@@ -652,37 +731,43 @@ def start_print(client: "X2DClient", gcode_filename: str, *,
         # If this raises (malformed 3MF, unknown bed enum, etc.) we
         # let it propagate — better to refuse loudly than fall back
         # to a guess.
-        _d = _derive_print_params_from_3mf(local_path,
-                                            filament_index=0)
+        _d = _derive_print_params_from_3mf(local_path, plate=plate)
         if bed_type is None:
             bed_type = _d["bed_type"]
         if bed_temp is None:
             bed_temp = _d["bed_temp"]
-    # ams_mapping (legacy flat int list) + ams_mapping2 (newer
-    # ams_id/slot_id form) together cover every firmware path. When
-    # use_ams is false both must be empty.
-    #
-    # Multi-color / multi-extruder support: ams_slot can be a single int
-    # (single-filament print, one mapping) OR a list of ints — one per
-    # filament index in the 3MF (e.g. [1, 5] = filament 0 -> AMS0 slot 1
-    # green, filament 1 -> AMS1 slot 1 white). The slot ordinal is the
-    # global one (ams_id*4 + slot_id) so it works on multi-AMS setups
-    # transparently. Verified payload shape against captured BS-Windows
-    # multi-color X2D run (2-filament) by exporting a 2-color 3MF and
-    # comparing dry-run output to the wire capture.
-    if use_ams:
-        slots = ([ams_slot] if isinstance(ams_slot, int)
-                 else list(ams_slot))
+    # Filament → tray mapping, indexed by PROJECT filament (Bambu Studio's
+    # ams_mapping format: entry i is project filament i, -1 when the plate
+    # doesn't use it — see beambam.filament_mapping). Preferred source is a
+    # validated PrintPlan. Without one, the given slot(s) are indexed against
+    # the plate's used filaments read from the local 3MF, so `--slot 7` on a
+    # plate that only uses filament 5 maps filament 5 (it used to land on
+    # filament 1). Only with no 3MF at hand do slots go in list order.
+    from beambam.filament_mapping import (
+        MappingError, arrays_from_indexed, index_slots, read_project,
+    )
+    v0: list[int] = []
+    v1: list[dict] = []
+    total = 0
+    if plan is not None:
+        use_ams = plan.use_ams
+        v0, v1 = plan.mapping_arrays()
+        total = plan.project.total_filaments
+    elif use_ams:
+        slots = [ams_slot] if isinstance(ams_slot, int) else list(ams_slot)
         if not slots:
-            raise ValueError(
-                "use_ams=True requires at least one ams_slot")
-        ams_mapping_legacy = list(slots)
-        ams_mapping_v2 = [
-            {"ams_id": s // 4, "slot_id": s % 4} for s in slots
-        ]
-    else:
-        ams_mapping_legacy = []
-        ams_mapping_v2 = []
+            raise ValueError("use_ams=True requires at least one ams_slot")
+        if local_path.is_file():
+            try:
+                project = read_project(local_path, plate)
+                chosen = index_slots(project, ams_slot)
+            except MappingError as e:
+                raise PrintRefusal(str(e)) from e
+            total = project.total_filaments
+        else:
+            chosen = dict(enumerate(int(s) for s in slots))
+            total = len(slots)
+        v0, v1 = arrays_from_indexed(chosen, total)
 
     # X2D / H2D auth-control firmware uses a DIFFERENT project_file shape: the
     # file is an RSA-encrypted `url_enc` (not a plaintext `url`), a 10-wide
@@ -701,13 +786,13 @@ def start_print(client: "X2DClient", gcode_filename: str, *,
                 f"start_print: need the local .gcode.3mf ({local_path}) to compute the "
                 f"plate G-code md5 the X2D verifies; pass local_path")
         x2d_body = build_x2d_project_file(
-            gcode_filename, md5_hex, ams_slots=ams_mapping_legacy,
+            gcode_filename, md5_hex,
+            ams_mapping=v0 or None, ams_mapping2=v1 or None,
             bed_type=bed_type, use_ams=use_ams, timelapse=timelapse,
             bed_levelling=bed_levelling, flow_cali=flow_cali,
-            vibration_cali=vibration_cali, plate_idx=plate_idx,
+            vibration_cali=vibration_cali, plate=plate,
             device_cert_path=dev_cert)
-        _publish_signed_or_legacy(client, {"print": x2d_body})
-        return
+        return _send_project_file(client, {"print": x2d_body}, wait_ack)
 
     # Task identity numbers — must be numeric-looking 9-10 digit IDs
     # (not "0") so the firmware's command handler accepts them. Use
@@ -730,7 +815,7 @@ def start_print(client: "X2DClient", gcode_filename: str, *,
         "print": {
             "sequence_id":              str(int(time.time())),
             "command":                  "project_file",
-            "param":                    f"Metadata/plate_{plate_idx}.gcode",
+            "param":                    f"Metadata/plate_{int(plate)}.gcode",
             "file":                     gcode_filename,
             "url":                      f"ftp:///cache/{gcode_filename}",
             "md5":                      md5_hex,
@@ -745,7 +830,7 @@ def start_print(client: "X2DClient", gcode_filename: str, *,
             "profile_id":               "0",
             "design_id":                "0",
             "model_id":                 "0",
-            "plate_idx":                plate_idx,  # int, NOT string
+            "plate_idx":                int(plate),  # int, NOT string
             "dev_id":                   client.creds.serial,
             # 0 = LAN local, 1 = cloud
             "job_type":                 0,
@@ -768,13 +853,24 @@ def start_print(client: "X2DClient", gcode_filename: str, *,
             # AMS mapping — both legacy and v2 forms; firmware reads
             # whichever
             "use_ams":                  bool(use_ams),
-            "ams_mapping":              ams_mapping_legacy,
-            "ams_mapping2":             ams_mapping_v2,
+            # Pre-auth firmware takes one entry per project filament.
+            "ams_mapping":              v0[:total],
+            "ams_mapping2":             v1[:total],
             "skip_objects":             None,
             "cfg":                      "0",
         }
     }
-    _publish_signed_or_legacy(client, payload)
+    return _send_project_file(client, payload, wait_ack)
+
+
+def _send_project_file(client: "X2DClient", payload: dict, wait_ack: float) -> dict | None:
+    """Publish a project_file payload, optionally waiting for its ack."""
+    if wait_ack <= 0:
+        _publish_signed_or_legacy(client, payload)
+        return None
+    seq = str(payload["print"]["sequence_id"])
+    return _await_ack(client, "print", "project_file", seq, wait_ack,
+                      lambda: _publish_signed_or_legacy(client, payload))
 
 
 # gcode_state values that mean a job is in progress (a new start is refused).

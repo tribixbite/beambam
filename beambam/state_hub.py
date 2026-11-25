@@ -177,3 +177,43 @@ class StateHub:
             self._subs.clear()
         for s in subs:
             s.close()
+
+
+def merge_report(cache: dict[str, Any] | None, msg: dict[str, Any]) -> dict[str, Any]:
+    """Fold one MQTT report into the cached printer state; returns a NEW dict.
+
+    The printer's report topic carries more than `push_status`: command acks
+    (`{"print": {"command": "project_file", "result": ...}}`), `system` and
+    `info` replies (`get_version`), and — on firmware that sends deltas —
+    partial `push_status` bodies. Storing each message as "the state" made
+    every consumer (HA, SSE, the web UI) briefly see a state with no
+    temperatures or AMS whenever an ack arrived. Here:
+
+      * `print` bodies are deep-merged into `cache["print"]` (dicts merge
+        key by key, lists and scalars replace — the firmware always sends a
+        whole `ams.ams` / `hms` list);
+      * a `print` body that is a command reply (a `command` other than
+        `push_status`) is kept under `cache["last_command"]` instead, so it
+        cannot overwrite live fields such as `sequence_id` or `result`;
+      * every other top-level key (`info`, `system`, …) is deep-merged as is.
+
+    Inputs are never mutated: subscribers may still hold the previous dict.
+    """
+    out: dict[str, Any] = dict(cache or {})
+    for key, value in msg.items():
+        if key == "print" and isinstance(value, dict):
+            cmd = value.get("command")
+            if cmd not in (None, "push_status"):
+                out["last_command"] = value
+                continue
+        old = out.get(key)
+        out[key] = _deep_merge(old, value) if isinstance(old, dict) and isinstance(value, dict) else value
+    return out
+
+
+def _deep_merge(old: dict[str, Any], new: dict[str, Any]) -> dict[str, Any]:
+    out = dict(old)
+    for k, v in new.items():
+        o = out.get(k)
+        out[k] = _deep_merge(o, v) if isinstance(o, dict) and isinstance(v, dict) else v
+    return out

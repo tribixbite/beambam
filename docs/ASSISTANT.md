@@ -53,7 +53,7 @@ calls were made.
 
 ```bash
 export ANTHROPIC_API_KEY=sk-...
-python3.12 x2d_bridge.py daemon --http :8765
+beambam daemon --http :8765
 ```
 
 Then via the web UI Assistant card or:

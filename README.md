@@ -224,6 +224,7 @@ Five short H.264 MP4s in [`docs/demos/`](docs/demos/) — render with
 |----------------------|-----|
 | Quick start          | [`docs/QUICKSTART.md`](docs/QUICKSTART.md) |
 | Web UI               | [`docs/WEB_UI.md`](docs/WEB_UI.md) |
+| HTTP API for other apps (slice, plan, print, control, CORS; e.g. pokefit.party on the same phone) | [`docs/HTTP_API.md`](docs/HTTP_API.md) |
 | MCP server (Claude Desktop, Cursor, ...) | [`docs/MCP.md`](docs/MCP.md) |
 | WebRTC streaming     | [`docs/WEBRTC.md`](docs/WEBRTC.md) |
 | Home Assistant — overview | [`docs/HA.md`](docs/HA.md) |
@@ -463,8 +464,13 @@ Then:
 # One-shot state dump
 beambam status
 
-# Upload + start print on AMS slot 4
+# Upload + print: auto-maps every filament to a loaded tray, shows the plan, asks
+beambam print myfile.gcode.3mf
+
+# Or choose: slot 3 (A4) for a one-filament plate, one slot per filament, or labels
 beambam print myfile.gcode.3mf --slot 3
+beambam print multi.gcode.3mf --slot 4,0,12
+beambam print multi.gcode.3mf --map 1=B3,2=ext-right
 
 # Long-running monitor — polls every 5s, exposes JSON at http://127.0.0.1:8765/state
 beambam daemon --http 127.0.0.1:8765 --quiet
@@ -508,7 +514,10 @@ python3.12 x2d_slice.py model.stl --out out.gcode.3mf \
                                      # textured/supertack OR int 1..5
 
 # One-shot slice → upload → queue
-beambam slice-print model.stl --slot 3 --color Gold --bed 5 --timelapse
+beambam slice-print model.stl --slot 3 --color Gold --timelapse
+
+# AMS sync: slice in the colours loaded in A1 and B3 and print from those trays
+beambam slice-print model.stl --copies 2 --colors A1,B3
 
 # Send an already-sliced .gcode.3mf
 beambam print model.gcode.3mf --slot 3 --timelapse
@@ -516,6 +525,28 @@ beambam print model.gcode.3mf --slot 3 --timelapse
     # slot empty / wrong-class filament. Pass --force to bypass soft
     # brand/colour mismatches; hard guards never bypassable.
 ```
+
+#### Filament mapping
+
+Before every LAN print, beambam reads which filaments the plate uses (and the
+nozzle each was sliced for), reads the AMS trays, external spools and Filament
+Track Switch routing from the printer, and maps each filament to a tray —
+material first, then colour (colour first for 3+ colour prints), the same way
+Bambu Studio does. It prints the plan and asks before anything is uploaded:
+
+```
+Filament mapping — multi.gcode.3mf, plate 1
+  printer: 2 nozzle(s), Filament Track Switch installed, set up
+
+  ✓  1. PLA    #FFFFFF  GFA19   left  →  B4 (slot 7)     PLA    #FFFFFF  GFA19 via switch A
+  ✓  2. PETG   #F72323  GFG99  right  →  A1 (slot 0)     PETG   #F72323  GFG99 via switch B
+Start the print with this mapping? [y/N]
+```
+
+Empty trays, a different material, or a tray that can't reach the sliced
+nozzle always refuse; profile / colour differences are warnings you accept with
+`y` (or `--yes`). `beambam ams map FILE` shows the same plan without printing,
+and `beambam ams status` shows which nozzle(s) each AMS unit feeds.
 
 ### Print-control commands
 

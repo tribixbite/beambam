@@ -76,7 +76,11 @@ DEFAULT_TIMEOUT = 15
 USER_AGENT = "bambu_network_agent/01.09.05.01"
 BBL_HEADERS = {
     "User-Agent":            USER_AGENT,
-    "X-BBL-Client-Name":     "OrcaSlicer",
+    # Must be "BambuStudio": Bambu's Cloudflare WAF began 403-ing requests
+    # whose X-BBL-Client-Name is "OrcaSlicer" (verified 2026-11-19 — every
+    # cloud-* REST call failed). BambuStudio's own GUI_App.cpp sends
+    # SLIC3R_APP_NAME = "BambuStudio" here; matching it clears the block.
+    "X-BBL-Client-Name":     "BambuStudio",
     "X-BBL-Client-Type":     "slicer",
     "X-BBL-Client-Version":  "01.09.05.51",
     "X-BBL-Language":        "en-US",
@@ -235,7 +239,19 @@ def _request(method: str,
     except urllib.error.HTTPError as e:
         body_str = ""
         try:
-            body_str = e.read().decode("utf-8", errors="replace")
+            raw = e.read()
+            # The error response honours Accept-Encoding too, so a gzip body
+            # must be inflated or the message is unreadable binary (this hid a
+            # Cloudflare WAF block behind mojibake for every failing cloud-*).
+            hdrs = getattr(e, "headers", None)
+            enc = ((hdrs.get("Content-Encoding") if hdrs else "") or "").lower()
+            if enc == "gzip":
+                import gzip
+                raw = gzip.decompress(raw)
+            elif enc == "deflate":
+                import zlib
+                raw = zlib.decompress(raw)
+            body_str = raw.decode("utf-8", errors="replace")
         except Exception:
             pass
         # Bambu returns JSON error bodies; pull the message if present.
@@ -480,14 +496,17 @@ class CloudClient:
         a Bambu password into an arbitrary terminal is hostile UX. The
         email-code roundtrip proves possession of the inbox instead.
         """
-        region = self._resolve_region(email, region)
-        self._send_email_code(region, email)
+        # Check the resolver BEFORE asking Bambu to email a code: without
+        # one the code could never be read, and the request would send the
+        # user a login email for nothing.
         if not code_resolver:
             raise CloudError(
                 "code-only login needs a code_resolver callback to read "
                 "the 6-digit code from the user. Use cmd_cloud_login "
                 "--code-only for interactive entry.",
                 status=200, body="")
+        region = self._resolve_region(email, region)
+        self._send_email_code(region, email)
         code = code_resolver(email)
         self._submit_email_code(region, email, code)
 

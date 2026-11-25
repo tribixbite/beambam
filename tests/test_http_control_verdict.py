@@ -172,6 +172,36 @@ def test_ams_load_uses_cli_payload(client, ui_slot, ams_id, slot_id, target):
     assert (sent["curr_temp"], sent["tar_temp"]) == (220, 230)
 
 
+@pytest.mark.parametrize("tray,ams_id,slot_id,target", [
+    (0, 0, 0, 0),        # A1
+    (6, 1, 2, 6),        # B3
+    (15, 3, 3, 15),      # D4
+    (254, 254, 0, 254),  # external spool
+])
+def test_ams_load_accepts_tray_id_for_ha(client, tray, ams_id, slot_id, target):
+    """The HA publisher's AMS buttons POST {"tray": 0..63|254|255} (not the
+    legacy {"slot": 1..16}); the route must accept it and sign it."""
+    port, cli = client
+    cli.responder = lambda p: _ack(p, result="success", err_code=0)
+    status, body = _post(port, "ams_load", {"tray": tray})
+    assert status == 200, body
+    sent = cli.published[-1]["print"]
+    assert sent["command"] == "ams_change_filament"
+    assert (sent["ams_id"], sent["slot_id"], sent["target"]) == (ams_id, slot_id, target)
+
+
+def test_ams_unload_is_supported_and_signed(client):
+    """The HA publisher POSTs /control/ams_unload; the route must exist (not
+    404) and send the unload sentinel (ams_id/target/slot_id = 255), signed."""
+    port, cli = client
+    cli.responder = lambda p: _ack(p, result="success", err_code=0)
+    status, body = _post(port, "ams_unload", {})
+    assert status == 200, body
+    sent = cli.published[-1]["print"]
+    assert sent["command"] == "ams_change_filament"
+    assert (sent["ams_id"], sent["slot_id"], sent["target"]) == (255, 255, 255)
+
+
 def test_print_commands_go_through_the_signed_path(client, monkeypatch):
     """print.* must use print_job._publish_signed_or_legacy (the CLI's
     signer), not X2DClient.publish directly."""

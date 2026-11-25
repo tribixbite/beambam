@@ -91,18 +91,19 @@ def test_simulate_start_print_single_slot():
     assert pr["bed_temp"] == 35
 
 
-def test_simulate_start_print_multi_slot():
+def test_simulate_start_print_multi_slot_on_single_filament_file_refused():
+    """Two slots for a one-filament plate used to be sent as-is, with the
+    second entry pointing at a filament that doesn't exist. The mapping is
+    now indexed against the plate (multi-filament coverage lives in
+    tests/test_filament_mapping.py)."""
     if not MIRA.is_file():
         pytest.skip("mira fixture missing")
-    p = simulate_start_print(
-        str(MIRA), ams_slot=[1, 5], bed_type="cool_plate", bed_temp=35,
-        local_path=MIRA, sign=False,
-    )
-    assert p["print"]["ams_mapping"] == [1, 5]
-    assert p["print"]["ams_mapping2"] == [
-        {"ams_id": 0, "slot_id": 1},
-        {"ams_id": 1, "slot_id": 1},
-    ]
+    from beambam.print_job import PrintRefusal
+    with pytest.raises(PrintRefusal, match="2 slots given but plate 1 uses 1"):
+        simulate_start_print(
+            str(MIRA), ams_slot=[1, 5], bed_type="cool_plate", bed_temp=35,
+            local_path=MIRA, sign=False,
+        )
 
 
 def test_simulate_start_print_no_ams_external_spool():

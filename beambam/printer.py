@@ -232,17 +232,18 @@ class Printer(AbstractContextManager):
                        "loop_times": 0, "interval_time": 0}
         })
 
-    def ams_load(self, slot: int, *, curr_temp: int = 215, tar_temp: int = 215) -> Any:
-        """Load filament from AMS global slot (0..15: unit*4 + tray) — the
-        same payload as `beambam ams-load` (beambam.commands)."""
-        from beambam.commands import ams_load_payload
-        return self.publish(ams_load_payload(int(slot) // 4, int(slot) % 4,
-                                             curr_temp=curr_temp, tar_temp=tar_temp))
+    def ams_load(self, slot: int, *, extruder: int | None = None) -> Any:
+        """Load filament from AMS global slot (0..15; 254/255 = external
+        spools) — into `extruder` (0 right, 1 left) on dual-nozzle printers.
+        `print.ams_change_filament` is signed and acked via publish()."""
+        from beambam.ams import build_change_filament_payload
+        return self.publish(build_change_filament_payload(int(slot), extruder=extruder))
 
-    def ams_unload(self, ams_id: int = 0, *, curr_temp: int = 215, tar_temp: int = 215) -> Any:
-        """Unload the currently-loaded filament back to its AMS slot."""
-        from beambam.commands import ams_unload_payload
-        return self.publish(ams_unload_payload(ams_id, curr_temp=curr_temp, tar_temp=tar_temp))
+    def ams_unload(self) -> Any:
+        """Unload the currently-loaded filament back to its AMS slot.
+        Signed and acked via publish() (print.ams_change_filament)."""
+        from beambam.ams import build_change_filament_payload
+        return self.publish(build_change_filament_payload(None))
 
     def home(self, *, axes: str = "XYZ") -> None:
         """Home one or more axes. `axes='Z'` for Z-only, 'XY' for the

@@ -58,7 +58,8 @@ __all__ = [
 JSON_MAX_BYTES = 64 * 1024
 
 # POST routes whose body is raw bytes (a model / .gcode.3mf), not JSON.
-RAW_BODY_ROUTES: frozenset[str] = frozenset({"/analyze", "/slice-print"})
+RAW_BODY_ROUTES: frozenset[str] = frozenset(
+    {"/analyze", "/slice-print", "/print/upload", "/slice"})
 
 # Content types a cross-origin page may send WITHOUT a CORS preflight
 # (the Fetch standard's "CORS-safelisted" request content types).
@@ -156,26 +157,35 @@ def _mime(content_type: str) -> str:
 
 def request_guard_error(method: str, path: str,
                         headers: HeaderLookup,
-                        allowed_hosts: frozenset[str]) -> tuple[int, str] | None:
+                        allowed_hosts: frozenset[str],
+                        allowed_origins: frozenset[str] | set[str] | None = None
+                        ) -> tuple[int, str] | None:
     """Return ``(status, reason)`` when the request must be refused, else
     None. Applies to every method; the Origin and Content-Type rules
-    only to state-changing ones (POST)."""
+    only to state-changing ones (POST). ``allowed_origins`` (from
+    ``--cors-origin``) whitelists browser origins beyond the daemon's own,
+    so a listed web app (e.g. https://pokefit.party) may POST."""
+    allowed_origins = allowed_origins or frozenset()
     host = headers.get("Host") or ""
     if not _host_ok(host, allowed_hosts):
         return 421, (f"Host {host!r} is not this daemon (DNS rebinding "
                      "guard); add it with --allow-host or $X2D_ALLOWED_HOSTS")
     if method.upper() != "POST":
         return None
-    if (headers.get("Sec-Fetch-Site") or "").lower() == "cross-site":
-        return 403, "cross-site request refused"
     origin = headers.get("Origin")
-    if origin is not None:
+    origin_allowed = origin is not None and (
+        origin.strip().rstrip("/") in allowed_origins or "*" in allowed_origins)
+    if (headers.get("Sec-Fetch-Site") or "").lower() == "cross-site" and not origin_allowed:
+        return 403, ("cross-site request refused; start the daemon with "
+                     "--cors-origin to allow a browser app")
+    if origin is not None and not origin_allowed:
         o = origin.strip()
         if o.lower() == "null":
             return 403, "opaque Origin refused"
         netloc = urlsplit(o).netloc.lower()
         if not netloc or netloc != host.strip().lower():
-            return 403, f"cross-origin request from {o!r} refused"
+            return 403, (f"origin {o} is not allowed; start the daemon with "
+                         f"--cors-origin {o} to allow it")
     mime = _mime(headers.get("Content-Type") or "")
     if path in RAW_BODY_ROUTES:
         if not mime or mime in _SIMPLE_CONTENT_TYPES:

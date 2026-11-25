@@ -28,18 +28,15 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
 def _discover_subcommands() -> list[str]:
-    """Pull every registered subcommand name from the parser's top-level
-    --help. The output's usage line has them between `{...}` braces."""
-    r = subprocess.run([sys.executable, "-m", "beambam.cli", "--help"],
-                       capture_output=True, text=True, timeout=20,
-                       cwd=str(REPO_ROOT))
-    assert r.returncode == 0, f"top-level --help failed:\n{r.stderr}"
-    out = r.stdout
-    # Find the {a,b,c,...} choice list — it's the first usage block
-    import re
-    m = re.search(r"\{([^}]+)\}", out)
-    assert m, f"no subcommand list found in --help:\n{out[:500]}"
-    return [s.strip() for s in m.group(1).split(",") if s.strip()]
+    """Every registered top-level subcommand name (aliases included),
+    read straight from the parser tree that `beambam` itself builds."""
+    import argparse
+    from beambam.cli import build_parser
+    root = build_parser()
+    for action in root._actions:
+        if isinstance(action, argparse._SubParsersAction):
+            return list(action.choices)
+    raise AssertionError("root parser has no subcommands")
 
 
 SUBCOMMANDS = _discover_subcommands()
@@ -51,15 +48,15 @@ def test_top_level_help_lists_subcommands():
         f"only {len(SUBCOMMANDS)} subcommands found — parser may be broken"
 
 
-def test_top_level_help_has_grouped_epilog():
-    """The grouped TOC epilog (added in commit 50aa9d9) should be present."""
+def test_top_level_help_has_grouped_commands():
+    """The root page lists commands grouped by topic (beambam.cli._COMMAND_GROUPS)."""
     r = subprocess.run([sys.executable, "-m", "beambam.cli", "--help"],
                        capture_output=True, text=True, timeout=20)
-    assert "Commands by topic:" in r.stdout, \
-        "grouped TOC epilog missing — _build_epilog() not wired up"
+    assert r.returncode == 0, r.stderr
+    assert "COMMANDS" in r.stdout, "COMMANDS section missing from the root page"
     # At minimum, the LAN control + Cloud read + MakerWorld groups exist.
     for group in ("LAN control", "Cloud read", "MakerWorld"):
-        assert group in r.stdout, f"group {group!r} missing from epilog"
+        assert group in r.stdout, f"group {group!r} missing from root page"
 
 
 def test_top_level_help_no_format_specifier_crash():

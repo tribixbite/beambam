@@ -49,24 +49,28 @@ chmod 600 ~/.x2d/credentials
 openssl rand -hex 24 > ~/.x2d/bridge.token
 chmod 600 ~/.x2d/bridge.token
 
-# 4) daemon: printer connection + HTTP API
+# 4) start the multi-printer daemon (HTTP + MQTT)
 beambam daemon \
-    --http       0.0.0.0:8765 \
-    --auth-token "$(cat ~/.x2d/bridge.token)" \
+    --http        0.0.0.0:8765 \
+    --auth-token  "$(cat ~/.x2d/bridge.token)" \
+    --queue \
     > ~/.x2d/bridge.log 2>&1 &
 
-# 5) camera daemon (starts ffmpeg only while someone watches)
-beambam camera --bind 0.0.0.0:8766 --idle-timeout 30 \
+# 5) start the on-demand camera daemon
+#    (lazy-spawns ffmpeg only when HA / a viewer asks; idles after 30s)
+beambam camera \
+    --bind 0.0.0.0:8766 \
+    --idle-timeout 30 \
     > ~/.x2d/camera.log 2>&1 &
 
-# 6) Home Assistant publisher (one HA device per credentials section)
-beambam ha \
-    --broker           192.168.1.10:1883 \
-    --broker-username  mqtt_beambam \
-    --broker-password  YOUR_BROKER_PASSWORD \
-    --daemon-url       http://127.0.0.1:8765 \
-    --daemon-token     "$(cat ~/.x2d/bridge.token)" \
-    --device-model     X2D \
+# 6) start the HA discovery publisher
+beambam ha-publish \
+    --broker             192.168.1.10 \
+    --broker-port        1883 \
+    --broker-username    mqtt_x2d \
+    --broker-password    YOUR_BROKER_PASSWORD \
+    --daemon-url         http://127.0.0.1:8765 \
+    --daemon-token       "$(cat ~/.x2d/bridge.token)" \
     > ~/.x2d/ha-publisher.log 2>&1 &
 ```
 
@@ -198,21 +202,21 @@ cards:
 
 ### Temperatures and AMS
 
-- Sliders: `number.x2d_<serial>_bed_set` (0-110),
-  `number.x2d_<serial>_nozzle_set` (0-320; right nozzle on two-nozzle
-  printers), `number.x2d_<serial>_chamber_set` (0-60).
-- Two-nozzle printers: `sensor.x2d_<serial>_left_nozzle_temp`,
-  `..._right_nozzle_temp`, the matching `_target` sensors and
-  `sensor.x2d_<serial>_active_nozzle`.
-- Per tray (slot 1-16 = AMS A1 ... D4):
-  `sensor.x2d_<serial>_ams_slot<N>_color`, `..._material` (attributes:
-  remaining %, sub-brand, filament id) and
-  `button.x2d_<serial>_ams_slot<N>_load`.
-- Per unit (0-3 = A-D): `sensor.x2d_<serial>_ams_unit<U>_humidity` (%),
-  `..._humidity_level`, `..._temp`,
-  `binary_sensor.x2d_<serial>_ams_unit<U>_humidity_warn`.
-- `sensor.x2d_<serial>_active_tray`: loaded slot 1-16, or 0 for none /
-  external spool.
+`number.x2d_studio_bed_set` (slider 0-110), `number.x2d_studio_nozzle_set`
+(right nozzle, 0-320), `number.x2d_studio_nozzle_left_set` (left nozzle),
+`number.x2d_studio_chamber_set` (slider 0-60). Each nozzle also has
+`sensor.…_nozzle_{right,left}_temp` / `_target` and `_tray` (the tray whose
+filament is in that nozzle, e.g. `B3`, or `none`).
+
+For each AMS tray the printer reports (A1–D4):
+- `sensor.x2d_studio_ams_b3_color` (hex string)
+- `sensor.x2d_studio_ams_b3_material` (PLA/PETG/…, `empty`; attributes: name, remain)
+- `button.x2d_studio_ams_b3_load` (load that tray)
+
+and for each unit `sensor.…_ams_b_humidity` (%RH), `sensor.…_ams_b_temp`,
+`binary_sensor.…_ams_b_damp`. `button.…_ams_unload` unloads the toolhead.
+`sensor.x2d_studio_track_switch` reports the Filament Track Switch
+(`set up` / `not set up` / `not installed`).
 
 ## 6. Multi-printer
 
@@ -224,10 +228,25 @@ with its own topics.
 
 | Symptom | Likely cause | Fix |
 |---|---|---|
-| Every entity "Unavailable" | publisher not connected to the broker, or the daemon has not heard the printer for 30 s | check `~/.x2d/ha-publisher.log`; `binary_sensor.x2d_<serial>_online` shows the printer link |
-| Entity ids generated from names (`sensor.bambu_lab_x2d_...`) | Home Assistant older than 2025.10 | upgrade HA, then delete and re-add the device |
-| Two devices for one printer after upgrading | old configs under `x2d_<name>` | restart `beambam ha` once; it clears them |
-| Firmware sensor / update entity unknown | the daemon never requests `info.get_version` | known gap, see [`HA.md`](./HA.md) §3 |
-| Camera entity shows no image | camera daemon not running or not reachable from the daemon | start `beambam camera`; check `http://<host>:8765/snapshot.jpg` |
-| `shell_command` fails with 401 | token mismatch | regenerate `bridge.token`, restart the daemon, rewrite `/config/x2d_auth_header` |
-| Slice job reports success but nothing prints | the printer rejected the LAN print command | see [`SIGNED_VS_UNSIGNED.md`](./SIGNED_VS_UNSIGNED.md) |
+| HA shows "Unavailable" on every entity | publisher can't reach the broker | check `~/.x2d/ha-publisher.log`, verify `--broker` and credentials |
+| Entities present but values all 0/empty | bridge daemon isn't pulling state | `~/.x2d/bridge.log`, verify `~/.x2d/credentials` matches the printer |
+| Camera entity returns 503 | camera daemon not started OR not reachable | start `beambam camera --bind 0.0.0.0:8766`; verify firewall |
+| `rest_command.x2d_slice_print` returns 401 | bearer token mismatch | regenerate `~/.x2d/bridge.token`, restart daemon, update `secrets.yaml` |
+| Printer goes "Offline" intermittently | LAN MQTT drops; daemon reconnects | normal under WiFi pressure; `binary_sensor.online` will flap |
+| Slice command says "spawned" but nothing prints | firmware silently rejects LAN `print.*` (not in trust list) | known limitation; see [`SIGNED_VS_UNSIGNED.md`](./SIGNED_VS_UNSIGNED.md). Workaround: print from touchscreen / Bambu Handy after slice completes |
+
+## 8. What the bridge gives you on top of stock ha-bambulab
+
+Per [`HA_VS_BAMBULAB.md`](./HA_VS_BAMBULAB.md) — only the deltas.
+
+- Settable temperatures (number sliders), not just read-only sensors.
+- Per-tray `button.ams_<tray>_load` for one-tap filament swap, `button.ams_unload`.
+- `binary_sensor.timelapse_running`, `binary_sensor.hms_problem`,
+  `binary_sensor.print_error`, `binary_sensor.ext_spool_filament`.
+- Active tray sensor (which AMS slot is loaded right now).
+- Print start_time / end_time timestamps.
+- `light.chamber_light` (proper light-domain card support) +
+  `switch.x2d_<id>_light` (legacy, for back-compat).
+- `switch.prompt_sound` toggle.
+- HTTP `/slice-print` endpoint for STL upload + slice + print one-shot.
+- Multi-printer first-class.

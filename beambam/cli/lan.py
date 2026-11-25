@@ -9,9 +9,9 @@ file-mover handlers that don't fit the print/control taxonomy in
                  FileTunnel (vsFTPd on port 990; #92 details the
                  X2D firmware's surface)
 
-  cmd_print       — upload + signed project_file, then wait for the
-                    printer's verdict (exit 0 started / 1 refused /
-                    3 unconfirmed)
+  cmd_print       — plan the filament→tray mapping, confirm, then
+                    upload + signed project_file and wait for the start
+                    ack (exit 0 sent/started, 1 refused via SystemExit)
   cmd_slice_print — slice an STL, then cmd_print
 """
 from __future__ import annotations
@@ -19,6 +19,87 @@ from __future__ import annotations
 import argparse
 import sys
 from pathlib import Path
+
+
+# Seconds to wait for the printer's reply to project_file before reporting.
+_ACK_WAIT_S = 15.0
+
+
+def _report_start_ack(ack: dict | None, what: str, plan) -> None:
+    """Print the outcome of a start-print publish; exit non-zero on rejection.
+
+    No reply is reported but not treated as failure: older firmware doesn't
+    always echo project_file, and the print may still start."""
+    from beambam.mqtt_sign import explain_ack
+    v0, _ = plan.mapping_arrays()
+    mapping = v0[:plan.project.total_filaments]
+    if ack is None:
+        print(f"start_print sent: {what} (ams_mapping={mapping}); the printer did not "
+              f"confirm within {_ACK_WAIT_S:g}s — check `beambam status`")
+        return
+    problem = explain_ack(ack)
+    if problem:
+        raise SystemExit(f"[print] the printer REJECTED the print: {problem}")
+    print(f"print accepted by the printer: {what} (ams_mapping={mapping})")
+
+
+def _plan_and_confirm(args: argparse.Namespace, live: dict, local: Path, *,
+                      use_ams: bool, force: bool, plate: int = 1,
+                      extra_explicit: dict[int, int] | None = None):
+    """Build the filament → tray plan for `local` against live printer state,
+    show it, and get consent before the print starts.
+
+    * Hard errors (empty tray, wrong material, tray that can't reach the
+      filament's nozzle, …) always refuse.
+    * On a terminal the table is followed by a y/N prompt; answering yes
+      accepts any soft warnings (brand / colour / exact-type differences).
+      `--yes` answers the prompt for you.
+    * Without a terminal there is nobody to ask: soft warnings refuse unless
+      `--force` (or `--yes`) is given, as the old slot check did.
+    `extra_explicit` ({filament_index: tray}) pins filaments that came from an
+    AMS colour sync (`slice-print --colors A1,B3`); `--map` entries win over it.
+    Returns the PrintPlan to pass to start_print(plan=...)."""
+    from beambam.filament_mapping import (
+        MappingError, format_plan, parse_map, plan_print, read_project,
+    )
+    from beambam.print_job import parse_slots
+    # `--slot` arrives parsed (int, or a list for `4,0,12`) from the CLI, but
+    # programmatic callers may pass the raw text; normalise both.
+    slot = getattr(args, "slot", None)
+    if isinstance(slot, str):
+        try:
+            parsed = parse_slots(slot)
+        except ValueError as e:
+            raise SystemExit(f"[print] refused: {e}")
+        slot = parsed[0] if len(parsed) == 1 else parsed
+    try:
+        project = read_project(local, plate)
+        explicit = dict(extra_explicit or {})
+        if getattr(args, "map", None):
+            explicit.update(parse_map(args.map))
+        plan = plan_print(project, live, use_ams=use_ams,
+                          slot=slot, explicit=explicit or None)
+    except MappingError as e:
+        raise SystemExit(f"[print] refused: {e}")
+    tty = sys.stdin.isatty() and sys.stderr.isatty()
+    sys.stderr.write(format_plan(plan, color=sys.stderr.isatty()))
+    if plan.errors:
+        raise SystemExit("[print] refused — fix the error(s) above (not bypassable)")
+    assume_yes = bool(getattr(args, "yes", False))
+    if assume_yes:
+        return plan
+    if tty:
+        try:
+            answer = input("Start the print with this mapping? [y/N] ")
+        except EOFError:
+            answer = ""
+        if answer.strip().lower() not in ("y", "yes"):
+            raise SystemExit("[print] cancelled")
+        return plan
+    if plan.warnings and not force:
+        raise SystemExit("[print] refused: mapping has warnings and there is no terminal "
+                         "to confirm on — pass --yes (or --force) to accept them")
+    return plan
 
 
 def cmd_upload(args: argparse.Namespace) -> int:
@@ -42,9 +123,6 @@ def cmd_upload(args: argparse.Namespace) -> int:
     return 0
 
 
-from beambam.signing import SIGNATURE_REJECTED, signing_status  # noqa: E402
-
-
 def cmd_print(args: argparse.Namespace) -> int:
     """LAN-direct print: derive bed/temp from 3MF, validate AMS slot
     against live state, upload .gcode.3mf (unless --no-upload), publish
@@ -59,29 +137,43 @@ def cmd_print(args: argparse.Namespace) -> int:
     from beambam.print_job import (
         PrintRefusal,
         _derive_print_params_from_3mf,
-        _validate_ams_slot,
-        parse_slots,
-        resolve_plate_idx,
         start_print,
-        used_filament_ids,
     )
 
     local = Path(args.file)
-    # One AMS slot per filament of the file, in order (`--slot 4,0,12`); a plain int still works.
-    slots = parse_slots(args.slot) if not isinstance(args.slot, list) else list(args.slot)
     use_ams = not args.no_ams
     force = bool(getattr(args, "force", False))
-    try:
-        plate_idx = resolve_plate_idx(local, getattr(args, "plate", None))
-    except PrintRefusal as e:
-        raise SystemExit(str(e))
+
+    # Step 0: --dry-run analyzes the file and refuses on excessive purge
+    # waste BEFORE touching creds / network / FTPS. Lets `uvx beambam`
+    # users sanity-check a print on a workstation that isn't on the
+    # printer's LAN.
+    if getattr(args, "dry_run", False):
+        from beambam.analyze import analyze_3mf, format_report
+        report = analyze_3mf(local)
+        print(format_report(report))
+        flush_g = float(report.totals.get("flush_volume_g", 0.0))
+        max_g = float(getattr(args, "max_flush_g", 10.0))
+        if flush_g > max_g:
+            sys.stderr.write(
+                f"\n[print --dry-run] REFUSED: predicted purge "
+                f"{flush_g:.1f} g exceeds --max-flush-g {max_g:.1f} g. "
+                f"Re-slice with fewer color swaps OR raise the "
+                f"threshold.\n")
+            return 2
+        sys.stderr.write(
+            f"\n[print --dry-run] OK: predicted purge {flush_g:.1f} g "
+            f"<= --max-flush-g {max_g:.1f} g\n")
+        return 0
+
+    creds = Creds.resolve(args)
 
     # Step 1: derive authoritative bed_type / bed_temp / filament
     # expectations from the 3MF before we touch the network. If the
     # 3MF is unreadable we fail loud here, well before publish.
+    plate = int(getattr(args, "plate", 1) or 1)
     try:
-        derived = _derive_print_params_from_3mf(local,
-                                                 filament_index=0)
+        derived = _derive_print_params_from_3mf(local, plate=plate)
     except PrintRefusal as e:
         raise SystemExit(str(e))
 
@@ -121,50 +213,10 @@ def cmd_print(args: argparse.Namespace) -> int:
         f"filament_type={derived['expected_filament_type']!r} "
         f"filament_id={derived['expected_filament_id']!r} "
         f"colour={derived['expected_filament_colour']!r}\n")
-    # What each mapped filament must be, from the same 3MF (filament i -> slots[i]).
-    try:
-        expected = [derived] + [_derive_print_params_from_3mf(local, filament_index=i)
-                                for i in range(1, len(slots))]
-    except PrintRefusal as e:
-        raise SystemExit(f"--slot lists {len(slots)} slots but the file does not have that many "
-                         f"filaments: {e}")
-    # One slot per filament the plate prints with: ams_mapping is indexed by
-    # the project's filament number, so a short list leaves a used filament
-    # unmapped (the firmware then stalls at the AMS load or uses the wrong spool).
-    if use_ams:
-        used = used_filament_ids(local, plate_idx)
-        if used and len(slots) < max(used):
-            raise SystemExit(
-                f"this plate prints with filament(s) {', '.join(map(str, used))}: give one "
-                f"--slot per filament up to #{max(used)} in order (got {len(slots)}: "
-                f"{','.join(map(str, slots))})")
-    if len(slots) > 1:
-        sys.stderr.write("[print] filament -> AMS slot: " + ", ".join(
-            f"{i + 1} ({want['expected_filament_type']} {want['expected_filament_colour']}) -> {slot}"
-            for i, (slot, want) in enumerate(zip(slots, expected))) + "\n")
 
-    # --dry-run stops here: every offline check above has passed; also
-    # report the purge and refuse when it is over --max-flush-g. No
-    # credentials, network or FTPS needed.
-    if getattr(args, "dry_run", False):
-        waste_cap = getattr(args, "max_waste_g", None)
-        return _dry_run_report(local, float(getattr(args, "max_flush_g", 10.0)),
-                               float(waste_cap) if waste_cap is not None else None)
-
-    creds = Creds.resolve(args)
-    signing = signing_status(serial=creds.serial)
-    if not signing.ready:
-        # Not fatal (older firmware takes the legacy signature), but on an
-        # X2D/H2D this is why a start would be refused: say so up front.
-        sys.stderr.write(f"[print] WARNING: LAN print signing not ready: {signing.summary()}\n")
-
-    # Step 3: upload (if requested) BEFORE we open the MQTT client so a
-    # transient FTPS failure doesn't leave a stale subscription.
-    if not args.no_upload:
-        # cache/ — the firmware-accepted LAN print URL is ftp:///cache/<file>
-        upload_file(creds, local, remote_name=args.remote, remote_dir="cache")
-
-    # Step 4: open the MQTT client, read the live state, validate AMS slots.
+    # Step 3: open the MQTT client, map every filament the plate uses to a
+    # tray against LIVE state, and confirm — before anything is uploaded or
+    # published, so a cancelled / refused print leaves no trace.
     cli = X2DClient(creds)
     cli.connect()
     name = args.remote or local.name
@@ -173,79 +225,38 @@ def cmd_print(args: argparse.Namespace) -> int:
             live = cli.request_state(timeout=15.0)
         except TimeoutError:
             raise SystemExit(
-                "could not read the printer's state before sending. Either the "
-                "printer dropped, or credentials are wrong. Re-run when "
-                "`beambam status` works.")
-        busy = (live.get("print") or {}).get("gcode_state", "")
-        if busy in BUSY_STATES and not force:
-            raise SystemExit(
-                f"printer is busy (gcode_state={busy}); refusing to start another "
-                f"print. Wait for it to finish, or pass --force.")
-        if use_ams:
-            try:
-                for slot, want in zip(slots, expected):
-                    _validate_ams_slot(live, slot, want, force=force)
-            except PrintRefusal as e:
-                raise SystemExit(str(e))
-            sys.stderr.write(
-                "[print] AMS state validated; do not change AMS slots "
-                "until the printer transitions to PREPARE/RUNNING.\n")
-
-        since = cli.message_seq
-        # A publish whose broker ack timed out (PublishTimeout is a
-        # ConnectionError) may still have reached the printer, so it is NOT a
-        # refusal: keep listening for the printer's verdict and report
-        # "unconfirmed" (exit 3) if none comes. Exit 1 would tell callers such
-        # as pokefit the job was refused, inviting a retry that could start
-        # the same print twice.
-        send_error = ""
+                "could not pull live printer state to map filaments to "
+                "trays before sending. Either the printer dropped, or "
+                "credentials are wrong. Re-run when `beambam status` works.")
+        plan = _plan_and_confirm(args, live, local, use_ams=use_ams,
+                                 force=force, plate=plate)
+        # Step 4: upload into cache/ — the firmware-accepted LAN print URL is
+        # ftp:///cache/<file>.
+        if not args.no_upload:
+            upload_file(creds, local, remote_name=args.remote, remote_dir="cache")
+        # Per code-review #4 (race window): the mapping is only as good as
+        # the AMS state it was computed from.
+        sys.stderr.write(
+            "[print] mapping confirmed; do not change AMS spools until the "
+            "printer reaches PREPARE/RUNNING.\n")
         try:
-            start_print(cli, name,
-                        use_ams=use_ams,
-                        ams_slot=slots if len(slots) > 1 else slots[0],
-                        bed_levelling=not args.no_bed_level,
-                        flow_cali=args.flow_cali,
-                        timelapse=args.timelapse,
-                        vibration_cali=args.vib_cali,
-                        bed_type=bed_type,
-                        bed_temp=bed_temp,
-                        plate_idx=plate_idx,
-                        local_path=local)
+            ack = start_print(cli, name,
+                              use_ams=plan.use_ams,
+                              bed_levelling=not args.no_bed_level,
+                              flow_cali=args.flow_cali,
+                              timelapse=args.timelapse,
+                              vibration_cali=args.vib_cali,
+                              bed_type=bed_type,
+                              bed_temp=bed_temp,
+                              local_path=local,
+                              plan=plan,
+                              wait_ack=_ACK_WAIT_S)
         except PrintRefusal as e:
             raise SystemExit(str(e))
-        except (ConnectionError, OSError, RuntimeError) as e:
-            send_error = f"{type(e).__name__}: {e}"
-            sys.stderr.write(f"[print] publish not acknowledged ({send_error}); "
-                             f"waiting for the printer's verdict anyway\n")
-        summary = (f"{name} (slot={','.join(map(str, slots))}, ams={use_ams}, "
-                   f"bed={bed_type}@{bed_temp}°C)")
-        wait_s = float(getattr(args, "confirm_timeout", 45.0))
-        if wait_s <= 0:
-            if send_error:
-                sys.stderr.write("[print] not confirmed; check the printer before retrying\n")
-                return 3
-            print(f"start_print sent (not confirmed): {summary}")
-            return 0
-        # State changes prove this job started only if the printer was idle
-        # before; under --force on a busy printer, require the printer's reply.
-        verdict, detail = await_print_start(cli, since, wait_s,
-                                            trust_state=busy not in BUSY_STATES)
-        if send_error and verdict == "unconfirmed":
-            detail = f"{detail}; send error: {send_error}"
-        if verdict == "started":
-            print(f"print started: {summary} — {detail}")
-            return 0
-        if verdict == "refused":
-            sys.stderr.write(f"[print] printer REFUSED the job: {detail}\n")
-            if any(str(code) in detail for code in SIGNATURE_REJECTED):
-                sys.stderr.write(f"[print] signature rejected: {signing_status(serial=creds.serial).summary()}\n")
-            return 1
-        sys.stderr.write(
-            f"[print] sent, but the printer did not confirm within {wait_s:g} s "
-            f"({detail}). Check the printer screen before retrying.\n")
-        return 3
+        _report_start_ack(ack, f"{name} plate {plate}", plan)
     finally:
         cli.disconnect()
+    return 0
 
 
 # Re-exported for callers of the CLI module; the canonical home is print_job.
@@ -284,6 +295,65 @@ def _dry_run_report(local: Path, max_g: float, max_waste_g: float | None = None)
     return 0
 
 
+def _template_filament_type(template: Path) -> str:
+    """First filament type of a slicing template ('' when unreadable)."""
+    import json as _json
+    import zipfile as _zf
+    try:
+        with _zf.ZipFile(template) as z:
+            ps = _json.loads(z.read("Metadata/project_settings.config"))
+    except (OSError, KeyError, ValueError, _zf.BadZipFile):
+        return ""
+    ft = ps.get("filament_type")
+    return str(ft[0]) if isinstance(ft, list) and ft else ""
+
+
+def _sync_colours_from_ams(args: argparse.Namespace, root: Path):
+    """Resolve tray references in `--color` / `--colors` against live AMS state.
+
+    Returns an AmsColourSync, or None when no entry names a tray (nothing to
+    sync — the colours go to the slicer unchanged). Exits with a message when
+    a tray is missing/empty or holds a different material than the slice
+    profile, before any slicing time is spent."""
+    from beambam.config import Creds
+    from beambam.filament_mapping import (
+        MappingError, has_tray_refs, material_conflicts, sync_colours_from_ams,
+    )
+    from beambam.mqtt import X2DClient
+
+    raw = getattr(args, "colors", None) or getattr(args, "color", None)
+    if not raw:
+        return None
+    entries = [e.strip() for e in str(raw).split(",") if e.strip()]
+    if not has_tray_refs(entries):
+        return None
+    creds = Creds.resolve(args)
+    cli = X2DClient(creds)
+    cli.connect()
+    try:
+        live = cli.request_state(timeout=15.0)
+    except TimeoutError:
+        raise SystemExit("could not read the AMS to sync colours from trays "
+                         f"({', '.join(entries)}); re-run when `beambam status` works.")
+    finally:
+        cli.disconnect()
+    try:
+        sync = sync_colours_from_ams(entries, live)
+    except MappingError as e:
+        raise SystemExit(f"[slice-print] refused: {e}")
+    template = Path(args.template) if getattr(args, "template", None) \
+        else root / "rumi_frame.gcode.3mf"
+    conflicts = material_conflicts(sync, _template_filament_type(template))
+    if conflicts:
+        raise SystemExit("[slice-print] refused: " + "; ".join(conflicts)
+                         + " — pick trays of that material, or slice from a template "
+                           "with the right filament profile (--template)")
+    sys.stderr.write("[slice-print] colours synced from the AMS: " + ", ".join(
+        f"{i + 1}={entries[i]}→{c}" if i in sync.explicit else f"{i + 1}={c}"
+        for i, c in enumerate(sync.colours)) + "\n")
+    return sync
+
+
 def cmd_slice_print(args: argparse.Namespace) -> int:
     """One-shot pipeline: slice an STL with x2d_slice.py + upload + start
     print on the configured X2D. Resolves #99 in IMPROVEMENTS.md.
@@ -302,11 +372,7 @@ def cmd_slice_print(args: argparse.Namespace) -> int:
     from beambam.config import Creds
     from beambam.ftps import upload_file
     from beambam.mqtt import X2DClient
-    from beambam.print_job import (
-        _derive_print_params_from_3mf,
-        _validate_ams_slot,
-        start_print,
-    )
+    from beambam.print_job import start_print
     # X2D_ROOT_PATH stays in x2d_bridge as a single source of truth for
     # the install root; cmd_slice_print subprocesses back into the
     # slicer + (when --3mf input) BambuStudio under it.
@@ -323,6 +389,13 @@ def cmd_slice_print(args: argparse.Namespace) -> int:
     slice_bin = X2D_ROOT_PATH / "x2d_slice.py"
     if not slice_bin.exists():
         sys.exit(f"x2d_slice.py not found at {slice_bin}")
+
+    # AMS colour sync: tray references in --color / --colors (A1, B3,
+    # ext-left) are replaced by the colours loaded in those trays, and each
+    # such filament is pinned to its tray for the print.
+    sync = None
+    if stl.suffix.lower() != ".3mf":
+        sync = _sync_colours_from_ams(args, X2D_ROOT_PATH)
 
     with tempfile.TemporaryDirectory(prefix="x2d_sp_") as td:
         out_3mf = Path(td) / f"{stl.stem}.gcode.3mf"
@@ -387,10 +460,13 @@ def cmd_slice_print(args: argparse.Namespace) -> int:
                 cmd.extend(["--mm", str(args.mm)])
             if getattr(args, "copies", 1) and int(args.copies) != 1:
                 cmd.extend(["--copies", str(int(args.copies))])
-            if args.color:
-                cmd.extend(["--color", args.color])
-            if getattr(args, "colors", None):
-                cmd.extend(["--colors", args.colors])
+            if sync is not None:
+                cmd.extend(["--colors", ",".join(sync.colours)])
+            else:
+                if args.color:
+                    cmd.extend(["--color", args.color])
+                if getattr(args, "colors", None):
+                    cmd.extend(["--colors", args.colors])
             if getattr(args, "color_by_region", None):
                 cmd.extend(["--color-by-region", args.color_by_region])
             if getattr(args, "orient", "original") != "original":
@@ -425,9 +501,8 @@ def cmd_slice_print(args: argparse.Namespace) -> int:
                   f"uploading", file=sys.stderr)
             return 0
 
-        # Upload + print via existing path
+        # Map + confirm against live state first, then upload + print.
         creds = Creds.resolve(args)
-        upload_file(creds, out_3mf, remote_name=args.remote, remote_dir="cache")
         cli = X2DClient(creds)
         cli.connect()
         name = args.remote or out_3mf.name
@@ -436,33 +511,33 @@ def cmd_slice_print(args: argparse.Namespace) -> int:
         sliced_bed = (args.bed_type
                       if args.bed_type and args.bed_type != "auto"
                       else None)
-        # Per code-review #3: parity with cmd_print — refuse to send
-        # if the targeted AMS slot is empty or has the wrong filament
-        # class. `--force` is not exposed on slice-print; users
-        # wanting to bypass should re-slice or load matching material.
-        if not args.no_ams:
-            derived = _derive_print_params_from_3mf(
-                out_3mf, filament_index=0)
-            try:
-                live = cli.request_state(timeout=15.0)
-            except TimeoutError:
-                cli.disconnect()
-                raise SystemExit(
-                    "could not pull live printer state to validate "
-                    "AMS slot before sending. Re-run when the "
-                    "printer is reachable.")
-            _validate_ams_slot(live, args.slot, derived, force=False)
-        start_print(cli, name,
-                    use_ams=not args.no_ams, ams_slot=args.slot,
-                    bed_levelling=not args.no_bed_level,
-                    flow_cali=args.flow_cali,
-                    timelapse=args.timelapse,
-                    vibration_cali=args.vib_cali,
-                    bed_type=sliced_bed,
-                    local_path=out_3mf)
-        print(f"[slice-print] queued: {name} on {creds.ip} "
-              f"(ams_slot={args.slot})")
-        cli.disconnect()
+        try:
+            live = cli.request_state(timeout=15.0)
+        except TimeoutError:
+            cli.disconnect()
+            raise SystemExit(
+                "could not pull live printer state to map filaments to "
+                "trays before sending. Re-run when the printer is reachable.")
+        try:
+            # slice-print has no --force: soft mismatches need a yes on
+            # the terminal or --yes.
+            plan = _plan_and_confirm(args, live, out_3mf,
+                                     use_ams=not args.no_ams, force=False,
+                                     extra_explicit=sync.explicit if sync else None)
+            upload_file(creds, out_3mf, remote_name=args.remote, remote_dir="cache")
+            ack = start_print(cli, name,
+                              use_ams=plan.use_ams,
+                              bed_levelling=not args.no_bed_level,
+                              flow_cali=args.flow_cali,
+                              timelapse=args.timelapse,
+                              vibration_cali=args.vib_cali,
+                              bed_type=sliced_bed,
+                              local_path=out_3mf,
+                              plan=plan,
+                              wait_ack=_ACK_WAIT_S)
+            _report_start_ack(ack, f"{name} on {creds.ip}", plan)
+        finally:
+            cli.disconnect()
     return 0
 
 

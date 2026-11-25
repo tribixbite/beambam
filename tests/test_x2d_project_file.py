@@ -76,10 +76,19 @@ def test_multi_filament_ams_mapping(device_cert):
 
 
 def _plate_3mf(path):
-    """A .gcode.3mf with a plate G-code, so start_print can compute the md5."""
+    """A .gcode.3mf with a plate G-code (for the md5) and a minimal
+    project_settings.config so the filament→tray mapping (read_project) can
+    index the AMS slot."""
+    import json
     import zipfile
     with zipfile.ZipFile(path, "w") as z:
         z.writestr("Metadata/plate_1.gcode", "G28\n")
+        z.writestr("Metadata/project_settings.config", json.dumps({
+            "filament_type": ["PLA"],
+            "filament_colour": ["#FFFFFF"],
+            "filament_ids": ["GFL99"],
+            "nozzle_diameter": ["0.4"],
+        }))
     return path
 
 
@@ -130,7 +139,7 @@ def test_x2d_body_param_tracks_plate_idx(device_cert):
     assert b1["param"] == "Metadata/plate_1.gcode"
     b3 = pj.build_x2d_project_file("a.gcode.3mf", "0" * 32, ams_slots=[0],
                                    bed_type="cool_plate", device_cert_path=p,
-                                   plate_idx=3)
+                                   plate=3)
     assert b3["param"] == "Metadata/plate_3.gcode"
 
 

@@ -127,6 +127,31 @@ export MESA_GLSL_VERSION_OVERRIDE=430
 export VK_ICD_FILENAMES="$PREFIX/share/vulkan/icd.d/wrapper_icd.aarch64.json"
 export LD_LIBRARY_PATH="$PREFIX/opt/angle-android/vulkan${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
 
+# bambu-studio was linked against ffmpeg 7.1 (libavcodec.so.61,
+# libavutil.so.59, libswscale.so.8). Termux moved to ffmpeg 8 (.62/.60/.9),
+# and the binary then dies in the dynamic linker before main ("library
+# libavcodec.so.61 not found"). The 7.1 libraries live side by side in a
+# private dir, with the two deps whose ABI moved too: libvpx.so.11 and
+# x265 4.1 (API 215). Kept out of $PREFIX/lib so pacman never sees or
+# overwrites them, and only this process tree loads them.
+# Populated from the pacman cache:
+#   ffmpeg-7.1.1-6, libvpx-1:1.15.2-0, libx265-4.1-3
+# Files: libavcodec.so.61*, libavutil.so.59*, libswscale.so.8*,
+# libswresample.so.5*, libvpx.so.11* (copy with `cp -P`), and x265 4.1's
+# libx265.so saved as libx265.so.215.
+# x265 needs that rename because Termux links it by bare name: a 4.1
+# `libx265.so` here would also be handed to GStreamer's libav plugin, which
+# uses ffmpeg 8 and needs 4.2 (API 216). So, with patchelf on a copy, then mv:
+#   patchelf --set-soname libx265.so.215 libx265.so.215
+#   patchelf --replace-needed libx265.so libx265.so.215 libavcodec.so.61.19.101
+# Both x265 builds are -Bsymbolic, so their ~5800 shared symbol names stay
+# bound inside each library.
+# TODO: rebuild bs-bionic against ffmpeg 8 and drop this directory.
+X2D_FFMPEG_COMPAT="$PREFIX/opt/x2d-ffmpeg7/lib"
+if [[ -d "${X2D_FFMPEG_COMPAT}" ]]; then
+    export LD_LIBRARY_PATH="${X2D_FFMPEG_COMPAT}:${LD_LIBRARY_PATH}"
+fi
+
 # Hardware-acceleration topology (resolved 2026-05-04 — see #95/#96):
 #
 # X2D_USE_ADRENO=1 (default ON for BambuStudio): use virgl_test_server_android
@@ -220,7 +245,7 @@ fi
 # ---------------------------------------------------------------------
 # Bridge supervisor (item #12).
 #
-# Without this, the shim spawns x2d_bridge.py serve once on first
+# Without this, the shim spawns `beambam.cli serve` once on first
 # `connect_printer` call. If that bridge dies (network blip, OOM, segfault
 # in paho), the socket file lingers and every subsequent shim RPC fails
 # with ECONNREFUSED — the GUI silently loses Connect/AMS/Print until the
@@ -234,7 +259,20 @@ X2D_HOME="${HOME}/.x2d"
 mkdir -p "${X2D_HOME}"
 BRIDGE_SOCK="${X2D_HOME}/bridge.sock"
 BRIDGE_LOG="${X2D_HOME}/bridge.log"
-BRIDGE_PY="${X2D_ROOT}/x2d_bridge.py"
+
+# x2d_bridge.py was removed in 977e194 — `beambam.cli` is the entry point.
+# Run it from this checkout (PYTHONPATH), as the old `${X2D_ROOT}/x2d_bridge.py`
+# path did, rather than whichever beambam wheel happens to be installed.
+bridge_cli() {
+    PYTHONPATH="${X2D_ROOT}${PYTHONPATH:+:${PYTHONPATH}}" python3.12 -m beambam.cli "$@"
+}
+
+# `pgrep -f` pattern for one bridge mode, covering every way a bridge gets
+# spawned: this script and the C++ shim (`-m beambam.cli`), the `x2d_bridge`
+# / `beambam` console scripts, and a pre-977e194 `x2d_bridge.py`.
+bridge_pattern() {
+    echo "(beambam[.]cli|x2d_bridge([.]py)?|/beambam) $1"
+}
 
 rotate_log() {
     # Truncate-then-rename: cap at 1 MiB, keep one .1 generation.
@@ -245,7 +283,7 @@ rotate_log() {
     fi
 }
 
-# Kill any stray x2d_bridge processes of the given mode so we end up with
+# Kill any stray bridge processes of the given mode so we end up with
 # exactly one watchdog-supervised instance. Use case: previous run_gui.sh
 # exited without firing its EXIT trap (e.g. Termux app killed, OOM), or
 # the user launched BS bypassing run_gui.sh, leaving an orphaned bridge
@@ -260,7 +298,8 @@ rotate_log() {
 # python processes — pgrep -f -x is strict-match on the whole cmdline.
 ensure_single_bridge() {
     local mode="$1"   # serve | camera | daemon
-    local pattern="x2d_bridge.py $mode"
+    local pattern
+    pattern=$(bridge_pattern "$mode")
     local pids
     pids=$(pgrep -f "$pattern" || true)
     local count=0
@@ -295,7 +334,7 @@ bridge_watchdog() {
         # owning process dies, and bind() fails with EADDRINUSE on retry.
         [[ -S "${BRIDGE_SOCK}" ]] && rm -f "${BRIDGE_SOCK}"
         echo "[$(date +%H:%M:%S)] watchdog: spawning x2d_bridge serve" >> "${BRIDGE_LOG}"
-        python3.12 "${BRIDGE_PY}" serve --sock "${BRIDGE_SOCK}" \
+        bridge_cli serve --sock "${BRIDGE_SOCK}" \
             >> "${BRIDGE_LOG}" 2>&1
         local rc=$?
         echo "[$(date +%H:%M:%S)] watchdog: bridge exited rc=$rc; sleeping ${backoff}s" >> "${BRIDGE_LOG}"
@@ -312,10 +351,10 @@ bridge_watchdog() {
 
 # Don't double-launch if a bridge process is already running (e.g. user
 # kept the supervisor alive across multiple bambu launches).
-if ! pgrep -f "x2d_bridge.py serve" >/dev/null 2>&1; then
+if ! pgrep -f "$(bridge_pattern serve)" >/dev/null 2>&1; then
     bridge_watchdog &
     BRIDGE_WATCHDOG_PID=$!
-    trap 'kill -TERM "${BRIDGE_WATCHDOG_PID}" 2>/dev/null; pkill -TERM -f "x2d_bridge.py serve" 2>/dev/null' EXIT
+    trap 'kill -TERM "${BRIDGE_WATCHDOG_PID}" 2>/dev/null; pkill -TERM -f "$(bridge_pattern serve)" 2>/dev/null' EXIT
     # Give the bridge a moment to bind so the shim's first ensure_socket
     # call sees the socket already present and skips its own spawn.
     for _ in 1 2 3 4 5 6; do
@@ -325,7 +364,7 @@ if ! pgrep -f "x2d_bridge.py serve" >/dev/null 2>&1; then
 fi
 
 # ---------------------------------------------------------------------
-# Camera daemon supervisor — spawns x2d_bridge.py camera so the GUI's
+# Camera daemon supervisor — spawns `beambam.cli camera` so the GUI's
 # MediaPlayCtrl (patched to honour X2D_CAMERA_URL) can render the live
 # RTSPS feed via gstreamer playbin. The daemon proxies rtsps://printer:322
 # to a local MJPEG endpoint at 127.0.0.1:8767/cam.mjpeg, which works
@@ -334,13 +373,13 @@ fi
 CAM_LOG="${X2D_HOME}/camera.log"
 CAM_PORT="${X2D_CAMERA_PORT:-8767}"
 
-if [[ -f "${X2D_HOME}/credentials" ]] && ! pgrep -f "x2d_bridge.py camera" >/dev/null 2>&1; then
+if [[ -f "${X2D_HOME}/credentials" ]] && ! pgrep -f "$(bridge_pattern camera)" >/dev/null 2>&1; then
     (
         backoff=1
         while true; do
             rotate_log "${CAM_LOG}"
             echo "[$(date +%H:%M:%S)] watchdog: spawning x2d_bridge camera (port ${CAM_PORT})" >> "${CAM_LOG}"
-            python3.12 "${BRIDGE_PY}" camera --port 322 \
+            bridge_cli camera --port 322 \
                 --bind "127.0.0.1:${CAM_PORT}" \
                 >> "${CAM_LOG}" 2>&1
             echo "[$(date +%H:%M:%S)] watchdog: camera exited rc=$?; sleeping ${backoff}s" >> "${CAM_LOG}"
@@ -352,7 +391,7 @@ if [[ -f "${X2D_HOME}/credentials" ]] && ! pgrep -f "x2d_bridge.py camera" >/dev
         done
     ) &
     CAM_WATCHDOG_PID=$!
-    trap 'kill -TERM "${BRIDGE_WATCHDOG_PID}" "${CAM_WATCHDOG_PID}" 2>/dev/null; pkill -TERM -f "x2d_bridge.py serve" 2>/dev/null; pkill -TERM -f "x2d_bridge.py camera" 2>/dev/null' EXIT
+    trap 'kill -TERM "${BRIDGE_WATCHDOG_PID}" "${CAM_WATCHDOG_PID}" 2>/dev/null; pkill -TERM -f "$(bridge_pattern serve)" 2>/dev/null; pkill -TERM -f "$(bridge_pattern camera)" 2>/dev/null' EXIT
     # Wait for HTTP daemon to bind (gstreamer playbin needs it ready
     # before the user clicks Camera). 8s is plenty for ffmpeg to spawn
     # and the first frame to land.
@@ -375,4 +414,19 @@ export X2D_CAMERA_URL="${X2D_CAMERA_URL:-http://127.0.0.1:${CAM_PORT}/cam.jpg}"
 
 # Run from bs-bionic so resources/ is found relative to argv[0].
 cd "${X2D_ROOT}/bs-bionic"
+
+# Since the Oct 2026 One UI firmware, ANGLE's Vulkan path loads Samsung's
+# /system/lib64/libdng_sdk.so, which NEEDs `libjxl.so` and uses the
+# JxlResizableParallelRunner* API. Android's libjxl.so includes that runner;
+# Termux's splits it into libjxl_threads.so. BambuStudio has already loaded
+# Termux's libjxl.so (via libwebkit2gtk), the linker reuses it by soname,
+# and the dlopen of libGLESv2_angle.so fails: "cannot locate symbol
+# JxlResizableParallelRunner referenced by libdng_sdk.so" — BS then exits
+# with no window. Preloading Termux's libjxl_threads.so makes those four
+# symbols global, which covers every Jxl* symbol libdng_sdk needs.
+# Only BS gets it; the bridge processes above do not need it.
+JXL_THREADS="$PREFIX/lib/libjxl_threads.so"
+if [[ -f "${JXL_THREADS}" ]]; then
+    LD_PRELOAD="${LD_PRELOAD}:${JXL_THREADS}" exec "${BS_BIN}" "$@"
+fi
 exec "${BS_BIN}" "$@"

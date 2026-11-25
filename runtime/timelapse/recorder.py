@@ -133,9 +133,13 @@ class _Capture:
         self._save_meta()
 
     def _save_meta(self) -> None:
+        # Atomic write: the capture thread rewrites meta.json on every frame
+        # while readers (list_jobs, the HTTP API, tests) may read it, and a
+        # plain truncate+write exposes an empty/partial file mid-write.
         try:
-            (self.dir / "meta.json").write_text(
-                json.dumps(asdict(self.meta), indent=2))
+            tmp = self.dir / "meta.json.tmp"
+            tmp.write_text(json.dumps(asdict(self.meta), indent=2))
+            os.replace(tmp, self.dir / "meta.json")
         except OSError:
             pass
 

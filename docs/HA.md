@@ -1,9 +1,8 @@
 # beambam + Home Assistant (MQTT discovery)
 
-`beambam ha` (alias `ha-publish`) publishes a printer to Home Assistant
-through MQTT discovery. It reads state from a running `beambam daemon
---http` (the `/state.events` stream) and forwards HA commands to the
-daemon's `/control/*` routes. Code: `runtime/ha/publisher.py`.
+The bridge ships an MQTT auto-discovery publisher (`beambam ha-publish`) that exposes the printer to Home Assistant as a single
+Device with 32 entities. Tested against real Home Assistant Core
+2025.1.4 — see §4 for the live-test artefacts.
 
 **Requires Home Assistant 2025.10 or newer.** Entity ids are suggested
 with `default_entity_id`, which replaced `object_id` in 2025.10;
@@ -17,27 +16,46 @@ Step-by-step install and dashboard examples: [`HA_SETUP.md`](./HA_SETUP.md).
 # MQTT broker (or use HA's Mosquitto add-on)
 mosquitto -p 1883 &
 
-# daemon: talks to the printer, serves HTTP for the publisher
+# 2. Start the x2d bridge daemon (already running for the web UI)
 beambam daemon --http 127.0.0.1:8765 &
 
-# publisher: one HA device per [printer:NAME] section
-beambam ha --broker 127.0.0.1:1883 --daemon-url http://127.0.0.1:8765 \
+# 3. Run the HA discovery publisher
+beambam ha-publish \
+    --broker      127.0.0.1:1883 \
+    --daemon-url  http://127.0.0.1:8765 \
+    --device-serial $(grep '^serial' ~/.x2d/credentials | head -1 | cut -d= -f2 | tr -d ' ') \
     --device-model X2D
 ```
 
-In HA, add the MQTT integration pointed at the same broker. A "Bambu Lab
-X2D" device appears under Settings → Devices & services → MQTT.
+In Home Assistant, go to **Settings → Integrations → MQTT** and point
+it at the same broker. Within seconds, a "Bambu Lab X2D" Device
+appears under MQTT: ~60 printer entities plus 4 per AMS tray and 3 per AMS
+unit (an X2D with 4× AMS 2 Pro gets 122). AMS entities follow what the
+printer reports — a unit that appears later gets its entities then.
 
 `--device-model` selects model-specific entities (two-nozzle sensors for
 X2D / H2D / H2D Pro / H2C; door bit location for X1 vs newer models).
 
-## 2. Identity
+| Component | Count | Examples |
+|---|---|---|
+| `sensor`  | 40+ | nozzle_temp, nozzle_{right,left}_{temp,target}, nozzle_{right,left}_tray, bed_temp, chamber_temp, progress, layers, remaining, wifi, ip_address, speed_profile, firmware_version, firmware_available, track_switch, active_tray, fans, ams_{a1..d4}_{color,material}, ams_{a..d}_{humidity,temp} |
+| `binary_sensor` | 6+ | online, ext_spool_filament, timelapse_running, hms_problem, print_error, ams_{a..d}_damp |
+| `number`  | 4  | bed_set, nozzle_set (right), nozzle_left_set, chamber_set |
+| `switch` / `light` | 3 | light + chamber_light (chamber LED), prompt_sound |
+| `button`  | 8+ | pause, resume, stop, home, level, buzzer_silence, ams_unload, ams_{a1..d4}_load |
+| `image` / `camera` | 2 | snapshot (chamber camera, refreshed via daemon /cam.jpg) |
 
-The device identifier, every `unique_id` and the topic prefix are built
-from the printer **serial**, resolved in this order: `--device-serial`,
-the credentials file section, then the daemon's last state
-(`print.upgrade_state.sn`). If none is available `beambam ha` refuses to
-start for that printer instead of inventing an id.
+X2D-specific values (both nozzles and the chamber from the packed
+`device.*.info.temp` words, the dotted IP, the speed name, firmware from the
+`get_version` reply, each tray's colour/material, AMS humidity in %RH) are
+computed in Python by `runtime/ha/publisher.derive_state` and published in the
+state JSON under `beambam`, so the templates only read
+`value_json.beambam.<key>`. Upgrading from an older release deletes the
+entities that were renamed (`ams_slotN_*`, `ams_humidity`, `ams_unitN_humidity_warn`,
+`door_open` — which was really the external-spool filament sensor) by
+publishing empty discovery configs.
+
+All of them are linked to one HA Device:
 
 Before this change a publisher started with `--printer NAME` and no
 `--device-serial` used the name (`x2d_<name>`). On connect the publisher
@@ -84,18 +102,15 @@ Notes on the printer fields (checked against a live X2D, firmware
 ## 4. Topics
 
 ```
-homeassistant/<component>/x2d_<serial>/<key>/config  discovery (retained)
-x2d/<serial>/state                  merged printer state JSON (retained)
-x2d/<serial>/availability           publisher online/offline (retained, last will)
-x2d/<serial>/printer_availability   daemon hears the printer: online/offline (retained)
-x2d/<serial>/snapshot               JPEG bytes (retained)
-x2d/<serial>/light/set              ON | OFF
-x2d/<serial>/print/set              PAUSE | RESUME | STOP | HOME | LEVEL
-x2d/<serial>/temp/<bed|nozzle|chamber>/set   integer °C
-x2d/<serial>/ams/<slot>/load        any payload; slot 1-16 = unit*4 + tray + 1
-x2d/<serial>/sound/set              ON | OFF
-x2d/<serial>/buzzer/set             SILENCE
-homeassistant/status                (subscribed) HA birth message
+homeassistant/<component>/x2d_<serial>/<key>/config   discovery (retained)
+x2d/<serial>/state                                    merged report + `beambam` block (retained)
+x2d/<serial>/availability                             online/offline (retained)
+x2d/<serial>/light/set         payload: ON | OFF
+x2d/<serial>/print/set         payload: PAUSE | RESUME | STOP
+x2d/<serial>/temp/<bed|nozzle|nozzle_left|chamber>/set  payload: integer °C
+x2d/<serial>/ams/<a1..d4>/load payload: any (legacy: ams/<1..16>/load)
+x2d/<serial>/ams/unload        payload: any
+x2d/<serial>/snapshot          payload: JPEG bytes (item #53)
 ```
 
 - **State.** The printer sends full reports and, in between, small delta
@@ -123,10 +138,52 @@ daemon URL is not loopback (or `--configuration-url` is given),
 
 ## 5. Authentication
 
-- Broker: `--broker-username` / `--broker-password` (or `X2D_HA_USER` /
-  `X2D_HA_PASS`).
-- Daemon: `--daemon-token` must match the daemon's `--auth-token`; the
-  publisher sends `Authorization: Bearer …` on every request.
+# Bridge daemon + publisher
+beambam daemon --http 127.0.0.1:18555 --quiet &
+beambam ha-publish --broker 127.0.0.1:21883 \
+    --daemon-url http://127.0.0.1:18555 \
+    --device-serial $(grep ^serial ~/.x2d/credentials | head -1 | cut -d= -f2 | tr -d ' ') &
+
+# In proot Ubuntu: install + start HA
+proot-distro login ubuntu --shared-tmp -- bash -c '
+  cd /root/ha && source venv/bin/activate
+  hass -c /root/ha-config --log-no-color
+'
+```
+
+After ~60 s of HA boot, inspect HA's persisted registries:
+
+```bash
+cat $PREFIX/var/lib/proot-distro/installed-rootfs/ubuntu/root/ha-config/.storage/core.entity_registry \
+  | python3 -c 'import json,sys; d=json.load(sys.stdin); \
+    print(len([e for e in d["data"]["entities"] if "x2d_" in e["unique_id"]]))'
+# Expect: 32
+```
+
+Sample of `core.restore_state` after live X2D state was processed by
+HA's Jinja templates (saved to `docs/ha-live-proof/`):
+
+```
+sensor.x2d_<id>_ams_slot2_color    state="#F95D73"   (live AMS color, RGB-only — alpha stripped)
+sensor.x2d_<id>_ams_slot2_material state="PLA"
+sensor.x2d_<id>_ams_slot3_color    state="#A03CF7"
+number.x2d_<id>_bed_set             state="0"        (bed target temperature)
+number.x2d_<id>_nozzle_set          state="0"        (nozzle target temperature)
+```
+
+These are real values pulled from the running printer through the
+full SSE → publisher → MQTT → HA pipeline.
+
+## 5. Authentication for non-loopback brokers
+
+Pass `--broker-username` / `--broker-password` (or set
+`X2D_HA_USER` / `X2D_HA_PASS`) to the publisher. The publisher
+authenticates as a regular MQTT client; HA's MQTT integration is
+configured separately on the HA side.
+
+For the bridge daemon's HTTP control routes, pass `--daemon-token`
+matching `--auth-token` on the daemon side. The publisher will attach
+`Authorization: Bearer …` to every `/control/<verb>` POST.
 
 ## 6. Multi-printer
 
@@ -149,9 +206,11 @@ than one printer is configured.
   standalone scripts (`python runtime/ha/test_ha.py`) for the command
   forwarding, multi-printer and snapshot paths.
 
-An amqtt broker does not process discovery, so none of these prove that
-HA accepts the payloads; the templates are checked with Jinja2 and the
-payload keys against the HA MQTT documentation.
+# one process drives both
+beambam ha-publish \
+    --broker 127.0.0.1:1883 \
+    --daemon-url http://127.0.0.1:8765
+```
 
 ## 8. Not done
 

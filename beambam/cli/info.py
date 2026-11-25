@@ -495,34 +495,123 @@ def cmd_notify(args: argparse.Namespace) -> int:
 
 
 def cmd_help(args: argparse.Namespace) -> int:
-    """`beambam help <topic>` — alias for `beambam <topic> --help`.
+    """`beambam help [topic ...] [--all | --man | --install-man [DIR]]`.
 
-    Equivalent to invoking the subcommand with `--help`. Implemented by
-    delegating to argparse on the topic's subparser so the resulting
-    text matches `beambam <topic> --help` exactly (no risk of drift).
-    """
+    With a topic, prints exactly what `beambam <topic> --help` prints
+    (both go through ManParser.print_help, so they cannot drift). With
+    no topic, prints the overview page. --all prints every page, --man
+    the roff source, and --install-man writes beambam.1 for `man`."""
+    import os
     import sys
-    parser = args._root_parser  # injected by add_subparser below
-    if not parser:
-        print("internal error: root parser not threaded",
-              file=sys.stderr)
+
+    from beambam.cli import manhelp
+
+    parser = getattr(args, "_root_parser", None)
+    if parser is None:
+        print("internal error: root parser not threaded", file=sys.stderr)
         return 2
-    # Find the topic subparser via the _SubParsersAction.
-    for action in parser._actions:
-        if isinstance(action, argparse._SubParsersAction):
-            sub = action.choices.get(args.topic)
-            if sub is None:
-                avail = sorted(action.choices.keys())
-                print(f"unknown topic {args.topic!r}\n",
-                      file=sys.stderr)
-                print(f"available topics: {', '.join(avail)}",
-                      file=sys.stderr)
-                return 1
-            sub.print_help()
-            return 0
-    print("internal error: no subparsers action on root parser",
-          file=sys.stderr)
-    return 2
+    if args.man:
+        sys.stdout.write(manhelp.render_roff(parser))
+        return 0
+    if args.install_man is not None:
+        return _install_man(parser, args.install_man)
+    if args.all:
+        st = manhelp.Style(manhelp.use_color(sys.stdout))
+        manhelp.emit(manhelp.render_manual(parser, st, manhelp.page_width()))
+        return 0
+    target = manhelp.find_parser(parser, list(args.topic))
+    if target is None:
+        return _unknown_topic(parser, list(args.topic))
+    target.print_help()
+    return 0
+
+
+def _unknown_topic(root: argparse.ArgumentParser, words: list[str]) -> int:
+    """`beambam help <unknown>`: near-miss names at the level that failed,
+    then every command whose name or summary mentions the words."""
+    import difflib
+    import sys
+
+    from beambam.cli import manhelp
+
+    # Walk as far as the words name real commands; the next one is the typo.
+    parent, depth = root, 0
+    while depth < len(words):
+        nxt = manhelp.find_parser(parent, [words[depth]])
+        if nxt is None:
+            break
+        parent, depth = nxt, depth + 1
+    prefix = " ".join(("beambam",) + manhelp._path_of(parent))
+    action = manhelp._subparsers_action(parent)
+    choices = sorted(action.choices) if action is not None else []
+    bad = words[depth] if depth < len(words) else ""
+    print(f"no help topic {' '.join(words)!r}", file=sys.stderr)
+    # apropos: commands whose name or one-line summary mention every word.
+    terms = [w.lower() for w in words]
+    hits = []
+    for sub in manhelp.iter_parsers(root):
+        page = manhelp.build_page(sub)
+        hay = f"{page.name} {page.summary}".lower()
+        if all(t in hay for t in terms):
+            hits.append((page.name, page.summary))
+    # A near-miss name is the likely intent unless the word reads as a search
+    # term that matched commands; then only strong near-misses are offered.
+    cutoff = 0.8 if hits else 0.5
+    close = difflib.get_close_matches(bad, choices, n=4, cutoff=cutoff) if bad else []
+    if close:
+        print("  did you mean: " + ", ".join(f"{prefix} {c}" for c in close) + "?",
+              file=sys.stderr)
+    if hits:
+        print(f"\ncommands mentioning {' '.join(words)!r}:", file=sys.stderr)
+        width = max(len(n) for n, _ in hits[:12])
+        for name, summary in hits[:12]:
+            print(f"  {name:<{width}}  {summary}", file=sys.stderr)
+        if len(hits) > 12:
+            print(f"  … and {len(hits) - 12} more", file=sys.stderr)
+    print(f"\nrun `{prefix} --help` to list the commands, or `beambam help --all` "
+          f"for the whole manual", file=sys.stderr)
+    return 1
+
+
+def _install_man(parser: argparse.ArgumentParser, dest: str) -> int:
+    """Write the roff manual to <dir>/beambam.1 and say how to read it."""
+    import os
+    import sys
+
+    from beambam.cli import manhelp
+
+    if dest:
+        candidates = [Path(dest).expanduser()]
+    else:
+        prefix = os.environ.get("PREFIX") or sys.prefix
+        candidates = [Path(prefix) / "share" / "man" / "man1",
+                      Path.home() / ".local" / "share" / "man" / "man1"]
+    text = manhelp.render_roff(parser)
+    for d in candidates:
+        try:
+            d.mkdir(parents=True, exist_ok=True)
+            out = d / "beambam.1"
+            tmp = d / ".beambam.1.tmp"
+            tmp.write_text(text, encoding="utf-8")   # roff source is UTF-8 everywhere
+            tmp.replace(out)  # atomic: a concurrent `man` never sees half a file
+        except OSError as e:
+            print(f"cannot write {d}: {e}", file=sys.stderr)
+            continue
+        print(f"wrote {out}")
+        man_root = d.parent
+        # Best effort: refresh the whatis/apropos index so `man -k` finds
+        # the page (mandoc's makewhatis; man-db's mandb). Absence is fine.
+        import shutil
+        import subprocess
+        if shutil.which("makewhatis"):
+            subprocess.run(["makewhatis", "-d", str(man_root), str(out)],
+                           check=False, capture_output=True)
+        elif shutil.which("mandb"):
+            subprocess.run(["mandb", "-q", str(man_root)], check=False, capture_output=True)
+        print(f"read it with: man beambam   (or: man -M {man_root} beambam "
+              f"if {man_root} is not on your MANPATH)")
+        return 0
+    return 1
 
 
 def cmd_analyze(args: argparse.Namespace) -> int:

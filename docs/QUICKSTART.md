@@ -30,7 +30,7 @@ serial = 03ABC123XXXXXXX     # serial sticker / About page
 Verify it talks to the printer (no GUI needed):
 
 ```bash
-~/x2d/helpers/beambam status | head     # one-shot push, prints JSON
+beambam status | head     # one-shot push, prints JSON
 ```
 
 If you see a JSON dump with `mc_print` keys, you're connected.
@@ -101,13 +101,13 @@ Look for lines like `[serve] ssdp listening on udp/2021` and
 ~/x2d/bin/bambu-studio --slice 0 -o out.gcode.3mf model.stl
 
 # 2. Upload + start print in one shot
-~/x2d/helpers/beambam print out.gcode.3mf
+beambam print out.gcode.3mf
 ```
 
 ## Print-control shortcuts (live MQTT publishes)
 
 ```bash
-x=~/x2d/helpers/beambam
+x=beambam
 
 # State
 $x status                   # one-shot pushall + dump
@@ -214,7 +214,7 @@ automatically when within 5 min of expiry.
 | Where | What |
 |---|---|
 | `~/x2d/run_gui.sh` | GUI launcher (the one command you actually run) |
-| `~/x2d/helpers/beambam` | LAN client + daemon + RPC server CLI |
+| `beambam` (on PATH; `python -m beambam.cli`) | LAN client + daemon + RPC server CLI (`x2d_bridge.py` was removed in 1.5.0) |
 | `~/.x2d/credentials` | per-printer ip/code/serial (chmod 600) |
 | `~/.x2d/cloud_session.json` | optional Bambu cloud tokens (chmod 600) |
 | `~/.x2d/bridge.sock` | Unix socket the shim talks to |

@@ -175,7 +175,7 @@ def watch_loop(url: str, *, hz: float, backend: Backend,
             try:
                 jpeg = fetch_jpeg(url, timeout=interval + 5.0)
             except Exception as e:                          # noqa: BLE001
-                out_stream.write(f"\033[H\033[2K[error] fetch: {e}\n")
+                out_stream.write(f"\033[H\033[2K[error] fetch: {_fetch_hint(url, e)}\n")
                 out_stream.flush()
                 time.sleep(interval)
                 continue
@@ -323,12 +323,21 @@ def _pid_alive(pid: int) -> bool:
 _CAM_LOG_FILE = config_path("cam.log")
 
 
+def _fetch_hint(url: str, e: Exception) -> str:
+    """The fetch error, plus what to do when nothing is serving `url`."""
+    text = str(e)
+    if "refused" in text.lower():
+        return (f"nothing is serving {url} — start the camera proxy with "
+                f"`beambam cam start` (or point --url at one that is running)")
+    return text
+
+
 def _do_snap(url: str, out_path: str | None) -> int:
     out = Path(out_path or "cam.jpg").expanduser()
     try:
         data = fetch_jpeg(url)
     except Exception as e:                                  # noqa: BLE001
-        print(f"snapshot failed: {e}", file=sys.stderr)
+        print(f"snapshot failed: {_fetch_hint(url, e)}", file=sys.stderr)
         return 1
     out.write_bytes(data)
     print(f"saved {len(data):,} B → {out}")

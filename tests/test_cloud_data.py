@@ -122,7 +122,16 @@ def test_cmd_history_handles_cloud_error(capsys):
                 side_effect=RuntimeError("not logged in")):
         rc = cmd_history(args)
     assert rc == 1
-    assert "history failed" in capsys.readouterr().err
+    assert "run `beambam cloud-login` first" in capsys.readouterr().err
+
+
+def test_cmd_history_reports_other_errors(capsys):
+    args = argparse.Namespace(limit=5, json_out=False)
+    with patch("beambam.cloud_data.fetch_history",
+                side_effect=RuntimeError("HTTP 500")):
+        rc = cmd_history(args)
+    assert rc == 1
+    assert "history failed: RuntimeError: HTTP 500" in capsys.readouterr().err
 
 
 # ----- cmd_whoami ---------------------------------------------------------
@@ -155,7 +164,7 @@ def test_cmd_whoami_handles_auth_error(capsys):
                 side_effect=RuntimeError("not logged in")):
         rc = cmd_whoami(args)
     assert rc == 1
-    assert "whoami failed" in capsys.readouterr().err
+    assert "run `beambam cloud-login` first" in capsys.readouterr().err
 
 
 # ----- live ---------------------------------------------------------------

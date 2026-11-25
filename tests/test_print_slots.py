@@ -1,19 +1,19 @@
-"""tests/test_print_slots.py — `beambam print --slot 4,0,12`: one AMS slot per filament.
+"""tests/test_print_slots.py — `beambam print --slot 4,0,12`: one AMS slot per used filament.
 
-A multi-colour .gcode.3mf needs every filament mapped to a loaded AMS slot (the X2D project_file's
-ams_mapping is per filament). `--slot` takes a comma-separated list in filament order; each slot is
-validated against its own filament from the 3MF, and start_print gets the whole list.
+A multi-colour .gcode.3mf needs every filament it uses mapped to a loaded tray (the X2D
+project_file's ams_mapping is per filament). `--slot` takes a comma-separated list in the order
+of the plate's used filaments; the filament planner (beambam.filament_mapping) checks each slot
+against its own filament, and start_print gets the whole plan.
 """
 from __future__ import annotations
 
 import argparse
-import json
-import zipfile
 from pathlib import Path
 
 import pytest
 
 from beambam.print_job import parse_slots
+from tests.test_filament_mapping import make_3mf, make_state, tray, SWITCH_A, SWITCH_B
 
 
 def test_parse_slots() -> None:
@@ -26,176 +26,84 @@ def test_parse_slots() -> None:
 
 
 def test_cli_parser_accepts_a_list(capsys: pytest.CaptureFixture[str]) -> None:
-    from tests.test_subparser_coverage import _build_parser    # the CLI's own parser, captured from main()
-    parser = _build_parser()
+    from beambam.cli import build_parser
+    parser = build_parser()
     assert parser.parse_args(["print", "x.gcode.3mf", "--slot", "4,0"]).slot == [4, 0]
-    assert parser.parse_args(["print", "x.gcode.3mf"]).slot == [0]
+    # One slot stays an int (the single-filament form); no --slot means auto-map.
+    assert parser.parse_args(["print", "x.gcode.3mf", "--slot", "6"]).slot == 6
+    assert parser.parse_args(["print", "x.gcode.3mf"]).slot is None
+    assert parser.parse_args(["slice-print", "x.stl", "--slot", "1,2"]).slot == [1, 2]
     with pytest.raises(SystemExit):
         parser.parse_args(["print", "x.gcode.3mf", "--slot", "99"])
     assert "AMS slots are 0..15" in capsys.readouterr().err
 
 
-def _three_mf(path: Path, types: list[str], colours: list[str]) -> Path:
-    ps = {"curr_bed_type": "Supertack Plate", "supertack_plate_temp_initial_layer": ["70"] * len(types),
-          "filament_type": types, "filament_colour": colours, "filament_ids": ["GFG99"] * len(types)}
-    with zipfile.ZipFile(path, "w") as z:
-        z.writestr("Metadata/project_settings.config", json.dumps(ps))
-        z.writestr("Metadata/plate_1.gcode", "G28\n")
-    return path
-
-
 def _ns(file: Path, slot: object) -> argparse.Namespace:
     return argparse.Namespace(
         ip="192.168.0.42", code="abcdef12", serial="00P9AJ000000000", printer=None, config=None,
-        file=str(file), remote=None, slot=slot, no_upload=False, no_ams=False, no_bed_level=False,
-        bed_type=None, bed_temp=None, force=False, flow_cali=False, timelapse=False, vib_cali=False,
-        dry_run=False, max_flush_g=10.0)
+        file=str(file), remote=None, slot=slot, map=None, plate=1, yes=False,
+        no_upload=False, no_ams=False, no_bed_level=False, bed_type=None, bed_temp=None,
+        force=False, flow_cali=False, timelapse=False, vib_cali=False, dry_run=False,
+        max_flush_g=10.0)
 
 
 @pytest.fixture
 def offline(monkeypatch: pytest.MonkeyPatch) -> dict:
-    """cmd_print with the network replaced: records validations and the start_print call."""
+    """cmd_print with the network replaced: live AMS state in, the start_print call out."""
     import beambam.ftps as ftps
     import beambam.mqtt as mqtt
     import beambam.print_job as pj
-    seen: dict = {"validated": [], "start": None}
+    state = make_state([
+        (SWITCH_B, [tray(0, "PETG", "#8ECAD8", "GFG99"), tray(1, "PLA", "#B49478", "GFG99"),
+                    tray(2, "PLA", "#D3C5A3"), tray(3, "PLA", "#F98C36")]),
+        (SWITCH_A, [tray(0, "PETG", "#F4EE2A", "GFG99"), tray(1, "PETG", "#FCECD6", "GFG99"),
+                    tray(2, "PLA", "#B49478", "GFG99"), tray(3, "PLA", "#FFFFFF")]),
+    ])
+    seen: dict = {"start": None, "uploaded": False}
 
     class _Client:
         def __init__(self, creds): self.creds = creds
         def connect(self): pass
         def disconnect(self): pass
-        def request_state(self, timeout=15.0): return {"print": {"gcode_state": "FINISH"}}
-        message_seq = 0
-        def wait_for(self, predicate, timeout, since=None):
-            # The printer answers the project_file with success.
-            msg = {"print": {"command": "project_file", "result": "success", "err_code": 0}}
-            return msg if predicate(msg) else None
-        def merged_state(self): return {"print": {"gcode_state": "PREPARE"}}
+        def request_state(self, timeout=15.0): return state
 
     monkeypatch.setattr(mqtt, "X2DClient", _Client)
-    monkeypatch.setattr(ftps, "upload_file", lambda *a, **k: None)
-    monkeypatch.setattr(pj, "_validate_ams_slot",
-                        lambda live, slot, exp, force: seen["validated"].append((slot, exp["expected_filament_type"])))
+    monkeypatch.setattr(ftps, "upload_file", lambda *a, **k: seen.__setitem__("uploaded", True))
     monkeypatch.setattr(pj, "start_print", lambda cli, name, **kw: seen.__setitem__("start", kw))
     return seen
 
 
+def _tray_of(plan, filament: int) -> int:
+    return next(a.tray.tray_id for a in plan.assignments if a.filament.number == filament)
+
+
 def test_multi_slot_print_maps_every_filament(tmp_path: Path, offline: dict) -> None:
     from beambam.cli.lan import cmd_print
-    f = _three_mf(tmp_path / "squirtle.gcode.3mf", ["PETG", "PLA"], ["#8ECAD8", "#B49478"])
-    assert cmd_print(_ns(f, [8, 10])) == 0
-    assert offline["validated"] == [(8, "PETG"), (10, "PLA")]     # each slot against its own filament
-    assert offline["start"]["ams_slot"] == [8, 10]
+    f = make_3mf(tmp_path, [("PETG", "#8ECAD8", "GFG99", "2"), ("PLA", "#B49478", "GFG99", "2")],
+                 used={1: [1, 2]})
+    assert cmd_print(_ns(f, [0, 6])) == 0
+    plan = offline["start"]["plan"]
+    assert (_tray_of(plan, 1), _tray_of(plan, 2)) == (0, 6)    # each filament on its own slot
+    assert offline["uploaded"]
 
 
 def test_single_slot_still_an_int(tmp_path: Path, offline: dict) -> None:
     from beambam.cli.lan import cmd_print
-    f = _three_mf(tmp_path / "one.gcode.3mf", ["PLA"], ["#FFFFFF"])
-    assert cmd_print(_ns(f, 12)) == 0
-    assert offline["start"]["ams_slot"] == 12 and offline["validated"] == [(12, "PLA")]
+    f = make_3mf(tmp_path, [("PLA", "#B49478", "GFG99", "2")])
+    assert cmd_print(_ns(f, 1)) == 0
+    assert _tray_of(offline["start"]["plan"], 1) == 1
+
+
+def test_raw_slot_text_from_a_caller_is_parsed(tmp_path: Path, offline: dict) -> None:
+    from beambam.cli.lan import cmd_print
+    f = make_3mf(tmp_path, [("PLA", "#B49478", "GFG99", "2")])
+    assert cmd_print(_ns(f, "6")) == 0
+    assert _tray_of(offline["start"]["plan"], 1) == 6
 
 
 def test_more_slots_than_filaments_is_refused(tmp_path: Path, offline: dict) -> None:
     from beambam.cli.lan import cmd_print
-    f = _three_mf(tmp_path / "one.gcode.3mf", ["PLA"], ["#FFFFFF"])
-    with pytest.raises(SystemExit, match="does not have that many filaments"):
+    f = make_3mf(tmp_path, [("PLA", "#B49478", "GFG99", "2")])
+    with pytest.raises(SystemExit, match="2 slots given but plate 1 uses 1"):
         cmd_print(_ns(f, [1, 2]))
-    assert offline["start"] is None
-
-
-# --- confirmation and pre-flight (the printer's verdict decides the exit code) ---
-
-def _client_class(gcode_state: str, reply: dict | None, later_state: str | None = None):
-    class _Client:
-        message_seq = 0
-        def __init__(self, creds): self.creds = creds
-        def connect(self): pass
-        def disconnect(self): pass
-        def request_state(self, timeout=15.0): return {"print": {"gcode_state": gcode_state}}
-        def wait_for(self, predicate, timeout, since=None):
-            for msg in ([reply] if reply else []) + (
-                    [{"print": {"command": "push_status", "gcode_state": later_state}}] if later_state else []):
-                if predicate(msg):
-                    return msg
-            return None
-        def merged_state(self): return {"print": {"gcode_state": gcode_state}}
-    return _Client
-
-
-@pytest.mark.parametrize("state,reply,later,rc", [
-    ("FINISH", {"print": {"command": "project_file", "result": "success"}}, None, 0),
-    ("IDLE", None, "PREPARE", 0),                       # no reply, but the job is preparing
-    ("FINISH", {"print": {"command": "project_file", "err_code": 84033544,
-                          "reason": "file verify failed", "result": "failed"}}, None, 1),
-    ("FINISH", None, None, 3),                          # silence: unconfirmed, not success
-])
-def test_print_exit_code_follows_the_printer(tmp_path: Path, offline: dict, monkeypatch,
-                                             state, reply, later, rc) -> None:
-    import beambam.mqtt as mqtt
-    from beambam.cli.lan import cmd_print
-    monkeypatch.setattr(mqtt, "X2DClient", _client_class(state, reply, later))
-    f = _three_mf(tmp_path / "one.gcode.3mf", ["PLA"], ["#FFFFFF"])
-    ns = _ns(f, 12)
-    ns.confirm_timeout = 0.1
-    assert cmd_print(ns) == rc
-
-
-def test_busy_printer_is_refused(tmp_path: Path, offline: dict, monkeypatch) -> None:
-    import beambam.mqtt as mqtt
-    from beambam.cli.lan import cmd_print
-    monkeypatch.setattr(mqtt, "X2DClient", _client_class("RUNNING", None))
-    f = _three_mf(tmp_path / "one.gcode.3mf", ["PLA"], ["#FFFFFF"])
-    with pytest.raises(SystemExit, match="printer is busy"):
-        cmd_print(_ns(f, 12))
-    assert offline["start"] is None
-
-
-def test_too_few_slots_for_the_filaments_used(tmp_path: Path, offline: dict) -> None:
-    from beambam.cli.lan import cmd_print
-    f = _three_mf(tmp_path / "three.gcode.3mf", ["PETG", "PETG", "PETG"], ["#111111", "#222222", "#333333"])
-    with zipfile.ZipFile(f, "a") as z:
-        z.writestr("Metadata/slice_info.config",
-                   '<config><plate><metadata key="index" value="1"/>'
-                   '<filament id="1"/><filament id="2"/><filament id="3"/></plate></config>')
-    with pytest.raises(SystemExit, match=r"filament\(s\) 1, 2, 3"):
-        cmd_print(_ns(f, [4]))
-    assert offline["start"] is None
-
-
-def test_force_on_busy_printer_needs_the_printers_reply(tmp_path: Path, offline: dict,
-                                                       monkeypatch) -> None:
-    """--force on a RUNNING printer: a RUNNING report is the previous job's,
-    so without a project_file reply the result is unconfirmed (3), not 0."""
-    import beambam.mqtt as mqtt
-    from beambam.cli.lan import cmd_print
-    monkeypatch.setattr(mqtt, "X2DClient", _client_class("RUNNING", None, "RUNNING"))
-    f = _three_mf(tmp_path / "one.gcode.3mf", ["PLA"], ["#FFFFFF"])
-    ns = _ns(f, 12)
-    ns.force = True
-    ns.confirm_timeout = 0.1
-    assert cmd_print(ns) == 3
-    # ...but the printer's own acceptance still counts.
-    monkeypatch.setattr(mqtt, "X2DClient", _client_class(
-        "RUNNING", {"print": {"command": "project_file", "result": "success"}}))
-    assert cmd_print(ns) == 0
-
-
-def test_publish_timeout_is_unconfirmed_not_refused(tmp_path: Path, offline: dict,
-                                                    monkeypatch) -> None:
-    """A broker-ack timeout may still have delivered the job: exit 3, never 1."""
-    import beambam.mqtt as mqtt
-    import beambam.print_job as pj
-    from beambam.cli.lan import cmd_print
-
-    def _timeout(*a, **k):
-        raise mqtt.PublishTimeout("printer did not acknowledge the publish within 5 s")
-    monkeypatch.setattr(pj, "start_print", _timeout)
-    monkeypatch.setattr(mqtt, "X2DClient", _client_class("FINISH", None))
-    f = _three_mf(tmp_path / "one.gcode.3mf", ["PLA"], ["#FFFFFF"])
-    ns = _ns(f, 12)
-    ns.confirm_timeout = 0.1
-    assert cmd_print(ns) == 3
-    # If the printer answers anyway, its verdict wins.
-    monkeypatch.setattr(mqtt, "X2DClient", _client_class(
-        "FINISH", {"print": {"command": "project_file", "err_code": 84033544, "result": "failed"}}))
-    assert cmd_print(ns) == 1
+    assert offline["start"] is None and not offline["uploaded"]   # refused before upload

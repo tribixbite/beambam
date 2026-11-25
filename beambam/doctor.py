@@ -22,6 +22,7 @@ from __future__ import annotations
 import argparse
 import sys
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Literal
 
 
@@ -346,9 +347,7 @@ def check_environment() -> list[Check]:
     sign_key = config_path("printer_sign_key.pem")
     cert_id = config_path("printer_cert_id.txt")
     if sign_key.is_file() and cert_id.is_file():
-        out.append(Check("Environment", "Printer control key", "pass",
-                         "RSA signing key + cert_id present — signed control "
-                         "(pause/resume/stop/start/skip) enabled"))
+        out.append(_signing_cert_check(config_path("printer_app_cert.pem")))
     elif sign_key.is_file():
         out.append(Check("Environment", "Printer control key", "warn",
                          f"{sign_key} present but {cert_id} missing — re-run "
@@ -380,6 +379,45 @@ def check_environment() -> list[Check]:
                          "(P1/A1/X1 don't use url_enc). Fetch with "
                          "`beambam device-cert`."))
     return out
+
+
+def _signing_cert_check(app_cert: Path) -> Check:
+    """Key present: is the Handy app certificate it signs under still valid?
+
+    The printer rejects signatures under an expired certificate at the
+    "cert not authorized" stage (err 84033545) even though the key itself is
+    fine, so an expired cert means every signed command fails. Checked
+    offline from the certificate's notAfter; a live test is
+    `beambam pause` on an idle printer (the reply names the stage)."""
+    import datetime as _dt
+    name = "Printer control key"
+    if not app_cert.is_file():
+        return Check("Environment", name, "warn",
+                     f"signing key present but {app_cert} is missing, so its expiry "
+                     "can't be checked")
+    try:
+        from cryptography import x509
+        cert = x509.load_pem_x509_certificate(app_cert.read_bytes())
+        not_after = cert.not_valid_after_utc
+    except Exception as e:                                  # noqa: BLE001
+        return Check("Environment", name, "warn", f"cannot read {app_cert}: {e}")
+    now = _dt.datetime.now(_dt.timezone.utc)
+    days = (not_after - now).days
+    when = not_after.date().isoformat()
+    if days < 0:
+        return Check("Environment", name, "fail",
+                     f"the Handy app certificate expired on {when} ({-days} days ago) — "
+                     "the printer rejects every signed command (pause/resume/stop/"
+                     "start/skip, LAN print) with err 84033545. Re-extract with "
+                     "`beambam key` from the rooted phone running a signed-in Handy.")
+    if days < 30:
+        return Check("Environment", name, "warn",
+                     f"signing key present; the Handy app certificate expires on {when} "
+                     f"(in {days} days) — re-extract with `beambam key` after Handy "
+                     "renews it")
+    return Check("Environment", name, "pass",
+                 f"RSA signing key + cert_id present, certificate valid until {when} — "
+                 "signed control (pause/resume/stop/start/skip) enabled")
 
 
 def _interactive_fix(checks: list[Check]) -> int:
@@ -479,6 +517,16 @@ def cmd_doctor(args: argparse.Namespace) -> int:
             checks.extend(run_all_checks(state))
             if not want_env:          # check_environment() already includes it
                 checks.append(check_signing())
+        except SystemExit as e:
+            # Creds.resolve() exits when no printer is configured. doctor is
+            # what people run when nothing works, so report it as a failed
+            # check (with the setup instructions) instead of exiting.
+            msg = str(e.code) if e.code is not None else "no printer configured"
+            print(msg, file=sys.stderr)
+            checks.append(Check("Connectivity", "Printer configured", "fail",
+                                msg.splitlines()[0] + " — run `beambam init`"))
+            if not want_env:
+                checks.extend(check_environment())
         except Exception as e:                              # noqa: BLE001
             # Preserve the legacy contract: tests + callers may grep
             # stderr for the unreachable-printer error before deciding
@@ -499,7 +547,9 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         print(_json.dumps([dataclasses.asdict(c) for c in checks], indent=2))
     else:
         text = format_report(checks)
-        if args.no_color:
+        # Colour only for a terminal, and never with --no-color / NO_COLOR.
+        from beambam.cli.manhelp import use_color
+        if args.no_color or not use_color(sys.stdout):
             import re
             text = re.sub(r"\033\[[0-9;]*m", "", text)
         print(text)
