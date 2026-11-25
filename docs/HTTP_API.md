@@ -28,6 +28,15 @@ Allowed origins get `Access-Control-Allow-Origin` and preflight (`OPTIONS`) answ
 page open in your browser from stopping a print or starting one through a daemon on `127.0.0.1`. Programs that send no
 `Origin` (curl, Home Assistant, a server-side app) are not affected.
 
+A public https site may call a daemon on `127.0.0.1` from the same device: the address counts as secure, so
+there is no mixed-content block. Chrome asks the user once to let the site reach apps on the device. Its older
+Private Network Access preflight gets `Access-Control-Allow-Private-Network: true`, for allowed origins only.
+This is how pokefit.party prints from a phone that runs beambam:
+
+```bash
+beambam daemon --http 127.0.0.1:8765 --cors-origin https://pokefit.party
+```
+
 ## Reading
 
 | Route | Answer |
@@ -81,6 +90,26 @@ Errors refuse the print however it is asked:
 
 Warnings (brand, profile, colour) refuse unless `accept_warnings` is true. Only set it after the user has seen them.
 One print is sent to a printer at a time.
+
+## Slicing a project
+
+A caller that builds a Bambu Studio project but cannot slice it (a web page) can have the daemon's machine slice
+it with the bundled headless Bambu Studio (`bs-bionic`):
+
+```bash
+curl -s -X POST --data-binary @figure.3mf -H 'X-Filename: figure.3mf' http://127.0.0.1:8765/slice
+# → 202 {"job": {...}, "poll": "/slice/jobs/9c1e…"}
+curl -s http://127.0.0.1:8765/slice/jobs/9c1e…
+# → {"state": "done", "file": "/…/.x2d/uploads/sliced/9c1e…/figure.gcode.3mf",
+#    "seconds": 6387, "grams": 18.7, "grams_per_filament": [...], "warnings": [...]}
+```
+
+- The project's own process and filament settings are kept.
+- The printer profile is reloaded from bs-bionic's bundled profile of the same name (`printer_settings_id`). A
+  project saved by a newer Bambu Studio can carry start G-code this build cannot parse.
+- One slice runs at a time; another `POST /slice` meanwhile gets 409. Job states: `queued`, `slicing`, `done`,
+  `failed` (with `message`).
+- The finished `file` goes straight into `/print/plan` and `/print`.
 
 ## Controls
 

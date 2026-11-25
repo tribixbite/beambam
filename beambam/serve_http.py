@@ -112,11 +112,15 @@ def _serve_http(bind: str,
       POST /print             → same + {"confirm": true, "accept_warnings"?}
                                  → 202 {"job", "poll"}; upload + start in the background
       GET  /print/jobs/<id>   → that job's state (uploading / accepted / rejected / …)
+      POST /slice             → raw project .3mf body (X-Filename) → 202 {"job", "poll"};
+                                 slices it here (bs-bionic) into a .gcode.3mf
+      GET  /slice/jobs/<id>   → queued / slicing / done {"file", "seconds", "grams"} / failed
 
     Browser callers: a POST carrying an `Origin` header is refused unless it
     is the daemon's own origin or listed in `cors_origins` (`--cors-origin`),
     so a web page cannot drive the printer through a loopback daemon; listed
-    origins also get CORS headers and preflight answers.
+    origins also get CORS headers and preflight answers, including Chrome's
+    Private Network Access opt-in (a public https site calling 127.0.0.1).
 
     `clients` (optional) maps printer name → live X2DClient so the
     POST /control/* routes can publish without re-dialing MQTT each time.
@@ -142,6 +146,8 @@ def _serve_http(bind: str,
     )
     from beambam.filament_mapping import MappingError
     print_jobs = PrintJobs()
+    from beambam.slice_service import SliceJobs
+    slice_jobs = SliceJobs()
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *_):  # silence default stderr access log
@@ -178,6 +184,10 @@ def _serve_http(bind: str,
                              "Authorization, Content-Type, X-Filename, X-Printer, "
                              "X-Slot, X-Bed-Type, X-No-AMS, X-Accept-Warnings")
             self.send_header("Access-Control-Max-Age", "600")
+            # Chrome's Private Network Access: a public site (https://pokefit.party)
+            # calling a loopback daemon asks first; only allowlisted origins get here.
+            if (self.headers.get("Access-Control-Request-Private-Network") or "").lower() == "true":
+                self.send_header("Access-Control-Allow-Private-Network", "true")
             self.send_header("Content-Length", "0")
             self.end_headers()
 
@@ -594,6 +604,13 @@ def _serve_http(bind: str,
                 else:
                     self._send_json(job.to_dict())
                 return
+            elif path.startswith("/slice/jobs/"):
+                sjob = slice_jobs.get(path[len("/slice/jobs/"):])
+                if sjob is None:
+                    self._send_json({"error": "no such slice job"}, status=404)
+                else:
+                    self._send_json(sjob.to_dict())
+                return
             elif path.startswith("/slice-print/jobs/"):
                 # GET status of a spawned slice-print job.
                 # Looks at the upload dir's <stem>.log file + the PID's
@@ -704,24 +721,57 @@ def _serve_http(bind: str,
             except (json.JSONDecodeError, UnicodeDecodeError):
                 return None
 
+        def _read_upload(self, suffix: str, hint: str) -> tuple[str, bytes] | None:
+            """The raw zip body of an upload and its sanitised X-Filename, or
+            None after answering 400."""
+            fname = re.sub(r"[^a-zA-Z0-9._-]", "_",
+                           self.headers.get("X-Filename") or f"upload{suffix}")[:120]
+            if not fname.lower().endswith(suffix):
+                self._send_json({"error": f"X-Filename must end in {suffix} ({hint})"}, status=400)
+                return None
+            cl = int(self.headers.get("Content-Length", 0) or 0)
+            if cl <= 0 or cl > 200 * 1024 * 1024:
+                self._send_json({"error": "Content-Length must be 1..200 MiB"}, status=400)
+                return None
+            body = self.rfile.read(cl)
+            if len(body) != cl or body[:2] != b"PK":
+                self._send_json({"error": f"body is not a complete {suffix} (zip)"}, status=400)
+                return None
+            return fname, body
+
+        def _handle_slice(self) -> None:
+            """POST /slice — see the docstring above."""
+            got = self._read_upload(".3mf", "a Bambu Studio project")
+            if got is None:
+                return
+            fname, body = got
+            if fname.lower().endswith(".gcode.3mf"):
+                self._send_json({"error": "this file is already sliced: plan it with "
+                                          "POST /print/upload + /print/plan"}, status=400)
+                return
+            upload_dir = Path.home() / ".x2d" / "uploads"
+            upload_dir.mkdir(parents=True, exist_ok=True)
+            dest = upload_dir / f"{int(time.time())}_{fname}"
+            dest.write_bytes(body)
+            try:
+                sjob = slice_jobs.start(dest)
+            except ValueError as e:
+                self._send_json({"error": str(e)}, status=400)
+                return
+            except RuntimeError as e:
+                self._send_json({"error": str(e)}, status=409)
+                return
+            self._send_json({"ok": True, "job": sjob.to_dict(),
+                             "poll": f"/slice/jobs/{sjob.id}"}, status=202)
+
         def _handle_print(self, path: str) -> None:
             """POST /print/upload | /print/plan | /print — see the docstring above."""
             if path == "/print/upload":
-                fname = re.sub(r"[^a-zA-Z0-9._-]", "_",
-                               self.headers.get("X-Filename") or "upload.gcode.3mf")[:120]
-                if not fname.endswith(".gcode.3mf"):
-                    self._send_json({"error": "X-Filename must end in .gcode.3mf "
-                                              "(slice the model first)"}, status=400)
+                got = self._read_upload(".gcode.3mf", "slice the model first")
+                if got is None:
                     return
-                cl = int(self.headers.get("Content-Length", 0) or 0)
-                if cl <= 0 or cl > 200 * 1024 * 1024:
-                    self._send_json({"error": "Content-Length must be 1..200 MiB"}, status=400)
-                    return
-                body = self.rfile.read(cl)
-                if len(body) != cl or body[:2] != b"PK":
-                    self._send_json({"error": "body is not a complete .gcode.3mf (zip)"},
-                                    status=400)
-                    return
+                fname, body = got
+                cl = len(body)
                 upload_dir = Path.home() / ".x2d" / "uploads"
                 upload_dir.mkdir(parents=True, exist_ok=True)
                 dest = upload_dir / f"{int(time.time())}_{fname}"
@@ -824,6 +874,9 @@ def _serve_http(bind: str,
             path = url.path
             if path in ("/print", "/print/plan", "/print/upload"):
                 self._handle_print(path)
+                return
+            if path == "/slice":
+                self._handle_slice()
                 return
             # Item #57: AI assistant — POST chat.
             if path == "/assistant/chat":

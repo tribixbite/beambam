@@ -13,8 +13,19 @@ All notable changes to this project.
   `GET /print/jobs/<id>` follows it to accepted / rejected. `POST /print/upload`
   takes a `.gcode.3mf` from another machine. Same rules as `beambam print`
   (`beambam/print_service.py`): errors always refuse, the bed comes from the file.
+- **`POST /slice` slices a Bambu Studio project on the daemon's machine**
+  (`beambam/slice_service.py`, bundled headless Bambu Studio), as a job
+  (`GET /slice/jobs/<id>`); the resulting `.gcode.3mf` goes straight into
+  `/print/plan` and `/print`. The project keeps its own process and filament
+  settings, and its printer profile is reloaded from the bundled one of the
+  same name. That profile is needed for projects saved by a newer Bambu Studio,
+  whose start G-code this build cannot parse (pokefit's X2D export failed with
+  "Not a variable name"). This lets a site that cannot slice (pokefit.party)
+  print from a phone running beambam.
 - `beambam daemon --cors-origin ORIGIN` (repeatable; `$BEAMBAM_CORS_ORIGINS`):
-  CORS headers and preflight answers for a browser app on that origin.
+  CORS headers and preflight answers for a browser app on that origin,
+  including Chrome's Private Network Access opt-in, so a public https site can
+  call a daemon on `127.0.0.1`.
 - `beambam ams map --json` and `/print/plan` include flat `errors` / `warnings`
   lists.
 

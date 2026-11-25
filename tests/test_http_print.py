@@ -192,3 +192,95 @@ def test_slice_print_spawns_the_cli(tmp_path, daemon, monkeypatch):
     argv = seen["argv"]
     assert argv[1:4] == ["-m", "beambam.cli", "slice-print"]
     assert "--slot" not in argv and "--printer" not in argv and "--yes" in argv
+
+
+def _fake_slicer(root: Path, *, ok: bool = True) -> Path:
+    """A stand-in `bs-bionic/.../bambu-studio`: records its argv, writes result.json and the
+    .gcode.3mf the way the real CLI does (into --outputdir, named by --export-3mf)."""
+    exe = root / "bs-bionic" / "build" / "src" / "bambu-studio"
+    exe.parent.mkdir(parents=True)
+    machine = root / "bs-bionic" / "resources" / "profiles" / "BBL" / "machine"
+    machine.mkdir(parents=True)
+    (machine / "Bambu Lab X2D 0.4 nozzle.json").write_text("{}")
+    import sys as _sys
+    exe.write_text(f"#!{_sys.executable}\n" + """import json, os, sys
+a = sys.argv[1:]
+out = a[a.index("--outputdir") + 1]; name = a[a.index("--export-3mf") + 1]
+open(os.path.join(out, "argv.json"), "w").write(json.dumps(a))
+ok = %r
+if ok:
+    open(os.path.join(out, name), "wb").write(b"PK\\x03\\x04sliced")
+json.dump({"return_code": 0 if ok else -100, "error_string": "" if ok else "Failed slicing the model",
+           "sliced_plates": [{"total_predication": 3600.5, "warning_message": "",
+                              "filaments": [{"total_used_g": 10.0}, {"total_used_g": 2.5}]}] if ok else []},
+          open(os.path.join(out, "result.json"), "w"))
+""" % ok)
+    exe.chmod(0o755)
+    return exe
+
+
+def _project(tmp_path: Path) -> bytes:
+    import io
+    import zipfile
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        z.writestr("Metadata/project_settings.config",
+                   json.dumps({"printer_settings_id": "Bambu Lab X2D 0.4 nozzle"}))
+        z.writestr("3D/3dmodel.model", "<model/>")
+    return buf.getvalue()
+
+
+def _wait(port: int, poll: str) -> dict:
+    for _ in range(200):
+        _, job, _ = _req(port, poll, method="GET")
+        if job.get("done"):
+            return job
+        time.sleep(0.05)
+    raise AssertionError(f"job never finished: {job}")
+
+
+def test_slice_a_project_then_plan_it(tmp_path, daemon, monkeypatch):
+    import beambam.slice_service as ss
+    port, _ = daemon
+    root = tmp_path / "root"
+    _fake_slicer(root)
+    monkeypatch.setattr(ss, "_root", lambda: root)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    code, body, _ = _req(port, "/slice", _project(tmp_path),
+                         headers={"X-Filename": "jolteon pokefit.3mf", "Origin": "https://pokefit.party"})
+    assert code == 202, body
+    job = _wait(port, body["poll"])
+    assert job["state"] == "done", job
+    assert job["file"].endswith("jolteon_pokefit.gcode.3mf") and Path(job["file"]).is_file()
+    assert job["seconds"] == 3600.5 and job["grams"] == 12.5 and job["grams_per_filament"] == [10.0, 2.5]
+    argv = json.loads((Path(job["file"]).parent / "argv.json").read_text())
+    # The bundled machine profile replaces the project's (newer Bambu Studio start G-code).
+    assert argv[argv.index("--load-settings") + 1].endswith("Bambu Lab X2D 0.4 nozzle.json")
+    assert argv[0] == "--slice" and argv[-1].endswith("_jolteon_pokefit.3mf")
+
+
+def test_slice_refusals(tmp_path, daemon, monkeypatch):
+    import beambam.slice_service as ss
+    port, _ = daemon
+    root = tmp_path / "root"
+    _fake_slicer(root, ok=False)
+    monkeypatch.setattr(ss, "_root", lambda: root)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    code, body, _ = _req(port, "/slice", _project(tmp_path), headers={"X-Filename": "x.gcode.3mf"})
+    assert code == 400 and "already sliced" in body["error"]
+    code, body, _ = _req(port, "/slice", b"PK\x03\x04junk", headers={"X-Filename": "x.3mf"})
+    assert code == 400 and "not a Bambu Studio project" in body["error"]
+    code, body, _ = _req(port, "/slice", _project(tmp_path), headers={"X-Filename": "x.3mf"})
+    job = _wait(port, body["poll"])
+    assert job["state"] == "failed" and "Failed slicing the model" in job["message"]
+    assert _req(port, "/slice/jobs/nope", method="GET")[0] == 404
+
+
+def test_private_network_preflight(daemon):
+    port, _ = daemon
+    code, _, hdrs = _req(port, "/slice", None, method="OPTIONS", headers={
+        "Origin": "https://pokefit.party", "Access-Control-Request-Private-Network": "true"})
+    assert code == 204 and hdrs.get("Access-Control-Allow-Private-Network") == "true"
+    code, _, hdrs = _req(port, "/slice", None, method="OPTIONS", headers={
+        "Origin": "https://evil.example", "Access-Control-Request-Private-Network": "true"})
+    assert code == 403 and "Access-Control-Allow-Private-Network" not in hdrs
