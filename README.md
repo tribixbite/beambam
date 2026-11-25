@@ -224,7 +224,7 @@ Five short H.264 MP4s in [`docs/demos/`](docs/demos/) — render with
 |----------------------|-----|
 | Quick start          | [`docs/QUICKSTART.md`](docs/QUICKSTART.md) |
 | Web UI               | [`docs/WEB_UI.md`](docs/WEB_UI.md) |
-| HTTP API for other apps (print, plan, control, CORS) | [`docs/HTTP_API.md`](docs/HTTP_API.md) |
+| HTTP API for other apps (slice, plan, print, control, CORS; e.g. pokefit.party on the same phone) | [`docs/HTTP_API.md`](docs/HTTP_API.md) |
 | MCP server (Claude Desktop, Cursor, ...) | [`docs/MCP.md`](docs/MCP.md) |
 | WebRTC streaming     | [`docs/WEBRTC.md`](docs/WEBRTC.md) |
 | Home Assistant — overview | [`docs/HA.md`](docs/HA.md) |

@@ -107,6 +107,10 @@ curl -s http://127.0.0.1:8765/slice/jobs/9c1e…
 - The project's own process and filament settings are kept.
 - The printer profile is reloaded from bs-bionic's bundled profile of the same name (`printer_settings_id`). A
   project saved by a newer Bambu Studio can carry start G-code this build cannot parse.
+- The headless CLI resets `has_filament_switcher` and `enable_filament_dynamic_map` to off unless they are given as
+  options, whatever the project says; the daemon passes them on (`--has-filament-switcher=1`) when the project has
+  them on, so a project made for a printer with the Filament Track Switch is sliced for it.
+- The print file is named after `X-Filename` (the printer shows it as the job).
 - One slice runs at a time; another `POST /slice` meanwhile gets 409. Job states: `queued`, `slicing`, `done`,
   `failed` (with `message`).
 - The finished `file` goes straight into `/print/plan` and `/print`.

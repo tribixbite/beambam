@@ -20,7 +20,7 @@ that's the realistic ship path for items #65 / #66 / #68.
 ## 0. One-time login
 
 ```bash
-python3 x2d_bridge.py cloud-login --email YOU@gmail.com --password 'XXX'
+beambam cloud-login --email YOU@gmail.com --password 'XXX'
 ```
 
 If your account has email-code verification or 2FA TOTP enabled, the CLI
@@ -28,9 +28,9 @@ will prompt for the code interactively. Token is cached at
 `~/.x2d/cloud_session.json` (chmod 600). Auto-refreshes before expiry.
 
 ```bash
-python3 x2d_bridge.py cloud-status      # check login state
-python3 x2d_bridge.py cloud-printers    # list bound printers
-python3 x2d_bridge.py cloud-logout      # wipe the session
+beambam cloud-status      # check login state
+beambam cloud-printers    # list bound printers
+beambam cloud-logout      # wipe the session
 ```
 
 ---
@@ -39,13 +39,13 @@ python3 x2d_bridge.py cloud-logout      # wipe the session
 
 ```bash
 # Snapshot — fires pushall, dumps first state, exits.
-python3 x2d_bridge.py cloud-state
+beambam cloud-state
 
 # Stream every report from the printer (Ctrl-C to stop).
-python3 x2d_bridge.py cloud-state --follow
+beambam cloud-state --follow
 
 # Pin a specific printer when multiple are bound to the account.
-python3 x2d_bridge.py cloud-state --serial 00M09A000000000
+beambam cloud-state --serial 00M09A000000000
 ```
 
 Same JSON shape as the LAN `status` command. Useful for off-LAN dashboards
@@ -57,19 +57,19 @@ it.
 ## 2. Remote control
 
 ```bash
-python3 x2d_bridge.py cloud-pause
-python3 x2d_bridge.py cloud-resume
-python3 x2d_bridge.py cloud-stop
-python3 x2d_bridge.py cloud-gcode "G28"                # home all
-python3 x2d_bridge.py cloud-gcode "M141 S30"           # chamber to 30°C
-python3 x2d_bridge.py cloud-chamber-light on
-python3 x2d_bridge.py cloud-chamber-light flashing --loops 3
+beambam cloud-pause
+beambam cloud-resume
+beambam cloud-stop
+beambam cloud-gcode "G28"                # home all
+beambam cloud-gcode "M141 S30"           # chamber to 30°C
+beambam cloud-chamber-light on
+beambam cloud-chamber-light flashing --loops 3
 ```
 
 Or any payload directly:
 
 ```bash
-python3 x2d_bridge.py cloud-publish --payload \
+beambam cloud-publish --payload \
   '{"print":{"command":"set_bed_temp","sequence_id":"1","temp":65}}'
 ```
 
@@ -82,7 +82,7 @@ through the cloud broker.
 ## 3. Remote printing (full round-trip)
 
 ```bash
-python3 x2d_bridge.py cloud-print rumi_frame.gcode.3mf \
+beambam cloud-print rumi_frame.gcode.3mf \
   --slot 3 --bed-temp 65 --no-level
 ```
 
@@ -168,6 +168,6 @@ Override with `--region {us,cn}` on `cloud-login` or `X2D_REGION` env.
 
 - `cloud_client.py` — REST + OAuth + OSS upload + MQTT-creds derivation.
   ~700 lines, dependency-free except urllib + paho-mqtt.
-- `x2d_bridge.py` — CLIs at `cmd_cloud_*` (~lines 3500-3700) and HTTP
-  helpers at `_http_cloud_*` (~lines 2440-2580).
+- `beambam/cli/cloud.py` — the `cloud-*` commands (`cmd_cloud_*`);
+  `beambam/http_cloud.py` — the daemon's HTTP helpers (`_http_cloud_*`).
 - Session: `~/.x2d/cloud_session.json` (chmod 600).

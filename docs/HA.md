@@ -1,7 +1,6 @@
 # X2D + Home Assistant integration
 
-The bridge ships an MQTT auto-discovery publisher (`x2d_bridge.py
-ha-publish`) that exposes the printer to Home Assistant as a single
+The bridge ships an MQTT auto-discovery publisher (`beambam ha-publish`) that exposes the printer to Home Assistant as a single
 Device with 32 entities. Tested against real Home Assistant Core
 2025.1.4 — see §4 for the live-test artefacts.
 
@@ -12,10 +11,10 @@ Device with 32 entities. Tested against real Home Assistant Core
 mosquitto -p 1883 &
 
 # 2. Start the x2d bridge daemon (already running for the web UI)
-python3.12 x2d_bridge.py daemon --http 127.0.0.1:8765 &
+beambam daemon --http 127.0.0.1:8765 &
 
 # 3. Run the HA discovery publisher
-python3.12 x2d_bridge.py ha-publish \
+beambam ha-publish \
     --broker      127.0.0.1:1883 \
     --daemon-url  http://127.0.0.1:8765 \
     --device-serial $(grep '^serial' ~/.x2d/credentials | head -1 | cut -d= -f2 | tr -d ' ') \
@@ -87,8 +86,8 @@ python3.12 -c 'import asyncio; from amqtt.broker import Broker; \
   asyncio.run((lambda: (Broker({"listeners": {"default": {"type": "tcp", "bind": "0.0.0.0:21883"}}, "auth": {"allow-anonymous": True}, "topic-check": {"enabled": False}}).start()))()) ' &
 
 # Bridge daemon + publisher
-python3.12 x2d_bridge.py daemon --http 127.0.0.1:18555 --quiet &
-python3.12 x2d_bridge.py ha-publish --broker 127.0.0.1:21883 \
+beambam daemon --http 127.0.0.1:18555 --quiet &
+beambam ha-publish --broker 127.0.0.1:21883 \
     --daemon-url http://127.0.0.1:18555 \
     --device-serial $(grep ^serial ~/.x2d/credentials | head -1 | cut -d= -f2 | tr -d ' ') &
 
@@ -154,7 +153,7 @@ code = 87654321
 serial = 03DEF0007654321
 
 # one process drives both
-python3.12 x2d_bridge.py ha-publish \
+beambam ha-publish \
     --broker 127.0.0.1:1883 \
     --daemon-url http://127.0.0.1:8765
 ```

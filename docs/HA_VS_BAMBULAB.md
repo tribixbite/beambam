@@ -122,8 +122,8 @@ printer** (12 sensors + 13 expansion sensors + 12 AMS + 1 switch +
 4. Start the bridge daemon + HA publisher pointed at the same MQTT
    broker HA already uses:
    ```bash
-   python3.12 x2d_bridge.py daemon --http 127.0.0.1:8765 &
-   python3.12 x2d_bridge.py ha-publish \
+   beambam daemon --http 127.0.0.1:8765 &
+   beambam ha-publish \
        --broker localhost:1883 \
        --daemon-url http://127.0.0.1:8765 \
        --device-serial $(grep ^serial ~/.x2d/credentials | head -1 | cut -d= -f2 | tr -d ' ')

@@ -48,7 +48,7 @@ openssl rand -hex 24 > ~/.x2d/bridge.token
 chmod 600 ~/.x2d/bridge.token
 
 # 4) start the multi-printer daemon (HTTP + MQTT)
-python3.12 x2d_bridge.py daemon \
+beambam daemon \
     --http        0.0.0.0:8765 \
     --auth-token  "$(cat ~/.x2d/bridge.token)" \
     --queue \
@@ -56,13 +56,13 @@ python3.12 x2d_bridge.py daemon \
 
 # 5) start the on-demand camera daemon
 #    (lazy-spawns ffmpeg only when HA / a viewer asks; idles after 30s)
-python3.12 x2d_bridge.py camera \
+beambam camera \
     --bind 0.0.0.0:8766 \
     --idle-timeout 30 \
     > ~/.x2d/camera.log 2>&1 &
 
 # 6) start the HA discovery publisher
-python3.12 x2d_bridge.py ha-publish \
+beambam ha-publish \
     --broker             192.168.1.10 \
     --broker-port        1883 \
     --broker-username    mqtt_x2d \
@@ -216,7 +216,7 @@ hierarchy. No changes to HA configuration needed.
 |---|---|---|
 | HA shows "Unavailable" on every entity | publisher can't reach the broker | check `~/.x2d/ha-publisher.log`, verify `--broker` and credentials |
 | Entities present but values all 0/empty | bridge daemon isn't pulling state | `~/.x2d/bridge.log`, verify `~/.x2d/credentials` matches the printer |
-| Camera entity returns 503 | camera daemon not started OR not reachable | start `x2d_bridge.py camera --bind 0.0.0.0:8766`; verify firewall |
+| Camera entity returns 503 | camera daemon not started OR not reachable | start `beambam camera --bind 0.0.0.0:8766`; verify firewall |
 | `rest_command.x2d_slice_print` returns 401 | bearer token mismatch | regenerate `~/.x2d/bridge.token`, restart daemon, update `secrets.yaml` |
 | Printer goes "Offline" intermittently | LAN MQTT drops; daemon reconnects | normal under WiFi pressure; `binary_sensor.online` will flap |
 | Slice command says "spawned" but nothing prints | firmware silently rejects LAN `print.*` (not in trust list) | known limitation; see [`SIGNED_VS_UNSIGNED.md`](./SIGNED_VS_UNSIGNED.md). Workaround: print from touchscreen / Bambu Handy after slice completes |

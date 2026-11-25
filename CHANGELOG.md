@@ -4,6 +4,8 @@ All notable changes to this project.
 
 ## [Unreleased]
 
+## v1.6.2 — slicing keeps the track switch, Home Assistant AMS race (2026-11-25)
+
 ### Fixed
 - `POST /slice` keeps the project's Filament Track Switch setting. Bambu
   Studio's headless CLI resets `has_filament_switcher` and
@@ -15,6 +17,12 @@ All notable changes to this project.
 - Home Assistant: AMS trays first reported while the bridge was still
   connecting to MQTT were never announced to Home Assistant (a race between the
   connect handler and the first state frame).
+
+### Docs
+- Commands in the guides (Quick start, Home Assistant, cloud, MCP, WebRTC,
+  queue, timelapse, multi-printer, assistant, web UI) are `beambam <command>`;
+  they still named `x2d_bridge.py`, removed in 1.5.0. ROADMAP lists what
+  shipped in 1.6.x and what is open.
 
 ## v1.6.1 — print from another app over HTTP, track-switch auto nozzle files, Home Assistant fixes (2026-11-25)
 

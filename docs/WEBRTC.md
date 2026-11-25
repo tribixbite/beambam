@@ -8,13 +8,13 @@ WebRTC. End-to-end latency is sub-second versus the HLS path's 6-8 s.
 
 ```bash
 # Start the bridge daemon (state, healthz, /metrics)
-python3.12 x2d_bridge.py daemon --http 127.0.0.1:8765 &
+beambam daemon --http 127.0.0.1:8765 &
 
 # Start the camera daemon — JPEG / MJPEG / HLS sources
-python3.12 x2d_bridge.py camera --bind 127.0.0.1:8766 &
+beambam camera --bind 127.0.0.1:8766 &
 
 # Start the WebRTC gateway in front of the camera daemon
-python3.12 x2d_bridge.py webrtc \
+beambam webrtc \
     --bind 127.0.0.1:8767 \
     --camera-url http://127.0.0.1:8766
 
@@ -27,7 +27,7 @@ xdg-open http://127.0.0.1:8767/cam.webrtc.html
 ```
                          JPEG @ 30 fps           VP8 + RTP/SRTP
    ┌────────────┐     ┌──────────────────┐    ┌────────────────────┐
-   │ X2D camera │ --> │ x2d_bridge.py    │ -> │ x2d_bridge.py      │ ⤳ browser
+   │ X2D camera │ --> │ beambam          │ -> │ beambam            │ ⤳ browser
    │ RTSPS:322  │     │   camera         │    │   webrtc           │
    └────────────┘     │   /cam.jpg       │    │   /cam.webrtc/offer│
                       │   :8766          │    │   :8767            │

@@ -11,7 +11,7 @@ restart doesn't silently lose work.
 ## Enable
 
 ```bash
-python3.12 x2d_bridge.py daemon --http :8765 --queue
+beambam daemon --http :8765 --queue
 ```
 
 That's it. Queue state lives at `~/.x2d/queue.json`.
