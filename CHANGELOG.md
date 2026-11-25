@@ -4,6 +4,15 @@ All notable changes to this project.
 
 ## [Unreleased]
 
+### Fixed
+- `POST /slice` keeps the project's Filament Track Switch setting. Bambu
+  Studio's headless CLI resets `has_filament_switcher` and
+  `enable_filament_dynamic_map` to false unless they are passed as options,
+  whatever the project says. The switch changes how filaments are grouped onto
+  nozzles, and the print plan then asked for a re-slice. Both are now passed on
+  (`--has-filament-switcher=1`) when the project has them on. The upload's time
+  prefix no longer ends up in the print file's name either.
+
 ## v1.6.1 — print from another app over HTTP, track-switch auto nozzle files, Home Assistant fixes (2026-11-25)
 
 ### Added

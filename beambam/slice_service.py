@@ -37,6 +37,8 @@ SLICE_TIMEOUT_S = 900.0
 # long to exit before it is killed — the result stands.
 EXIT_GRACE_S = 5.0
 TERMINAL = ("done", "failed")
+# Project settings the headless CLI resets to false unless passed as options.
+CLI_FORCED_OFF = ("has_filament_switcher", "enable_filament_dynamic_map")
 
 
 def _root() -> Path:
@@ -142,6 +144,12 @@ def slice_project(src: Path, out_dir: Path, *, timeout: float = SLICE_TIMEOUT_S,
     stem = base[:-len(".3mf")] if base.lower().endswith(".3mf") else Path(base).stem
     out_name = f"{stem}.gcode.3mf"
     cmd = [str(exe), "--slice", "0", "--allow-newer-file=1"]
+    # The CLI sets these two to false unless they are on its command line
+    # (BambuStudio.cpp, "In CLI mode, default enable_filament_dynamic_map to
+    # false"), whatever the project says. The track switch changes how
+    # filaments are grouped onto nozzles (ToolOrdering), so keep the project's.
+    cmd += [f"--{key.replace('_', '-')}=1" for key in CLI_FORCED_OFF
+            if str(settings.get(key, "")).lower() in ("1", "true")]
     machine = machine_profile(settings, root)
     if machine is not None:
         cmd += ["--load-settings", str(machine)]

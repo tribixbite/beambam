@@ -230,7 +230,8 @@ def _project(tmp_path: Path) -> bytes:
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as z:
         z.writestr("Metadata/project_settings.config",
-                   json.dumps({"printer_settings_id": "Bambu Lab X2D 0.4 nozzle"}))
+                   json.dumps({"printer_settings_id": "Bambu Lab X2D 0.4 nozzle",
+                               "has_filament_switcher": "1", "enable_filament_dynamic_map": "0"}))
         z.writestr("3D/3dmodel.model", "<model/>")
     return buf.getvalue()
 
@@ -265,6 +266,8 @@ def test_slice_a_project_then_plan_it(tmp_path, daemon, monkeypatch):
     # The bundled machine profile replaces the project's (newer Bambu Studio start G-code).
     assert argv[argv.index("--load-settings") + 1].endswith("Bambu Lab X2D 0.4 nozzle.json")
     assert argv[0] == "--slice" and argv[-1].endswith("_jolteon_pokefit.3mf")
+    # The CLI would reset the track switch to off: it is passed on, the dynamic map (off) is not.
+    assert "--has-filament-switcher=1" in argv and not any("dynamic" in a for a in argv)
 
 
 @_POSIX_SLICER
