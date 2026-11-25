@@ -29,7 +29,7 @@ import sys
 import time
 from typing import Any, Protocol, TypedDict
 
-from beambam.state import deep_merge
+from beambam.state_hub import merge_report
 
 
 class _StateConsumer(Protocol):
@@ -49,8 +49,10 @@ class PrinterStateFanout:
 
     The printer sends full reports, partial delta reports and command
     replies on one topic. This folds every message into one merged
-    document (:func:`beambam.state.deep_merge`) and hands each consumer
-    an immutable snapshot of it, so HTTP /state, SSE, the queue and the
+    document (:func:`beambam.state_hub.merge_report`: a command reply is
+    kept under ``last_command`` so it cannot overwrite live ``print``
+    fields such as ``command``, ``result`` or ``sequence_id``) and hands
+    each consumer an immutable snapshot of it, so HTTP /state, SSE, the queue and the
     timelapse recorder always see the whole state: a delta carrying only
     a temperature no longer reads as an idle printer (which made the
     queue dispatch its next job mid-print).
@@ -73,7 +75,7 @@ class PrinterStateFanout:
         self.snapshot: dict[str, Any] | None = None
 
     def __call__(self, message: dict) -> None:
-        deep_merge(self._merged, message)
+        self._merged = merge_report(self._merged, message)
         snap = copy.deepcopy(self._merged)
         self.snapshot = snap
         # Fan out to every subscriber of the per-printer hub. Slow

@@ -328,6 +328,10 @@ def test_fanout_hands_consumers_the_merged_state():
     assert last["gcode_state"] == "RUNNING"
     assert last["mc_percent"] == 11
     assert last["nozzle_temper"] == 210.0
+    # The reply is kept aside; it does not overwrite the report's fields.
+    assert last["command"] == "push_status"
+    assert "result" not in last
+    assert consumer.seen[-1]["last_command"] == {"command": "pause", "result": "success"}
     assert hub.published[-1] == consumer.seen[-1]
     assert fo.snapshot == consumer.seen[-1]
     # Snapshots are independent copies (HTTP threads read them).
