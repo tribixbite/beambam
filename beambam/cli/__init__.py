@@ -304,6 +304,13 @@ def build_parser() -> argparse.ArgumentParser:
                         "--http binds non-loopback. Default $X2D_AUTH_TOKEN. "
                         "Loopback binds (127.0.0.1) stay open even without "
                         "a token (single-user local case).")
+    d.add_argument("--cors-origin", action="append", default=[], metavar="ORIGIN",
+                   help="Let a browser web app on ORIGIN (e.g. https://pokefit.party "
+                        "or http://localhost:5173) call the HTTP API: it gets CORS "
+                        "headers, and its POSTs are accepted. Other web pages are "
+                        "refused. Repeatable; also $BEAMBAM_CORS_ORIGINS "
+                        "(comma-separated). Programs that send no Origin header "
+                        "(curl, Home Assistant, a server-side app) are unaffected.")
     d.add_argument("--queue", action="store_true",
                    help="Enable the multi-printer print queue (item #55). "
                         "Auto-dispatches the next pending job to a printer "

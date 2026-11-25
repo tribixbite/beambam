@@ -4,7 +4,32 @@ All notable changes to this project.
 
 ## [Unreleased]
 
+### Added
+- **Print through the daemon's HTTP API** (`docs/HTTP_API.md`), for web apps
+  and scripts that have no terminal: `POST /print/plan` returns the filament →
+  tray plan against the live AMS without touching the printer; `POST /print`
+  with `"confirm": true` (and `"accept_warnings": true` once the user has seen
+  the plan's warnings) uploads and starts it in the background;
+  `GET /print/jobs/<id>` follows it to accepted / rejected. `POST /print/upload`
+  takes a `.gcode.3mf` from another machine. Same rules as `beambam print`
+  (`beambam/print_service.py`): errors always refuse, the bed comes from the file.
+- `beambam daemon --cors-origin ORIGIN` (repeatable; `$BEAMBAM_CORS_ORIGINS`):
+  CORS headers and preflight answers for a browser app on that origin.
+- `beambam ams map --json` and `/print/plan` include flat `errors` / `warnings`
+  lists.
+
+### Security
+- **The daemon refuses POSTs from other web origins.** A loopback daemon needs
+  no token, and it parsed any POST body as JSON, so any web page open in the
+  browser could POST `/control/stop` (or, now, a print) to `127.0.0.1`. A POST
+  with an `Origin` header that is neither the daemon's own nor allowed with
+  `--cors-origin` now gets 403. Clients that send no Origin are unaffected.
+
 ### Fixed
+- `POST /slice-print` never sliced anything: it ran `serve_http.py` (which has
+  no command line) instead of beambam's CLI, and forced `--slot 1`. It now runs
+  `python -m beambam.cli slice-print`, maps trays automatically unless `X-Slot`
+  is given, and takes `X-Accept-Warnings: 1`.
 - **Files sliced in the Filament Track Switch's automatic nozzle mode now
   print** (`enable_filament_dynamic_map`, read from the plate's
   `slice_info.config` first, then `project_settings.config`, as Bambu Studio

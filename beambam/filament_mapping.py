@@ -826,5 +826,8 @@ def plan_to_json(plan: PrintPlan) -> dict[str, Any]:
             "errors": a.errors, "warnings": a.warnings,
         } for a in plan.assignments],
         "notes": plan.notes,
+        # Flat lists ("filament N: …") so a caller can show / gate on them
+        # without walking the filaments.
+        "errors": plan.errors, "warnings": plan.warnings,
         "ams_mapping": v0, "ams_mapping2": v1,
     }

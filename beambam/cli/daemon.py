@@ -38,6 +38,7 @@ def cmd_daemon(args: argparse.Namespace) -> int:
     """
     import argparse as _argparse
     import json
+    import os
     import signal as _signal
     import sys
     import time
@@ -255,7 +256,10 @@ def cmd_daemon(args: argparse.Namespace) -> int:
                        "web_dir": _WEB_DIR_DEFAULT,
                        "queue_mgr": queue_mgr,
                        "timelapse_rec": timelapse_rec,
-                       "get_hub": get_hub},
+                       "get_hub": get_hub,
+                       "cors_origins": list(getattr(args, "cors_origin", None) or [])
+                                       + [o for o in os.environ.get(
+                                           "BEAMBAM_CORS_ORIGINS", "").split(",") if o]},
                daemon=True).start()
 
     period = max(1, int(args.interval))

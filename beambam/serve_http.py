@@ -71,7 +71,8 @@ def _serve_http(bind: str,
                 web_dir: Path | None = None,
                 queue_mgr=None,
                 timelapse_rec=None,
-                get_hub: Callable[[str], "StateHub | None"] | None = None) -> None:
+                get_hub: Callable[[str], "StateHub | None"] | None = None,
+                cors_origins: list[str] | None = None) -> None:
     """Multi-printer HTTP server (item #36).
 
     `get_state` and `get_last_ts` now take a printer name (empty string
@@ -105,6 +106,17 @@ def _serve_http(bind: str,
       POST /slice-print       → upload STL/3MF and spawn slice-print
                                  (HA-friendly; raw bytes body + headers)
       GET  /slice-print/jobs/<pid> → check spawned slice-print status
+      POST /print/upload      → raw .gcode.3mf body (X-Filename) → {"file": path}
+      POST /print/plan        → {"file", "plate"?, "slot"?, "map"?, "use_ams"?}
+                                 → the filament → tray plan; touches nothing
+      POST /print             → same + {"confirm": true, "accept_warnings"?}
+                                 → 202 {"job", "poll"}; upload + start in the background
+      GET  /print/jobs/<id>   → that job's state (uploading / accepted / rejected / …)
+
+    Browser callers: a POST carrying an `Origin` header is refused unless it
+    is the daemon's own origin or listed in `cors_origins` (`--cors-origin`),
+    so a web page cannot drive the printer through a loopback daemon; listed
+    origins also get CORS headers and preflight answers.
 
     `clients` (optional) maps printer name → live X2DClient so the
     POST /control/* routes can publish without re-dialing MQTT each time.
@@ -124,10 +136,50 @@ def _serve_http(bind: str,
         from beambam import _WEB_DIR_DEFAULT
         web_dir = _WEB_DIR_DEFAULT
     clients = clients or {}
+    allowed_origins = {o.rstrip("/") for o in (cors_origins or []) if o}
+    from beambam.print_service import (
+        PrintJobs, PrintRequest, fresh_state, plan_request, plan_summary,
+    )
+    from beambam.filament_mapping import MappingError
+    print_jobs = PrintJobs()
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *_):  # silence default stderr access log
             return
+
+        # ---- browser origins (CORS + CSRF guard) ------------------
+        def _request_origin(self) -> str:
+            return (self.headers.get("Origin") or "").rstrip("/")
+
+        def _origin_ok(self) -> bool:
+            """No Origin (curl, HA, a server-side app) or our own origin, or
+            an allowlisted one. Anything else is a cross-site browser request."""
+            origin = self._request_origin()
+            if not origin or origin in allowed_origins or "*" in allowed_origins:
+                return True
+            own = urllib.parse.urlparse(origin)
+            return bool(own.netloc) and own.netloc == (self.headers.get("Host") or "")
+
+        def end_headers(self) -> None:
+            origin = self._request_origin()
+            if origin and (origin in allowed_origins or "*" in allowed_origins):
+                self.send_header("Access-Control-Allow-Origin", origin)
+                self.send_header("Vary", "Origin")
+            super().end_headers()
+
+        def do_OPTIONS(self):
+            # CORS preflight for allowlisted origins (no auth: browsers send
+            # preflights without credentials).
+            if not self._origin_ok():
+                self.send_response(403); self.end_headers(); return
+            self.send_response(204)
+            self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+            self.send_header("Access-Control-Allow-Headers",
+                             "Authorization, Content-Type, X-Filename, X-Printer, "
+                             "X-Slot, X-Bed-Type, X-No-AMS, X-Accept-Warnings")
+            self.send_header("Access-Control-Max-Age", "600")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
 
         def log_request(self, code='-', size='-'):
             # Item #39: emit one JSON line per request to
@@ -535,6 +587,13 @@ def _serve_http(bind: str,
                 self.send_header("Cache-Control", "public, max-age=31536000, immutable")
                 self.end_headers()
                 self.wfile.write(body)
+            elif path.startswith("/print/jobs/"):
+                job = print_jobs.get(path[len("/print/jobs/"):])
+                if job is None:
+                    self._send_json({"error": "no such print job"}, status=404)
+                else:
+                    self._send_json(job.to_dict())
+                return
             elif path.startswith("/slice-print/jobs/"):
                 # GET status of a spawned slice-print job.
                 # Looks at the upload dir's <stem>.log file + the PID's
@@ -645,6 +704,89 @@ def _serve_http(bind: str,
             except (json.JSONDecodeError, UnicodeDecodeError):
                 return None
 
+        def _handle_print(self, path: str) -> None:
+            """POST /print/upload | /print/plan | /print — see the docstring above."""
+            if path == "/print/upload":
+                fname = re.sub(r"[^a-zA-Z0-9._-]", "_",
+                               self.headers.get("X-Filename") or "upload.gcode.3mf")[:120]
+                if not fname.endswith(".gcode.3mf"):
+                    self._send_json({"error": "X-Filename must end in .gcode.3mf "
+                                              "(slice the model first)"}, status=400)
+                    return
+                cl = int(self.headers.get("Content-Length", 0) or 0)
+                if cl <= 0 or cl > 200 * 1024 * 1024:
+                    self._send_json({"error": "Content-Length must be 1..200 MiB"}, status=400)
+                    return
+                body = self.rfile.read(cl)
+                if len(body) != cl or body[:2] != b"PK":
+                    self._send_json({"error": "body is not a complete .gcode.3mf (zip)"},
+                                    status=400)
+                    return
+                upload_dir = Path.home() / ".x2d" / "uploads"
+                upload_dir.mkdir(parents=True, exist_ok=True)
+                dest = upload_dir / f"{int(time.time())}_{fname}"
+                dest.write_bytes(body)
+                self._send_json({"ok": True, "file": str(dest), "bytes": cl})
+                return
+            printer = self._parse_printer()
+            self._x2d_printer = printer
+            if printer not in names:
+                self._send_json({"error": f"unknown printer {printer!r}",
+                                 "available": names}, status=404)
+                return
+            body_json = self._read_body_json()
+            if body_json is None:
+                self._send_json({"error": "body must be JSON ≤64 KiB"}, status=400)
+                return
+            try:
+                req = PrintRequest.from_json(body_json)
+            except ValueError as e:
+                self._send_json({"error": str(e)}, status=400)
+                return
+            cli = (clients or {}).get(printer)
+            cached = get_state(printer)
+            if cli is None and not cached:
+                self._send_json({"error": "no live connection to the printer "
+                                          "(run the daemon with --http)"}, status=503)
+                return
+            try:
+                state = (fresh_state(cached, get_last_ts(printer) if get_last_ts else 0.0, cli)
+                         if cli is not None else cached or {})
+            except TimeoutError:
+                self._send_json({"error": "the printer did not send its state; "
+                                          "check `beambam status`"}, status=504)
+                return
+            if path == "/print/plan":
+                try:
+                    self._send_json(plan_summary(plan_request(req, state)))
+                except MappingError as e:
+                    self._send_json({"ok": False, "error": str(e)}, status=422)
+                return
+            if body_json.get("confirm") is not True:
+                self._send_json({"error": 'starting a print needs "confirm": true — '
+                                          "get the plan from POST /print/plan, show it "
+                                          "to the user, then resend"}, status=400)
+                return
+            if cli is None:
+                self._send_json({"error": "no live MQTT client for this printer"},
+                                status=503)
+                return
+            try:
+                job = print_jobs.start(printer, req, cli, state,
+                                       accept_warnings=body_json.get("accept_warnings") is True)
+            except MappingError as e:
+                self._send_json({"ok": False, "error": f"refused: {e}"}, status=409)
+                return
+            except PermissionError as e:
+                self._send_json({"ok": False, "error": str(e), "needs_confirmation": True},
+                                status=409)
+                return
+            except RuntimeError as e:
+                self._send_json({"ok": False, "error": str(e)}, status=409)
+                return
+            self._send_json({"ok": True, "job": job.to_dict(),
+                             "poll": f"/print/jobs/{job.id}"}, status=202)
+
         def _send_json(self, payload: dict, status: int = 200) -> None:
             body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
             self.send_response(status)
@@ -670,10 +812,19 @@ def _serve_http(bind: str,
             self._x2d_printer = None
             self._x2d_authed = (auth_token is not None) and bool(
                 self.headers.get("Authorization", "").startswith("Bearer "))
+            if not self._origin_ok():
+                self._send_json({"error": f"origin {self._request_origin()} is not allowed; "
+                                          "start the daemon with --cors-origin "
+                                          f"{self._request_origin()} to allow it"},
+                                status=403)
+                return
             if not _check_bearer(self, auth_token, host):
                 return
             url = urllib.parse.urlparse(self.path)
             path = url.path
+            if path in ("/print", "/print/plan", "/print/upload"):
+                self._handle_print(path)
+                return
             # Item #57: AI assistant — POST chat.
             if path == "/assistant/chat":
                 body = self._read_body_json() or {}
@@ -856,18 +1007,24 @@ def _serve_http(bind: str,
                 # Header-driven kwargs — every header is optional.
                 printer_name = (self.headers.get("X-Printer")
                                  or self._parse_printer())
-                slot = int(self.headers.get("X-Slot") or 1)
-                bed_type = self.headers.get("X-Bed-Type") or "auto"
-                no_ams = (self.headers.get("X-No-AMS") or "").lower() in (
-                    "1", "true", "yes", "on")
-                # Resolve our own argv0 to allow distro/dev installs.
-                cmd_argv = [sys.executable, str(Path(__file__).resolve()),
-                            "slice-print", str(stl_path),
-                            "--printer", printer_name,
-                            "--slot",    str(slot),
-                            "--bed-type", bed_type]
-                if no_ams:
+                def _yes(h: str) -> bool:
+                    return (self.headers.get(h) or "").lower() in ("1", "true", "yes", "on")
+                # `python -m beambam.cli` — this module has no CLI of its own
+                # (it used to spawn serve_http.py itself, which did nothing).
+                cmd_argv = [sys.executable, "-m", "beambam.cli",
+                            "slice-print", str(stl_path)]
+                if printer_name:
+                    cmd_argv += ["--printer", printer_name]
+                if self.headers.get("X-Slot"):         # default: auto-map
+                    cmd_argv += ["--slot", self.headers["X-Slot"]]
+                if self.headers.get("X-Bed-Type"):
+                    cmd_argv += ["--bed-type", self.headers["X-Bed-Type"]]
+                if _yes("X-No-AMS"):
                     cmd_argv.append("--no-ams")
+                # Nobody is at a terminal: soft mapping warnings refuse unless
+                # the caller says it showed them to the user.
+                if _yes("X-Accept-Warnings"):
+                    cmd_argv.append("--yes")
                 log_path = upload_dir / (stl_path.stem + ".log")
                 import subprocess as _sp
                 try:
