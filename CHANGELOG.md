@@ -4,6 +4,92 @@ All notable changes to this project.
 
 ## [Unreleased]
 
+Control, security and correctness work done alongside 1.6.x and merged on
+2026-11-25 (`087e5ed`).
+
+### Changed — check these when upgrading
+- **The HTTP daemon refuses cross-site and DNS-rebinding requests.** The
+  `Host` header must be an IP literal, `localhost`, this machine's name (or
+  `<name>.local`), the bind host, or a name given with the new
+  `daemon --allow-host` / `$X2D_ALLOWED_HOSTS` (otherwise 421). A POST must
+  come from no browser origin, the daemon's own, or a `--cors-origin` one
+  (otherwise 403), and must be `application/json`, or `application/octet-stream`
+  on the raw-body routes `/analyze`, `/slice-print`, `/print/upload` and
+  `/slice` (otherwise 415). The camera proxy and the WebRTC gateway apply the
+  same Host check; WebRTC also gets the daemon's auth.
+- **Queue slots are the 0-based global AMS slot (0..15)** everywhere, as in
+  `beambam print --slot`: `queue add --slot` (default 0), `POST /queue/add`
+  and the web form. Slot 1 used to print from the second tray. Saved 1-based
+  jobs are re-based once on load.
+- `./.env` in the current directory is no longer read. Printer settings come
+  from `$BEAMBAM_ENV_FILE` or `<config dir>/.env` (`.env.example`); the
+  config dir is `$BEAMBAM_HOME` / `$X2D_HOME` / `~/.x2d`.
+- A named printer (`--printer` / `X2D_PRINTER`) beats `X2D_IP` / `X2D_CODE` /
+  `X2D_SERIAL`; explicit `--ip/--code/--serial` still win.
+- The printer's device cert is stored per serial (`<config dir>/<serial>/`),
+  for several printers; the signing key, cert id and app cert stay global
+  (they belong to the Handy install). Existing single-printer files still
+  work.
+- A manual run of the release workflow is a dry run by default, and it
+  refuses to publish without a release tag.
+
+### Fixed — printer control
+- pause / resume / stop / skip / G-code are signed on LAN with the
+  per-install key (they used the Bambu Connect cert, which X2D/H2D refuse
+  with 84033545) and report the printer's verdict; `--cloud` forces the
+  relay. Signed frames use a sequence id seeded from the clock: the firmware
+  refuses ids under ~2000 with the same 84033545 as a cert failure.
+- `/control/*` signs through the CLI's send path and returns the printer's
+  answer (409 refused with its code, 504 no answer, 502 publish failed)
+  instead of 200 for everything. `ams_load` takes the Home Assistant
+  publisher's `{"tray": …}` and an extruder; `ams_unload` is new.
+- Replies are matched to their command by sequence id; a dropped LAN
+  connection is detected and counted.
+- `beambam print` waits for the printer to accept the job and exits 1 when it
+  refuses; `--force` on a busy printer no longer takes the previous job's
+  progress as proof. `--plate` prints the chosen plate (it always sent
+  plate 1). `--no-bed-level` / `--flow-cali` / `--vib-cali` reach X2D/H2D
+  starts. An empty md5 is refused.
+- `beambam key` builds the cert id from the app cert's issuer, not the
+  printer serial (a fresh `key` wrote one the printer rejects).
+- `ams dry` sends the real, signed `ams_filament_drying` command. AMS
+  humidity shows Bambu's level (6 − index) and the RH %. `ams set/sync` use
+  each material's generic profile id (ABS, PC, PA… were written as PLA).
+- Queue dispatch and the Bambu Studio GUI shim upload into `cache/` (a root
+  upload fails file verify, 84033544). The queue judges "idle" only from
+  `gcode_state` (a delta mid-print started the next job), dispatches off the
+  MQTT thread, and a crashed process's lock no longer blocks it.
+
+### Fixed — daemon, web UI, integrations
+- The daemon folds every report into one state: a delta no longer replaces
+  it (Home Assistant "Online" flapped, the queue saw an idle printer), and a
+  command reply is kept under `last_command` instead of overwriting
+  `print.command` / `result` / `sequence_id`.
+- `beambam daemon --http` exits 1 when it cannot bind its port, instead of
+  running on without the API while another program answers on it.
+- `GET /cloud/printers` no longer returns access codes or tokens. The web UI
+  escapes every value it writes into the page and closes the `?next=` open
+  redirect. `POST /slice-print` runs the real CLI (it spawned a module that
+  did nothing) and tracks only its own jobs. Malformed bodies get a 400.
+- MCP: tools that name a printer build an argv the CLI accepts (18 of 22
+  failed), and the protocol version is negotiated.
+- The assistant runs a printer-changing tool only when the whole sentence
+  is that command ("Home Assistant integration help" homed the printer).
+- Camera: logging never blocks on a full stderr pipe, ffmpeg gets an I/O
+  timeout, and `cam start/stop` work on Windows.
+- Timelapses of the unnamed default printer are listed; deltas are ignored.
+
+### Fixed — slicing and files
+- `beambam slice` finds Bambu Studio on Windows, macOS and Linux
+  (`$BAMBU_STUDIO`), and relative output paths no longer land in
+  `out/out/`.
+- `beambam analyze`: purge is read from the G-code and the flush matrix
+  treated as mm³ (it was 2.4× high), and the prime tower is measured.
+- `beambam frame` works from an installed wheel (`make_frame` was missing)
+  with a per-OS default font.
+- Cloud uploads accept OSS V4 presigned tokens; `download` into a
+  directory, and `plate select/skip` onto the same file, work.
+
 ## v1.6.2 — slicing keeps the track switch, Home Assistant AMS race (2026-11-25)
 
 ### Fixed

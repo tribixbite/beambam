@@ -43,6 +43,9 @@ Running GUI apps (BambuStudio / wxWidgets 3.3) on termux-x11. These lessons were
   `--has-filament-switcher=1` (dashes; `--has_filament_switcher=1` exits 254). A project saved by a
   newer Bambu Studio may need `--load-settings <bundled machine.json>` (start G-code variables this
   build lacks). Both are in `beambam/slice_service.py`.
+- **No reverse-DNS on the daemon's start path:** `socket.getfqdn()` takes ~30 s on the macOS CI
+  runners, and in `http_validate.allowed_host_names` (run before the bind) it made every HTTP
+  test there fail with "connection refused" (2026-11-25).
 - CLI help is built by `beambam/cli/manhelp.py` (ManParser, inherited by every subparser) and
   argument text missing at the `add_argument` site is filled from `beambam/cli/arghelp.py`.
   `tests/test_cli_manhelp.py` fails if any argument has no help, or an EXAMPLES entry does not
