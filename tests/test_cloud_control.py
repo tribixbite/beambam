@@ -179,7 +179,7 @@ def test_publish_one_reports_a_refusal(monkeypatch, capsys):
         def connect(self): pass
         def disconnect(self): pass
         def wait_for(self, pred, timeout, since=None):
-            msg = {"print": {"command": "pause", "sequence_id": "1",
+            msg = {"print": {"command": "pause", "sequence_id": "1795600000001",
                              "err_code": 84033545, "result": "failed",
                              "reason": "mqtt message verify failed"}}
             return msg if pred(msg) else None
@@ -187,6 +187,6 @@ def test_publish_one_reports_a_refusal(monkeypatch, capsys):
     monkeypatch.setattr(control._config.Creds, "resolve",
                         classmethod(lambda cls, a: types.SimpleNamespace(serial="S1")))
     monkeypatch.setattr(pj, "_publish_signed_or_legacy", lambda cli, payload: None)
-    rc = control._publish_one(argparse.Namespace(), {"print": {"command": "pause", "sequence_id": "1"}})
+    rc = control._publish_one(argparse.Namespace(), {"print": {"command": "pause", "sequence_id": "1795600000001"}})
     assert rc == 1
     assert "signature rejected" in capsys.readouterr().err
