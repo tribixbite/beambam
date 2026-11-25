@@ -26,7 +26,18 @@ Running GUI apps (BambuStudio / wxWidgets 3.3) on termux-x11. These lessons were
   `runtime/webui/test_mobile.py`). Don't commit them by accident with `git add -A`, and expect
   them to block a `git stash pop` if you ran the suite on a stashed tree.
 - `runtime/ha/test_*.py` (run through `tests/test_runtime_subprocesses.py`) need the `amqtt`
-  broker module; on a box without it those 3 fail regardless of your change.
+  broker module; on a box without it those 3 fail regardless of your change. To run them on
+  Termux: `pip install --target ~/claudetmp/amqtt-site --no-deps` amqtt + dacite transitions
+  websockets==15.0.1 pwdlib typer argon2-cffi(-bindings) (+ typer's deps), and psutil built from
+  its sdist with `LINUX = sys.platform.startswith(("linux", "android"))` patched into
+  `psutil/_common.py`; then `PYTHONPATH=~/claudetmp/amqtt-site python3 -m pytest tests/`.
+- **X2D facts the HA bridge and planner rely on (live, 2026-11-25):** the report carries full
+  `push_status` bodies ~1/s, but acks and `info` replies share the topic — the daemon merges them
+  (`state_hub.merge_report`). Per-nozzle / chamber temps are packed `cur | target << 16` in
+  `device.extruder.info[].temp` / `device.ctc.info.temp`; `net.info[0].ip` is a little-endian
+  uint32; firmware versions only come from `info.get_version` (unsigned, answers on LAN);
+  `hw_switch_state` is the external-spool filament sensor, not the door. Bambu Studio requests
+  `get_auto_nozzle_mapping` only on hotend-rack printers (`fun` bit 60; 0 on the X2D).
 - CLI help is built by `beambam/cli/manhelp.py` (ManParser, inherited by every subparser) and
   argument text missing at the `add_argument` site is filled from `beambam/cli/arghelp.py`.
   `tests/test_cli_manhelp.py` fails if any argument has no help, or an EXAMPLES entry does not
