@@ -63,11 +63,21 @@ def _plan_and_confirm(args: argparse.Namespace, live: dict, local: Path, *,
     from beambam.filament_mapping import (
         MappingError, format_plan, parse_map, plan_print, read_project,
     )
+    from beambam.print_job import parse_slots
+    # `--slot` arrives parsed (int, or a list for `4,0,12`) from the CLI, but
+    # programmatic callers may pass the raw text; normalise both.
+    slot = getattr(args, "slot", None)
+    if isinstance(slot, str):
+        try:
+            parsed = parse_slots(slot)
+        except ValueError as e:
+            raise SystemExit(f"[print] refused: {e}")
+        slot = parsed[0] if len(parsed) == 1 else parsed
     try:
         project = read_project(local, plate)
         explicit = parse_map(args.map) if getattr(args, "map", None) else None
         plan = plan_print(project, live, use_ams=use_ams,
-                          slot=getattr(args, "slot", None), explicit=explicit)
+                          slot=slot, explicit=explicit)
     except MappingError as e:
         raise SystemExit(f"[print] refused: {e}")
     tty = sys.stdin.isatty() and sys.stderr.isatty()

@@ -138,6 +138,20 @@ _COMMAND_GROUPS: list[tuple[str, list[tuple[str, str]]]] = [
 ]
 
 
+def _print_slots(text: str) -> int | list[int]:
+    """argparse type for `print --slot`: beambam.print_job.parse_slots, message kept.
+
+    One slot comes back as an int (a single-filament plate, the historical form);
+    several (`4,0,12`) as a list in the order of the plate's used filaments.
+    """
+    from beambam.print_job import parse_slots
+    try:
+        slots = parse_slots(text)
+    except ValueError as e:
+        raise argparse.ArgumentTypeError(str(e))
+    return slots[0] if len(slots) == 1 else slots
+
+
 # ---------------------------------------------------------------------------
 # main() — argparse builder + dispatcher, moved from x2d_bridge.py in
 # Phase 5e batch 5. x2d_bridge.py re-exports `main` so the GUI shim's
@@ -229,9 +243,10 @@ def build_parser() -> argparse.ArgumentParser:
     pr = sub.add_parser("print", help="Upload + start_print")
     pr.add_argument("file")
     pr.add_argument("--remote")
-    pr.add_argument("--slot", type=int, default=None,
-                    help="AMS global slot (AMS_index*4 + tray_in_ams, 0..15) for a "
-                         "plate that uses ONE filament. Default: auto-map every used "
+    pr.add_argument("--slot", type=_print_slots, default=None,
+                    help="AMS global slot (AMS_index*4 + tray_in_ams, 0..15); for a plate "
+                         "that uses several filaments, one per used filament in order, "
+                         "comma-separated (e.g. 4,0,12). Default: auto-map every used "
                          "filament to the best matching loaded tray (type, then "
                          "colour; colour first for 3+ colour prints).")
     pr.add_argument("--map", metavar="F=TRAY,...",
@@ -589,9 +604,10 @@ def build_parser() -> argparse.ArgumentParser:
                          "bambu-studio --repetitions. (3MF input only)")
     sp.add_argument("--remote", help="Remote filename on printer "
                                      "(default: input basename)")
-    sp.add_argument("--slot", type=int, default=None,
-                    help="AMS global slot: AMS_index*4 + tray (0..15) for a single-"
-                         "filament model. Default: auto-map to the best matching tray.")
+    sp.add_argument("--slot", type=_print_slots, default=None,
+                    help="AMS global slot: AMS_index*4 + tray (0..15); one per used "
+                         "filament in order, comma-separated (e.g. 4,0,12). Default: "
+                         "auto-map to the best matching tray.")
     sp.add_argument("--map", metavar="F=TRAY,...",
                     help="Choose trays per filament: comma-separated FILAMENT=TRAY, filament "
                          "numbers as Bambu Studio shows them (1-based); TRAY is a global "
