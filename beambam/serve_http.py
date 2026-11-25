@@ -216,7 +216,7 @@ def _serve_http(bind: str,
             except (urllib.error.URLError, ConnectionError,
                     TimeoutError, OSError) as e:
                 msg = (f"camera daemon unreachable at {url} ({e}); "
-                       "start `x2d_bridge.py camera --bind 127.0.0.1:8766`")
+                       "start it with `beambam camera` (or set X2D_CAMERA_URL)")
                 body = msg.encode()
                 self.send_response(503)
                 self.send_header("Content-Type", "text/plain; charset=utf-8")
@@ -937,18 +937,32 @@ def _serve_http(bind: str,
                 else:  # chamber
                     payload = _print_cmd(
                         "gcode_line", param=f"M141 S{int(value)}\n")
-            elif verb == "ams_load":
-                slot = body.get("slot")
-                if not isinstance(slot, int) or not 1 <= slot <= 16:
-                    self._send_json({"error":
-                        "slot must be int 1..16"}, status=400)
+            elif verb in ("ams_load", "ams_unload"):
+                # {"tray": 0..63 | 254 | 255} (global tray id, as `beambam ams`
+                # prints it: A1 = 0 … D4 = 15) or the legacy {"slot": 1..16};
+                # optional "extruder" 0 right / 1 left, curr_temp / tar_temp.
+                from beambam.ams import build_change_filament_payload
+                tray: int | None = None
+                if verb == "ams_load":
+                    if isinstance(body.get("tray"), int):
+                        tray = body["tray"]
+                    elif isinstance(body.get("slot"), int) and 1 <= body["slot"] <= 16:
+                        tray = body["slot"] - 1
+                    else:
+                        self._send_json({"error":
+                            "expected {\"tray\": 0..63|254|255} or {\"slot\": 1..16}"},
+                            status=400)
+                        return
+                try:
+                    payload = build_change_filament_payload(
+                        tray,
+                        curr_temp=int(body.get("curr_temp", 215)),
+                        tar_temp=int(body.get("tar_temp", 215)),
+                        extruder=(int(body["extruder"]) if body.get("extruder") is not None
+                                  else None))
+                except (TypeError, ValueError) as e:
+                    self._send_json({"error": f"bad input: {e}"}, status=400)
                     return
-                # MachineObject::command_ams_change_filament — DeviceManager.cpp:1700
-                payload = _print_cmd(
-                    "ams_change_filament",
-                    target=int(slot) - 1,         # 0-indexed in mqtt
-                    curr_temp=int(body.get("curr_temp", 215)),
-                    tar_temp=int(body.get("tar_temp", 215)))
             elif verb == "ams_set":
                 # Push tray_info_idx + nozzle range + color to a single
                 # AMS slot. UI sends raw fields (no profile loading on
@@ -1007,7 +1021,8 @@ def _serve_http(bind: str,
                 self._send_json({"error": f"unknown control verb {verb!r}",
                                   "supported": ["pause", "resume", "stop",
                                                 "light", "temp", "ams_load",
-                                                "ams_set", "gcode", "sound"]},
+                                                "ams_unload", "ams_set", "gcode",
+                                                "sound"]},
                                   status=404)
                 return
             status, resp = self._publish_via_client(printer, payload)

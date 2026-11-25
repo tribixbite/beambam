@@ -15,7 +15,8 @@ verifies:
 * Sending `60` to `x2d/<id>/temp/bed/set` triggers
   `/control/temp {"target":"bed","value":60}`
 * Sending any payload to `x2d/<id>/ams/3/load` triggers
-  `/control/ams_load {"slot":3}`
+  `/control/ams_load {"slot":3}`; `ams/b2/load` → `{"tray":5}`; `ams/unload`
+* The state blob carries the X2D values derived by `derive_state`
 
 No real MQTT broker, no real X2D — but every wire format hit by HA in
 production is exercised against a real amqtt broker + real paho client.
@@ -124,13 +125,26 @@ def _spawn_daemon_http(port: int, mock: _MockX2DClient) -> threading.Thread:
             "mc_remaining_time": 75,
             "wifi_signal":    "-58dBm",
             "lights_report":  [{"node": "chamber_light", "mode": "off"}],
-            "ams": {"ams": [{"id": 0, "tray": [
-                {"tray_color": "FF7676FF", "tray_type": "PLA"},
-                {"tray_color": "66E08CFF", "tray_type": "PETG"},
-                {"tray_color": "FFC857FF", "tray_type": "PLA"},
-                {},
-            ]}], "tray_now": "0"},
+            # X2D shape (live capture 2026-11-25): switch bit 29 in `aux`,
+            # packed per-nozzle / chamber temps, little-endian IP.
+            "aux": "22801004", "fun": "44029FD1B30F9CB3", "spd_lvl": 2,
+            "net": {"info": [{"ip": 2315299008, "mask": 16777215}]},
+            "device": {
+                "ctc": {"info": {"temp": 35 | (40 << 16)}, "state": 0},
+                "extruder": {"info": [
+                    {"id": 0, "temp": 213 | (215 << 16), "info": 1178, "snow": 0x0001},
+                    {"id": 1, "temp": 28, "info": 1032, "snow": 0xFEFF}]},
+            },
+            "ams": {"ams": [{"id": "0", "info": "10001E03", "humidity": "2",
+                             "humidity_raw": "37", "temp": "24.2", "tray": [
+                {"id": "0", "tray_color": "FF7676FF", "tray_type": "PLA"},
+                {"id": "1", "tray_color": "66E08CFF", "tray_type": "PETG"},
+                {"id": "2", "tray_color": "FFC857FF", "tray_type": "PLA"},
+                {"id": "3"},
+            ]}], "tray_now": "1"},
         },
+        "info": {"command": "get_version", "module": [
+            {"name": "ota", "sw_ver": "01.02.00.00", "new_ver": "01.02.00.88"}]},
     }
     t = threading.Thread(
         target=_serve_http,
@@ -253,12 +267,19 @@ def main() -> int:
             ("sensor", "nozzle_temp"),
             ("sensor", "bed_temp"),
             ("sensor", "progress"),
-            ("sensor", "ams_slot1_color"),
+            ("sensor", "ams_a1_color"),
+            ("sensor", "ams_a4_material"),
+            ("sensor", "ams_a_humidity"),
+            ("binary_sensor", "ams_a_damp"),
+            ("sensor", "nozzle_left_temp"),
+            ("number", "nozzle_left_set"),
+            ("light", "chamber_light"),
             ("switch", "light"),
             ("button", "pause"),
             ("button", "resume"),
             ("button", "stop"),
-            ("button", "ams_slot3_load"),
+            ("button", "ams_a3_load"),
+            ("button", "ams_unload"),
             ("image", "snapshot"),
         ]:
             topic = f"homeassistant/{component}/{device_id}/{key}/config"
@@ -274,6 +295,16 @@ def main() -> int:
                 check(f"  {component}/{key} has device.identifiers",
                       device_id in cfg.get("device", {}).get("identifiers", []),
                       detail=str(cfg.get("device")))
+
+        # Entities older releases published are deleted (empty retained config).
+        retired = sniffer.wait_for(
+            f"homeassistant/sensor/{device_id}/ams_slot1_color/config", timeout=3)
+        check("retired ams_slot1_color config cleared", retired == b"",
+              detail=str(retired))
+        light_cfg = json.loads(sniffer.wait_for(
+            f"homeassistant/light/{device_id}/chamber_light/config", timeout=3) or b"{}")
+        check("light entity has a state_topic", light_cfg.get("state_topic") == f"{base}/state",
+              detail=str(light_cfg))
 
         # ----- 2. availability online --------------------------------
         avail = sniffer.wait_for(f"{base}/availability", timeout=3)
@@ -303,6 +334,23 @@ def main() -> int:
                           .get("tray", [{}])[0].get("tray_color")
                           == "FF7676FF",
                       detail="missing AMS color")
+                bb = state.get("beambam", {})
+                want = {"ip": "192.168.0.138", "chamber_temp": 35, "chamber_target": 40,
+                        "nozzle_right_temp": 213, "nozzle_right_target": 215,
+                        "nozzle_left_temp": 28, "nozzle_right_tray": "A2",
+                        "nozzle_left_tray": "none", "speed": "standard",
+                        "firmware": "01.02.00.00", "firmware_available": "01.02.00.88",
+                        "track_switch": "set up", "active_tray": "A2"}
+                for k, v in want.items():
+                    check(f"derived beambam.{k} == {v!r}", bb.get(k) == v, detail=str(bb.get(k)))
+                check("derived AMS A1 colour / A4 empty",
+                      bb.get("ams", {}).get("a1", {}).get("color") == "#FF7676"
+                      and bb.get("ams", {}).get("a4", {}).get("material") == "empty",
+                      detail=str(bb.get("ams")))
+                check("derived AMS A humidity 37 %, not damp",
+                      bb.get("ams_units", {}).get("a") == {"humidity": 37.0, "humidity_level": 2.0,
+                                                           "damp": "OFF", "temp": 24.2},
+                      detail=str(bb.get("ams_units")))
             except json.JSONDecodeError as e:
                 check("state JSON parses", False, detail=str(e))
 
@@ -356,6 +404,35 @@ def main() -> int:
         check("ams slot 3 load → ams_change_filament target=2",
               any(p.get("print", {}).get("command") == "ams_change_filament"
                   and p.get("print", {}).get("target") == 2
+                  for p in mock.published[before:]),
+              detail=str(mock.published[before:]))
+
+        before = len(mock.published)
+        publisher_client.publish(f"{base}/ams/b2/load", "ON", qos=1)
+        time.sleep(0.8)
+        check("ams B2 load → ams_change_filament ams_id=1 slot_id=1 target=5",
+              any(p.get("print", {}).get("command") == "ams_change_filament"
+                  and (p["print"].get("ams_id"), p["print"].get("slot_id"),
+                       p["print"].get("target")) == (1, 1, 5)
+                  for p in mock.published[before:]),
+              detail=str(mock.published[before:]))
+
+        before = len(mock.published)
+        publisher_client.publish(f"{base}/ams/unload", "ON", qos=1)
+        time.sleep(0.8)
+        check("ams unload → ams_change_filament target=255",
+              any(p.get("print", {}).get("command") == "ams_change_filament"
+                  and p["print"].get("target") == 255 and p["print"].get("slot_id") == 255
+                  for p in mock.published[before:]),
+              detail=str(mock.published[before:]))
+
+        before = len(mock.published)
+        publisher_client.publish(f"{base}/temp/nozzle_left/set", "220", qos=1)
+        time.sleep(0.8)
+        check("left nozzle 220 → set_nozzle_temp extruder_index=1",
+              any(p.get("print", {}).get("command") == "set_nozzle_temp"
+                  and p["print"].get("extruder_index") == 1
+                  and p["print"].get("target_temp") == 220
                   for p in mock.published[before:]),
               detail=str(mock.published[before:]))
 

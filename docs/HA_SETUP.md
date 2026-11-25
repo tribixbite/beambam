@@ -188,15 +188,20 @@ features:
 ### Temperatures + AMS
 
 `number.x2d_studio_bed_set` (slider 0-110), `number.x2d_studio_nozzle_set`
-(slider 0-320), `number.x2d_studio_chamber_set` (slider 0-60).
+(right nozzle, 0-320), `number.x2d_studio_nozzle_left_set` (left nozzle),
+`number.x2d_studio_chamber_set` (slider 0-60). Each nozzle also has
+`sensor.…_nozzle_{right,left}_temp` / `_target` and `_tray` (the tray whose
+filament is in that nozzle, e.g. `B3`, or `none`).
 
-For each AMS slot:
-- `sensor.x2d_studio_ams_slot1_color` (hex string)
-- `sensor.x2d_studio_ams_slot1_material` (PLA/PETG/...)
-- `button.x2d_studio_ams_slot1_load` (one-tap load to extruder)
+For each AMS tray the printer reports (A1–D4):
+- `sensor.x2d_studio_ams_b3_color` (hex string)
+- `sensor.x2d_studio_ams_b3_material` (PLA/PETG/…, `empty`; attributes: name, remain)
+- `button.x2d_studio_ams_b3_load` (load that tray)
 
-`sensor.x2d_studio_active_tray` shows which slot (1-4) is currently
-loaded into the toolhead, or 0 when empty.
+and for each unit `sensor.…_ams_b_humidity` (%RH), `sensor.…_ams_b_temp`,
+`binary_sensor.…_ams_b_damp`. `button.…_ams_unload` unloads the toolhead.
+`sensor.x2d_studio_track_switch` reports the Filament Track Switch
+(`set up` / `not set up` / `not installed`).
 
 ## 6. Multi-printer
 
@@ -221,9 +226,9 @@ hierarchy. No changes to HA configuration needed.
 Per [`HA_VS_BAMBULAB.md`](./HA_VS_BAMBULAB.md) — only the deltas.
 
 - Settable temperatures (number sliders), not just read-only sensors.
-- Per-slot `button.ams_slotN_load` for one-tap filament swap.
+- Per-tray `button.ams_<tray>_load` for one-tap filament swap, `button.ams_unload`.
 - `binary_sensor.timelapse_running`, `binary_sensor.hms_problem`,
-  `binary_sensor.print_error`, `binary_sensor.door_open`.
+  `binary_sensor.print_error`, `binary_sensor.ext_spool_filament`.
 - Active tray sensor (which AMS slot is loaded right now).
 - Print start_time / end_time timestamps.
 - `light.chamber_light` (proper light-domain card support) +

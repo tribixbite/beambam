@@ -24,19 +24,32 @@ python3.12 x2d_bridge.py ha-publish \
 
 In Home Assistant, go to **Settings → Integrations → MQTT** and point
 it at the same broker. Within seconds, a "Bambu Lab X2D" Device
-appears under MQTT with 32 entities.
+appears under MQTT: ~60 printer entities plus 4 per AMS tray and 3 per AMS
+unit (an X2D with 4× AMS 2 Pro gets 122). AMS entities follow what the
+printer reports — a unit that appears later gets its entities then.
 
 ## 2. Entities published
 
 | Component | Count | Examples |
 |---|---|---|
-| `sensor`  | 23 | nozzle_temp, bed_temp, chamber_temp, progress, current_layer, total_layers, remaining, wifi, filename, stage, ams_slot{1..4}_color, ams_slot{1..4}_material |
-| `number`  | 3  | bed_set, nozzle_set, chamber_set (slider sets temp target) |
-| `switch`  | 1  | light (chamber LED on/off) |
-| `button`  | 7  | pause, resume, stop, ams_slot{1..4}_load |
-| `image`   | 1  | snapshot (chamber camera, refreshed via daemon /cam.jpg) |
+| `sensor`  | 40+ | nozzle_temp, nozzle_{right,left}_{temp,target}, nozzle_{right,left}_tray, bed_temp, chamber_temp, progress, layers, remaining, wifi, ip_address, speed_profile, firmware_version, firmware_available, track_switch, active_tray, fans, ams_{a1..d4}_{color,material}, ams_{a..d}_{humidity,temp} |
+| `binary_sensor` | 6+ | online, ext_spool_filament, timelapse_running, hms_problem, print_error, ams_{a..d}_damp |
+| `number`  | 4  | bed_set, nozzle_set (right), nozzle_left_set, chamber_set |
+| `switch` / `light` | 3 | light + chamber_light (chamber LED), prompt_sound |
+| `button`  | 8+ | pause, resume, stop, home, level, buzzer_silence, ams_unload, ams_{a1..d4}_load |
+| `image` / `camera` | 2 | snapshot (chamber camera, refreshed via daemon /cam.jpg) |
 
-All 32 are linked to one HA Device:
+X2D-specific values (both nozzles and the chamber from the packed
+`device.*.info.temp` words, the dotted IP, the speed name, firmware from the
+`get_version` reply, each tray's colour/material, AMS humidity in %RH) are
+computed in Python by `runtime/ha/publisher.derive_state` and published in the
+state JSON under `beambam`, so the templates only read
+`value_json.beambam.<key>`. Upgrading from an older release deletes the
+entities that were renamed (`ams_slotN_*`, `ams_humidity`, `ams_unitN_humidity_warn`,
+`door_open` — which was really the external-spool filament sensor) by
+publishing empty discovery configs.
+
+All of them are linked to one HA Device:
 
 ```json
 {
@@ -52,12 +65,13 @@ All 32 are linked to one HA Device:
 
 ```
 homeassistant/<component>/x2d_<serial>/<key>/config   discovery (retained)
-x2d/<serial>/state                                    full pushall JSON (retained)
+x2d/<serial>/state                                    merged report + `beambam` block (retained)
 x2d/<serial>/availability                             online/offline (retained)
 x2d/<serial>/light/set         payload: ON | OFF
 x2d/<serial>/print/set         payload: PAUSE | RESUME | STOP
-x2d/<serial>/temp/<bed|nozzle|chamber>/set  payload: integer °C
-x2d/<serial>/ams/<slot>/load   payload: any (slot is 1-indexed)
+x2d/<serial>/temp/<bed|nozzle|nozzle_left|chamber>/set  payload: integer °C
+x2d/<serial>/ams/<a1..d4>/load payload: any (legacy: ams/<1..16>/load)
+x2d/<serial>/ams/unload        payload: any
 x2d/<serial>/snapshot          payload: JPEG bytes (item #53)
 ```
 

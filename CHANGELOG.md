@@ -16,6 +16,28 @@ All notable changes to this project.
   both (any switch-routed AMS tray; an external spool feeds only one nozzle).
   The plan shows such filaments on nozzle `both`. Rack printers are still
   refused with an explanation.
+- **Home Assistant bridge, audited against a live X2D.** Most X2D values were
+  wrong or missing: the chamber temperature read a field the X2D does not send,
+  the left nozzle had no sensors, the IP showed as an integer, the speed as `2`,
+  "Firmware version" read a non-existent field, only the first AMS unit was
+  exposed, the `light` entity had no state topic, and "Door open" was really the
+  external-spool filament sensor. The publisher now derives these in Python
+  (`derive_state`, unit-tested) and publishes them under `beambam` in the
+  state JSON: both nozzles' temperatures, targets and loaded tray, the chamber,
+  dotted IP, speed name, firmware (from a `get_version` request the daemon now
+  sends on connect and hourly) and available update, the track switch, and
+  every AMS tray (A1–D4) and unit (humidity %RH, temperature, damp). AMS
+  entities are discovered for the units the printer reports; renamed entities
+  are removed from HA. New: left-nozzle setpoint, tray-labelled load buttons
+  (`x2d/<id>/ams/b3/load`) and an unload button.
+- **The daemon no longer replaces its state with every MQTT message.**
+  Command acks, `info` replies and delta pushes are merged into the cached
+  report (`state_hub.merge_report`), so HA, `/state`, SSE, the queue and the
+  timelapse recorder never see a state stripped of temperatures and AMS.
+- `ams_change_filament` (`POST /control/ams_load`, `Printer.ams_load`, HA)
+  now sends `ams_id` / `slot_id` / `target` as Bambu Studio does, taking a
+  global tray id (`{"tray": 5}` = B2; legacy `{"slot": 1..16}` still works) and
+  an optional `extruder`; new `POST /control/ams_unload`.
 
 ## v1.6.0 — filament mapping, AMS sync, man-page help (2026-11-24)
 

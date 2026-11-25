@@ -4,8 +4,10 @@ Bridges between an x2d_bridge.py daemon's HTTP /state.events SSE feed
 and a Home Assistant MQTT broker. Publishes:
 
 * discovery configs at ``<discovery_prefix>/<component>/x2d_<serial>/<key>/config``
-* per-entity state at ``x2d/<serial>/state`` (single JSON blob with
-  every field; entities use ``value_template`` to project)
+* per-entity state at ``x2d/<serial>/state`` (single JSON blob: the
+  printer's merged report plus a ``beambam`` block of values derived in
+  Python by :func:`derive_state` — dotted IP, both X2D nozzles, chamber,
+  speed name, firmware, every AMS tray A1–D4 — so templates stay trivial)
 * availability at ``x2d/<serial>/availability`` (online/offline)
 
 Subscribes to:
@@ -13,7 +15,8 @@ Subscribes to:
 * ``x2d/<serial>/light/set``       → POST /control/light
 * ``x2d/<serial>/print/set``       → POST /control/{pause,resume,stop}
 * ``x2d/<serial>/temp/<target>/set``→ POST /control/temp
-* ``x2d/<serial>/ams/<slot>/load`` → POST /control/ams_load
+* ``x2d/<serial>/ams/<label>/load`` → POST /control/ams_load (label a1..d4)
+* ``x2d/<serial>/ams/unload``      → POST /control/ams_unload
 
 The serial is the ``[printer:NAME]`` section name (or ``default`` for
 the unnamed section). One HA Device per printer, with all entities
@@ -79,8 +82,31 @@ SENSOR_ENTITIES: list[Entity] = [
            "{{ value_json.print.bed_target_temper | round(0) }}",
            "°C", "temperature", "measurement"),
     Entity("sensor", "chamber_temp",  "Chamber temperature",
-           "{{ value_json.print.chamber_temper | round(1) }}",
+           "{{ value_json.beambam.chamber_temp }}",
            "°C", "temperature", "measurement"),
+    # X2D / H2D: one sensor pair per nozzle (device.extruder.info, packed
+    # current | target << 16). Single-nozzle printers report only "right".
+    Entity("sensor", "nozzle_right_temp",   "Right nozzle temperature",
+           "{{ value_json.beambam.nozzle_right_temp }}",
+           "°C", "temperature", "measurement"),
+    Entity("sensor", "nozzle_right_target", "Right nozzle target",
+           "{{ value_json.beambam.nozzle_right_target }}",
+           "°C", "temperature", "measurement"),
+    Entity("sensor", "nozzle_left_temp",    "Left nozzle temperature",
+           "{{ value_json.beambam.nozzle_left_temp }}",
+           "°C", "temperature", "measurement"),
+    Entity("sensor", "nozzle_left_target",  "Left nozzle target",
+           "{{ value_json.beambam.nozzle_left_target }}",
+           "°C", "temperature", "measurement"),
+    Entity("sensor", "nozzle_right_tray",   "Right nozzle filament",
+           "{{ value_json.beambam.nozzle_right_tray }}",
+           "", "", "", "mdi:printer-3d-nozzle"),
+    Entity("sensor", "nozzle_left_tray",    "Left nozzle filament",
+           "{{ value_json.beambam.nozzle_left_tray }}",
+           "", "", "", "mdi:printer-3d-nozzle"),
+    Entity("sensor", "track_switch",        "Filament Track Switch",
+           "{{ value_json.beambam.track_switch }}",
+           "", "", "", "mdi:source-branch"),
     Entity("sensor", "progress",      "Print progress",
            "{{ value_json.print.mc_percent | int(0) }}",
            "%", "", "measurement", "mdi:progress-clock"),
@@ -117,17 +143,21 @@ SENSOR_ENTITIES: list[Entity] = [
            "{{ value_json.print.heatbreak_fan_speed | int(0) }}",
            "%", "", "measurement", "mdi:fan"),
     Entity("sensor", "speed_profile",     "Speed profile",
-           "{{ value_json.print.spd_lvl | default('normal') }}",
+           "{{ value_json.beambam.speed }}",
            "", "", "", "mdi:speedometer"),
     Entity("sensor", "hms_count",         "HMS error count",
            "{{ value_json.print.hms | length | default(0) }}",
            "", "", "measurement", "mdi:alert-circle"),
     Entity("sensor", "ip_address",        "IP address",
-           "{{ value_json.print.net.info[0].ip if value_json.print.net is defined else '' }}",
+           "{{ value_json.beambam.ip }}",
            "", "", "", "mdi:ip-network"),
+    # From the `info.get_version` reply the daemon requests on connect.
     Entity("sensor", "firmware_version",  "Firmware version",
-           "{{ value_json.print.upgrade_state.cur_state_code | default('unknown') }}",
+           "{{ value_json.beambam.firmware }}",
            "", "", "", "mdi:chip"),
+    Entity("sensor", "firmware_available", "Firmware available",
+           "{{ value_json.beambam.firmware_available }}",
+           "", "", "", "mdi:update"),
     Entity("sensor", "printable_objects", "Printable objects",
            "{{ value_json.print.s_obj | length | default(0) }}",
            "", "", "measurement", "mdi:cube-outline"),
@@ -159,28 +189,25 @@ SENSOR_ENTITIES: list[Entity] = [
            "{{ value_json.print.bed_type | default('') }}",
            "", "", "", "mdi:checkerboard"),
     Entity("sensor", "active_tray",       "Active AMS tray",
-           "{{ (value_json.print.ams.tray_now | int(255)) + 1 "
-           "if value_json.print.ams.tray_now | int(255) != 255 else 0 }}",
-           "", "", "measurement", "mdi:tray-full"),
+           "{{ value_json.beambam.active_tray }}",
+           "", "", "", "mdi:tray-full"),
     Entity("sensor", "nozzle_diameter",   "Nozzle diameter",
            "{{ value_json.print.nozzle_diameter | float(0.4) | round(2) }}",
            "mm", "distance", "", "mdi:printer-3d-nozzle"),
     Entity("sensor", "nozzle_type",       "Nozzle type",
            "{{ value_json.print.nozzle_type | default('') }}",
            "", "", "", "mdi:printer-3d-nozzle-alert"),
-    Entity("sensor", "ams_humidity",      "AMS humidity",
-           "{{ value_json.print.ams.ams[0].humidity | float(0) | round(0) "
-           "if value_json.print.ams is defined and value_json.print.ams.ams "
-           "else 0 }}",
-           "%", "humidity", "measurement", "mdi:water-percent"),
+
     # Binary sensors for door + online + new problem/timelapse indicators.
     Entity("binary_sensor", "online",     "Online",
            "{{ 'ON' if value_json.print is defined else 'OFF' }}",
            "", "connectivity", "", "mdi:lan-connect",
            extra={"payload_on": "ON", "payload_off": "OFF"}),
-    Entity("binary_sensor", "door_open",  "Door open",
+    # `hw_switch_state` is the external-spool filament sensor
+    # (DeviceManager.cpp: m_ext_has_filament), not the door.
+    Entity("binary_sensor", "ext_spool_filament", "External spool filament",
            "{{ 'ON' if value_json.print.hw_switch_state | default(0) == 1 else 'OFF' }}",
-           "", "door", "", "mdi:door-open",
+           "", "", "", "mdi:printer-3d-nozzle",
            extra={"payload_on": "ON", "payload_off": "OFF"}),
     Entity("binary_sensor", "timelapse_running", "Timelapse running",
            "{{ 'ON' if value_json.print.ipcam.timelapse | default('disable') == 'enable' else 'OFF' }}",
@@ -196,44 +223,169 @@ SENSOR_ENTITIES: list[Entity] = [
            extra={"payload_on": "ON", "payload_off": "OFF"}),
 ]
 
-# Per-AMS-slot color/material entities. We expose the FIRST AMS unit's
-# four trays — multi-AMS support is item #54. Tray-color values come
-# back as 8-char hex (RRGGBBAA); the value_template strips the alpha so
-# HA's color sensor card understands it.
-def ams_entities() -> list[Entity]:
-    out: list[Entity] = []
-    for slot in range(1, 5):  # 1-indexed to match AMS UI labelling
-        # AMS slot is 0-indexed in the wire payload, so subtract 1.
-        idx = slot - 1
-        out.append(Entity(
-            "sensor", f"ams_slot{slot}_color", f"AMS slot {slot} color",
-            "{{ '#' + value_json.print.ams.ams[0].tray[" + str(idx) +
-            "].tray_color[:6] | default('') }}",
-            "", "", "", "mdi:palette"))
-        out.append(Entity(
-            "sensor", f"ams_slot{slot}_material", f"AMS slot {slot} material",
-            "{{ value_json.print.ams.ams[0].tray[" + str(idx) +
-            "].tray_type | default('') }}",
-            "", "", "", "mdi:printer-3d-nozzle"))
-        out.append(Entity(
-            "button", f"ams_slot{slot}_load", f"AMS slot {slot} load",
-            "", "", "", "", "mdi:tray-arrow-up",
-            extra={"command_topic": f"__BASE__/ams/{slot}/load",
-                    "payload_press": "ON"}))
+# ---------------------------------------------------------------------------
+# Values derived in Python (published as `beambam` in the state blob)
+# ---------------------------------------------------------------------------
 
-    # ----- v1.2.0: multi-unit humidity warnings ------------------------
-    # One binary_sensor per AMS unit (up to 4 on X2D / H2D) — on when the
-    # firmware-reported humidity level is ≥3 (out of 4). Surfaces the same
-    # warning `beambam doctor` emits, but as a HA entity so users can
-    # automate "send notification when AMS damp" without polling.
-    for unit_idx in range(4):
-        out.append(Entity(
-            "binary_sensor",
-            f"ams_unit{unit_idx}_humidity_warn",
-            f"AMS unit {unit_idx} humidity warning",
-            "{{ 'ON' if (value_json.print.ams.ams[" + str(unit_idx) +
-            "].humidity | default('0') | int >= 3) else 'OFF' }}",
-            "", "moisture", "", "mdi:water-percent-alert"))
+# DevPrintingSpeedLevel (DevDefs.h): 1 silent, 2 standard, 3 sport, 4 ludicrous.
+SPEED_NAMES = {1: "silent", 2: "standard", 3: "sport", 4: "ludicrous"}
+
+# Entities older releases published that no longer exist (or changed key).
+# Their discovery topics get an empty retained payload on connect, which is
+# HA's documented way to remove an MQTT-discovered entity.
+RETIRED_KEYS: list[tuple[str, str]] = (
+    [("sensor", f"ams_slot{n}_{f}") for n in range(1, 5) for f in ("color", "material")]
+    + [("button", f"ams_slot{n}_load") for n in range(1, 5)]
+    + [("binary_sensor", f"ams_unit{n}_humidity_warn") for n in range(4)]
+    + [("sensor", "ams_humidity"), ("binary_sensor", "door_open")])
+
+
+def _packed(v: Any) -> tuple[int | None, int | None]:
+    """`current | target << 16` (DevUtil::get_flag_bits(temp, 0/16, 16))."""
+    try:
+        n = int(v)
+    except (TypeError, ValueError):
+        return None, None
+    return n & 0xFFFF, (n >> 16) & 0xFFFF
+
+
+def _ip(v: Any) -> str:
+    """`net.info[0].ip` is a little-endian uint32 (2315299008 → 192.168.0.138)."""
+    try:
+        n = int(v)
+    except (TypeError, ValueError):
+        return ""
+    return ".".join(str((n >> s) & 0xFF) for s in (0, 8, 16, 24)) if n else ""
+
+
+def _tray_label(ams_id: int, slot: int) -> str:
+    if ams_id in (254, 255):
+        return "External " + ("left" if ams_id == 254 else "right")
+    if ams_id >= 128:                         # AMS HT units
+        return f"HT{ams_id - 127}"
+    return f"{chr(ord('A') + ams_id)}{slot + 1}" if 0 <= ams_id < 26 and 0 <= slot < 4 else ""
+
+
+def derive_state(state: dict) -> dict:
+    """Flat, display-ready values from a merged printer report.
+
+    Everything model-specific lives here, in Python, where it is tested —
+    HA templates then only read `value_json.beambam.<key>`. Keys are always
+    present (None / "" when the printer does not report them) so a template
+    never hits an undefined attribute."""
+    from beambam.filament_mapping import read_topology, tray_letter_label
+    p = state.get("print") or {}
+    dev = p.get("device") or {}
+    out: dict[str, Any] = {}
+
+    # Chamber: X2D/H2D report it packed in device.ctc.info.temp (DevChamber.cpp);
+    # older models use chamber_temper.
+    cur, tar = _packed(((dev.get("ctc") or {}).get("info") or {}).get("temp"))
+    if cur is None and isinstance(p.get("chamber_temper"), (int, float)):
+        cur = p["chamber_temper"]
+    out["chamber_temp"], out["chamber_target"] = cur, tar
+
+    # Nozzles: extruder id 0 = right (main), 1 = left (deputy).
+    exts = {int(e.get("id", -1)): e for e in ((dev.get("extruder") or {}).get("info") or [])
+            if isinstance(e, dict)}
+    for eid, side in ((0, "right"), (1, "left")):
+        e = exts.get(eid)
+        cur, tar = _packed(e.get("temp")) if e else (None, None)
+        if e is None and eid == 0:            # single-nozzle printers
+            cur = p.get("nozzle_temper")
+            tar = p.get("nozzle_target_temper")
+        out[f"nozzle_{side}_temp"], out[f"nozzle_{side}_target"] = cur, tar
+        tray = "none"
+        if e is not None:
+            has_filament = bool((int(e.get("info") or 0) >> 1) & 1)   # DevExtder m_ext_has_filament
+            snow = int(e.get("snow", 0xFFFF) or 0)
+            if has_filament and snow != 0xFFFF:
+                tray = _tray_label((snow >> 8) & 0xFF, snow & 0xFF) or "unknown"
+        out[f"nozzle_{side}_tray"] = tray
+
+    out["ip"] = _ip(((p.get("net") or {}).get("info") or [{}])[0].get("ip"))
+    out["speed"] = SPEED_NAMES.get(int(p.get("spd_lvl") or 0), "unknown")
+    lights = {(x or {}).get("node"): (x or {}).get("mode") for x in p.get("lights_report") or []}
+    out["chamber_light"] = "on" if lights.get("chamber_light") == "on" else "off"
+
+    # Firmware: `info.get_version` → module "ota".
+    ota = next((m for m in ((state.get("info") or {}).get("module") or [])
+                if isinstance(m, dict) and m.get("name") == "ota"), {})
+    out["firmware"] = ota.get("sw_ver") or "unknown"
+    new = ota.get("new_ver") or (p.get("upgrade_state") or {}).get("ota_new_version_number") or ""
+    out["firmware_available"] = new if new and new != ota.get("sw_ver") else "up to date"
+
+    topo = read_topology(state)
+    out["track_switch"] = ("not installed" if not topo.switch_installed
+                           else "set up" if topo.switch_ready else "not set up")
+    tray_now = str((p.get("ams") or {}).get("tray_now", "255"))
+    out["active_tray"] = (tray_letter_label(int(tray_now)) if tray_now.isdigit()
+                          and int(tray_now) < 64 else "none")
+    trays: dict[str, dict] = {}
+    for t in topo.trays:
+        if t.external or t.ams_id >= 128:
+            continue
+        trays[tray_letter_label(t.tray_id).lower()] = {
+            "color": t.colour or "", "material": t.type or "empty",
+            "name": t.name or t.profile_id or "", "remain": t.remain}
+    out["ams"] = trays
+    units: dict[str, dict] = {}
+    for u in (p.get("ams") or {}).get("ams") or []:
+        try:
+            uid = int(u.get("id"))
+        except (TypeError, ValueError):
+            continue
+        if uid >= 26:
+            continue
+        def _num(v: Any) -> float | None:
+            try:
+                return float(v)
+            except (TypeError, ValueError):
+                return None
+        level = _num(u.get("humidity"))
+        units[chr(ord("a") + uid)] = {
+            # `humidity_raw` is %RH; `humidity` is the firmware's 1–5 level in
+            # 20 % bands, 1 = driest (live X2D: level 2 at 37 %RH). ≥ 3 (over
+            # 40 %RH) is "damp", the same threshold `beambam doctor` warns at.
+            "humidity": _num(u.get("humidity_raw")),
+            "humidity_level": level,
+            "damp": "ON" if level is not None and level >= 3 else "OFF",
+            "temp": _num(u.get("temp"))}
+    out["ams_units"] = units
+    return out
+
+
+def ams_entities(trays: list[str], units: list[str]) -> list[Entity]:
+    """Per-tray (a1..d4) and per-unit (a..d) entities for the AMS units the
+    printer actually reports — published as they appear (`HAPublisher`
+    re-runs discovery when a unit is added)."""
+    out: list[Entity] = []
+    for lab in trays:
+        up = lab.upper()
+        base = "{{ value_json.beambam.ams." + lab
+        out.append(Entity("sensor", f"ams_{lab}_color", f"AMS {up} colour",
+                          base + ".color }}", "", "", "", "mdi:palette"))
+        out.append(Entity("sensor", f"ams_{lab}_material", f"AMS {up} material",
+                          base + ".material }}", "", "", "", "mdi:printer-3d-nozzle",
+                          extra={"json_attributes_topic": "__BASE__/state",
+                                 "json_attributes_template":
+                                     "{{ value_json.beambam.ams." + lab + " | tojson }}"}))
+        out.append(Entity("button", f"ams_{lab}_load", f"AMS {up} load",
+                          "", "", "", "", "mdi:tray-arrow-up",
+                          extra={"command_topic": f"__BASE__/ams/{lab}/load",
+                                 "payload_press": "ON"}))
+    for u in units:
+        base = "{{ value_json.beambam.ams_units." + u
+        out.append(Entity("sensor", f"ams_{u}_humidity", f"AMS {u.upper()} humidity",
+                          base + ".humidity }}", "%", "humidity", "measurement",
+                          "mdi:water-percent"))
+        out.append(Entity("sensor", f"ams_{u}_temp", f"AMS {u.upper()} temperature",
+                          base + ".temp }}", "°C", "temperature", "measurement"))
+        # On when the firmware's humidity level is ≥ 3 — the same warning
+        # `beambam doctor` emits, so HA can automate "AMS is damp".
+        out.append(Entity("binary_sensor", f"ams_{u}_damp", f"AMS {u.upper()} damp",
+                          base + ".damp }}", "", "moisture", "", "mdi:water-percent-alert",
+                          extra={"payload_on": "ON", "payload_off": "OFF"}))
     return out
 
 
@@ -258,7 +410,7 @@ def queue_doctor_entities() -> list[Entity]:
 # Switch / button / number entities.
 CONTROL_ENTITIES: list[Entity] = [
     Entity("switch", "light", "Chamber light",
-           "{{ value_json.print.lights_report[0].mode | default('off') }}",
+           "{{ value_json.beambam.chamber_light }}",
            "", "", "", "mdi:lightbulb",
            extra={"command_topic":  "__BASE__/light/set",
                   "state_on":       "on",  "state_off": "off",
@@ -281,10 +433,15 @@ CONTROL_ENTITIES: list[Entity] = [
            "°C", "temperature", "", "mdi:thermometer",
            extra={"command_topic": "__BASE__/temp/bed/set",
                   "min":  0, "max": 110, "step": 1, "mode": "slider"}),
-    Entity("number", "nozzle_set",  "Nozzle setpoint",
-           "{{ value_json.print.nozzle_target_temper | int(0) }}",
+    Entity("number", "nozzle_set",  "Right nozzle setpoint",
+           "{{ value_json.beambam.nozzle_right_target | int(0) }}",
            "°C", "temperature", "", "mdi:printer-3d-nozzle-heat",
            extra={"command_topic": "__BASE__/temp/nozzle/set",
+                  "min":  0, "max": 320, "step": 1, "mode": "slider"}),
+    Entity("number", "nozzle_left_set", "Left nozzle setpoint",
+           "{{ value_json.beambam.nozzle_left_target | int(0) }}",
+           "°C", "temperature", "", "mdi:printer-3d-nozzle-heat",
+           extra={"command_topic": "__BASE__/temp/nozzle_left/set",
                   "min":  0, "max": 320, "step": 1, "mode": "slider"}),
     Entity("number", "chamber_set", "Chamber setpoint",
            "{{ value_json.print.chamber_target_temper | int(0) }}",
@@ -300,6 +457,10 @@ CONTROL_ENTITIES: list[Entity] = [
            "", "", "", "", "mdi:format-line-style",
            extra={"command_topic": "__BASE__/print/set",
                   "payload_press": "LEVEL"}),
+    Entity("button", "ams_unload", "Unload filament",
+           "", "", "", "", "mdi:tray-arrow-down",
+           extra={"command_topic": "__BASE__/ams/unload",
+                  "payload_press": "ON"}),
     Entity("button", "buzzer_silence",  "Silence buzzer",
            "", "", "", "", "mdi:bell-off",
            extra={"command_topic": "__BASE__/buzzer/set",
@@ -309,10 +470,11 @@ CONTROL_ENTITIES: list[Entity] = [
     # `switch.<id>_light` stays for back-compat with dashboards that
     # already reference it.
     Entity("light", "chamber_light", "Chamber light",
-           "{{ value_json.print.lights_report[0].mode | default('off') }}",
-           "", "", "", "mdi:lightbulb",
+           "", "", "", "", "mdi:lightbulb",
            extra={"command_topic": "__BASE__/light/set",
-                  "state_value_template": "{{ 'on' if value == 'on' else 'off' }}",
+                  "state_topic": "__BASE__/state",
+                  "state_value_template":
+                      "{{ 'ON' if value_json.beambam.chamber_light == 'on' else 'OFF' }}",
                   "payload_on": "ON", "payload_off": "OFF"}),
     # ha-bambulab parity: prompt-sound toggle. Bambu firmware's print.sound_enable
     # field carries the current state; the bridge daemon's /control/sound
@@ -399,7 +561,6 @@ class HAPublisher:
         # Build entity list now so command-topic substitution can resolve
         # __BASE__ before any subscribe.
         self._entities = (list(SENSOR_ENTITIES)
-                          + ams_entities()
                           + queue_doctor_entities()    # v1.2.0
                           + list(CONTROL_ENTITIES)
                           + [camera_entity(self.daemon_url + "/cam.jpg",
@@ -414,6 +575,10 @@ class HAPublisher:
         self._client.on_disconnect = self._on_disconnect
         self._client.will_set(self._availability_topic(), "offline",
                               qos=1, retain=True)
+        # AMS entities follow the units the printer reports (see
+        # _sync_ams_entities); keyed by entity key.
+        self._ams_entities: dict[str, Entity] = {}
+        self._connected = threading.Event()
         self._sse_thread: threading.Thread | None = None
         self._snapshot_thread: threading.Thread | None = None
         # Snapshot poll cadence (seconds) — once every 10s by default;
@@ -486,25 +651,51 @@ class HAPublisher:
         LOG.info("connected to %s:%d as %s",
                  self.broker_host, self.broker_port, self._client_id)
         # Publish all discovery configs (retained).
-        for ent in self._entities:
-            client.publish(self._discovery_topic(ent),
-                           json.dumps(self._discovery_payload(ent)),
-                           qos=1, retain=True)
+        for ent in self._entities + list(self._ams_entities.values()):
+            self._publish_discovery(client, ent)
+        # Remove entities earlier releases published under other keys.
+        for component, key in RETIRED_KEYS:
+            client.publish(f"{self.discovery_prefix}/{component}/{self.device_id}/{key}/config",
+                           "", qos=1, retain=True)
         # Mark online (also retained — survives broker restarts).
         client.publish(self._availability_topic(), "online",
                        qos=1, retain=True)
-        # Subscribe to every command topic the entities advertise.
-        seen: set[str] = set()
+        # Subscribe to every command topic the entities advertise (only
+        # command topics: state / attribute / image topics are our own
+        # output), plus the AMS subtree whose entities come and go.
+        seen: set[str] = {f"{self.base_topic}/ams/#"}
+        client.subscribe(f"{self.base_topic}/ams/#", qos=1)
         for ent in self._entities:
-            for k, v in self._resolve_extra(ent.extra).items():
-                if k.endswith("_topic") and k != "state_topic" \
-                        and k != "availability_topic" and isinstance(v, str) \
-                        and v.startswith(self.base_topic + "/"):
-                    if v not in seen:
-                        client.subscribe(v, qos=1)
-                        seen.add(v)
+            v = self._resolve_extra(ent.extra).get("command_topic")
+            if isinstance(v, str) and v not in seen:
+                client.subscribe(v, qos=1)
+                seen.add(v)
+        self._connected.set()
+
+    def _publish_discovery(self, client, ent: Entity) -> None:
+        client.publish(self._discovery_topic(ent),
+                       json.dumps(self._discovery_payload(ent)),
+                       qos=1, retain=True)
+
+    def _sync_ams_entities(self, derived: dict) -> None:
+        """Publish discovery for AMS trays / units that appeared, and an empty
+        config (HA: delete) for ones that went away."""
+        want = {e.key: e for e in ams_entities(sorted(derived.get("ams") or {}),
+                                                sorted(derived.get("ams_units") or {}))}
+        if want.keys() == self._ams_entities.keys():
+            return
+        gone = [e for k, e in self._ams_entities.items() if k not in want]
+        added = [e for k, e in want.items() if k not in self._ams_entities]
+        self._ams_entities = want
+        if not self._connected.is_set():
+            return                      # _on_connect publishes the full set
+        for e in added:
+            self._publish_discovery(self._client, e)
+        for e in gone:
+            self._client.publish(self._discovery_topic(e), "", qos=1, retain=True)
 
     def _on_disconnect(self, _client, _userdata, _flags, reason_code, _props):
+        self._connected.clear()
         LOG.warning("disconnected rc=%s", reason_code)
 
     def _on_message(self, _client, _userdata, msg) -> None:
@@ -531,20 +722,29 @@ class HAPublisher:
                 if payload.upper() == "SILENCE":
                     # Beep_volume=0 silences the buzzer
                     self._http_post("/control/gcode", {"line": "M300 S0 P0"})
+            elif topic == f"{self.base_topic}/ams/unload":
+                self._http_post("/control/ams_unload", {})
             elif topic.endswith("/load") and "/ams/" in topic:
-                # x2d/<id>/ams/<slot>/load → POST /control/ams_load
-                m = re.match(re.escape(self.base_topic) + r"/ams/(\d+)/load$", topic)
-                if m:
-                    self._http_post("/control/ams_load",
-                                     {"slot": int(m.group(1))})
+                # x2d/<id>/ams/<a1..d4>/load → POST /control/ams_load {tray}
+                # (legacy x2d/<id>/ams/<1..16>/load → {slot}, 1-based).
+                m = re.match(re.escape(self.base_topic)
+                             + r"/ams/([a-p][1-4]|\d+)/load$", topic)
+                if m and m.group(1).isdigit():
+                    self._http_post("/control/ams_load", {"slot": int(m.group(1))})
+                elif m:
+                    lab = m.group(1)
+                    tray = (ord(lab[0]) - ord("a")) * 4 + int(lab[1]) - 1
+                    self._http_post("/control/ams_load", {"tray": tray})
             elif "/temp/" in topic and topic.endswith("/set"):
                 # x2d/<id>/temp/<target>/set
                 m = re.match(re.escape(self.base_topic)
-                              + r"/temp/(bed|nozzle|chamber)/set$", topic)
+                              + r"/temp/(bed|nozzle|nozzle_left|chamber)/set$", topic)
                 if m:
-                    self._http_post("/control/temp",
-                                     {"target": m.group(1),
-                                      "value":  int(float(payload))})
+                    body: dict[str, Any] = {"target": m.group(1),
+                                            "value": int(float(payload))}
+                    if m.group(1) == "nozzle_left":
+                        body.update(target="nozzle", idx=1)
+                    self._http_post("/control/temp", body)
             elif topic == f"{self.base_topic}/sound/set":
                 # ha-bambulab parity: prompt-sound switch.
                 state = "on" if payload.upper() in ("ON", "1", "TRUE") else "off"
@@ -596,7 +796,7 @@ class HAPublisher:
                             state = envelope.get("state") or {}
                             self._client.publish(
                                 self._state_topic(),
-                                json.dumps(state),
+                                json.dumps(self.state_payload(state)),
                                 qos=0, retain=True)
             except (urllib.error.URLError, ConnectionError,
                     TimeoutError, OSError) as e:
@@ -604,6 +804,16 @@ class HAPublisher:
             if self._stop.wait(backoff):
                 break
             backoff = min(backoff * 1.5, 15.0)
+
+    def state_payload(self, state: dict) -> dict:
+        """The JSON published on the state topic: the report plus `beambam`."""
+        try:
+            derived = derive_state(state)
+        except Exception as e:                       # never stop the feed
+            LOG.warning("derive_state failed: %s", e)
+            derived = {}
+        self._sync_ams_entities(derived)
+        return {**state, "beambam": derived}
 
     # ----- lifecycle ---------------------------------------------------
     def _snapshot_loop(self) -> None:

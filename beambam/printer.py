@@ -210,20 +210,16 @@ class Printer(AbstractContextManager):
                        "loop_times": 0, "interval_time": 0}
         })
 
-    def ams_load(self, slot: int) -> None:
-        """Load filament from AMS global slot (0..15) into the active
-        extruder."""
-        self.mqtt.publish({
-            "print": {"sequence_id": "0", "command": "ams_change_filament",
-                      "target": int(slot), "curr_temp": 215, "tar_temp": 215}
-        })
+    def ams_load(self, slot: int, *, extruder: int | None = None) -> None:
+        """Load filament from AMS global slot (0..15; 254/255 = external
+        spools) — into `extruder` (0 right, 1 left) on dual-nozzle printers."""
+        from beambam.ams import build_change_filament_payload
+        self.mqtt.publish(build_change_filament_payload(int(slot), extruder=extruder))
 
     def ams_unload(self) -> None:
         """Unload the currently-loaded filament back to its AMS slot."""
-        self.mqtt.publish({
-            "print": {"sequence_id": "0", "command": "ams_change_filament",
-                      "target": 255, "curr_temp": 215, "tar_temp": 215}
-        })
+        from beambam.ams import build_change_filament_payload
+        self.mqtt.publish(build_change_filament_payload(None))
 
     def home(self, *, axes: str = "XYZ") -> None:
         """Home one or more axes. `axes='Z'` for Z-only, 'XY' for the

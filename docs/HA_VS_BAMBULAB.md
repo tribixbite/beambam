@@ -48,20 +48,20 @@ printer** (12 sensors + 13 expansion sensors + 12 AMS + 1 switch +
 | `heatbreak_fan_speed`             | `sensor.heatbreak_fan_speed` | ✅ parity | |
 | `speed_profile`                   | `sensor.speed_profile`     | ✅ parity | |
 | `hms` / `hms_errors`              | `sensor.hms_count`         | ✅ parity | error count; full HMS list via `x2d://state` MCP resource |
-| `ip_address`                      | `sensor.ip_address`        | ✅ parity | from `print.net.info[0].ip` |
-| `firmware_update` (binary)        | (omitted)                   | ➖ planned | X2D firmware updates ship via cloud only; LAN can't trigger |
+| `ip_address`                      | `sensor.ip_address`        | ✅ parity | dotted quad from the little-endian `print.net.info[0].ip` |
+| `firmware_update` (binary)        | `sensor.firmware_available` | ✅ read-only | new version or `up to date` (`get_version` / `upgrade_state`); installing still needs the printer or Handy |
 | `online`                          | `binary_sensor.online`     | ✅ parity | + retained `availability` topic with offline LWT |
-| `door_open`                       | `binary_sensor.door_open`  | ✅ parity | maps to `print.hw_switch_state == 1` |
+| `door_open`                       | (not reported over LAN)    | ➖ N/A | `hw_switch_state` is the external-spool filament sensor → `binary_sensor.ext_spool_filament` |
 | `printable_objects`               | `sensor.printable_objects` | ✅ parity | count of `print.s_obj[]` |
 | `skipped_objects`                 | `sensor.skipped_objects`   | ✅ parity | |
 | `total_usage_hours`               | `sensor.total_usage_hours` | ✅ parity | hours, `total_increasing` |
-| `tray` (per-AMS-slot color)       | `sensor.ams_slot{1..4}_color` | ✅ parity | RGB hex, alpha stripped |
-| `tray.tray_type` (per-slot mat)   | `sensor.ams_slot{1..4}_material` | ✅ parity | |
-| `humidity`                        | (planned)                  | ➖ planned | `print.ams.ams[0].humidity` — easy add |
-| `humidity_index`                  | (planned)                  | ➖ planned | derived |
+| `tray` (per-AMS-slot color)       | `sensor.ams_{a1..d4}_color` | ✅ parity | every unit, RGB hex |
+| `tray.tray_type` (per-slot mat)   | `sensor.ams_{a1..d4}_material` | ✅ parity | `empty` for an empty slot |
+| `humidity`                        | `sensor.ams_{a..d}_humidity` | ✅ parity | %RH (`humidity_raw`) |
+| `humidity_index`                  | `binary_sensor.ams_{a..d}_damp` | ✅ | level ≥ 3 (over 40 %RH) |
 | `drying`/`drying_temperature`/`drying_filament`/`drying_duration`/`remaining_drying_time` | (planned) | ➖ planned | AMS dryer entities |
 | `tool_module`                     | (X-series specific)        | ➖ N/A | X2D has 2 nozzles, both reported as `nozzle_temp` |
-| `left_nozzle_*` / `right_nozzle_*`| (X-series specific)        | ➖ planned | will split when needed; X2D pushall doesn't separate them yet |
+| `left_nozzle_*` / `right_nozzle_*`| `sensor.nozzle_{left,right}_{temp,target,tray}`, `number.nozzle_left_set` | ✅ parity | from `device.extruder.info[]` (packed temp words) |
 | `pause` / `resume` / `stop` (button) | `button.pause/resume/stop` | ✅ parity | |
 | `home` (implicit via gcode)       | `button.home`              | ✅ parity | |
 | `level` (implicit via gcode)      | `button.level`             | ✅ parity | |

@@ -641,3 +641,33 @@ def cmd_ams(args: argparse.Namespace) -> int:
 
     print(f"unknown ams subcommand: {args.ams_cmd}", file=sys.stderr)
     return 2
+
+
+def build_change_filament_payload(tray: int | None, *, curr_temp: int = 215,
+                                  tar_temp: int = 215,
+                                  extruder: int | None = None) -> dict[str, Any]:
+    """`print.ams_change_filament` — load global tray `tray`, or unload (None).
+
+    Mirrors MachineObject::command_ams_change_filament (DeviceManager.cpp:1537):
+    `ams_id` / `slot_id` name the tray, `target` is the global tray id
+    (ams*4 + slot; the external spools 254/255 send their own id with slot 0),
+    and unload is `target = slot_id = 255`. `extruder` (0 right, 1 left) is
+    sent as `extruder_id` on dual-nozzle printers, as Bambu Studio does when a
+    nozzle is chosen. Raises ValueError for a tray id that cannot exist."""
+    from beambam.cli._helpers import _print_cmd
+    body: dict[str, Any] = {"curr_temp": int(curr_temp), "tar_temp": int(tar_temp)}
+    if tray is None:
+        # Unload: ams_id is ignored by the firmware for the unload sentinel;
+        # Bambu Studio sends the loaded tray's unit, 255 when unknown.
+        body.update(ams_id=255, target=255, slot_id=255)
+    elif tray in (254, 255):
+        body.update(ams_id=tray, target=tray, slot_id=0)
+    elif 0 <= tray < 64:
+        body.update(ams_id=tray // 4, target=tray, slot_id=tray % 4)
+    else:
+        raise ValueError(f"tray {tray} is not an AMS tray (0..63) or external spool (254/255)")
+    if extruder is not None:
+        if extruder not in (0, 1):
+            raise ValueError("extruder must be 0 (right) or 1 (left)")
+        body["extruder_id"] = int(extruder)
+    return _print_cmd("ams_change_filament", **body)

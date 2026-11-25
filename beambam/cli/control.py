@@ -334,36 +334,20 @@ def cmd_fod_check(args: argparse.Namespace) -> int:
 def cmd_ams_unload(args: argparse.Namespace) -> int:
     """MachineObject::command_ams_change_filament with !load —
     DeviceManager.cpp:1537. `target=255` is the unload sentinel."""
-    from beambam.cli._helpers import _print_cmd
-    payload = _print_cmd(
-        "ams_change_filament",
-        curr_temp=int(args.curr_temp),
-        tar_temp=int(args.tar_temp),
-        ams_id=int(args.ams),
-        target=255,
-        slot_id=255,
-    )
+    from beambam.ams import build_change_filament_payload
+    payload = build_change_filament_payload(
+        None, curr_temp=int(args.curr_temp), tar_temp=int(args.tar_temp))
+    payload["print"]["ams_id"] = int(args.ams)
     return _publish(args, payload)
 
 
 def cmd_ams_load(args: argparse.Namespace) -> int:
     """MachineObject::command_ams_change_filament with load —
-    DeviceManager.cpp:1537. `target` is the global tray id
-    (ams_id*4 + slot_id), with a special case for ams_id=0 / slot=0
-    where the firmware expects bare ams_id, not 0."""
-    from beambam.cli._helpers import _print_cmd
-    ams_id = int(args.ams)
-    slot_id = int(args.slot)
-    tray_id = ams_id * 4 + slot_id
-    target = ams_id if tray_id == 0 else tray_id
-    payload = _print_cmd(
-        "ams_change_filament",
-        curr_temp=int(args.curr_temp),
-        tar_temp=int(args.tar_temp),
-        ams_id=ams_id,
-        target=target,
-        slot_id=slot_id,
-    )
+    DeviceManager.cpp:1537 (see beambam.ams.build_change_filament_payload)."""
+    from beambam.ams import build_change_filament_payload
+    payload = build_change_filament_payload(
+        int(args.ams) * 4 + int(args.slot),
+        curr_temp=int(args.curr_temp), tar_temp=int(args.tar_temp))
     return _publish(args, payload)
 
 

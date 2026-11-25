@@ -49,7 +49,7 @@ def cmd_daemon(args: argparse.Namespace) -> int:
     from beambam.mqtt import X2DClient
     from beambam.filament_mapping import plan_print, read_project
     from beambam.print_job import PrintRefusal, start_print
-    from beambam.state_hub import StateHub
+    from beambam.state_hub import StateHub, merge_report
     # Canonical homes for everything we need:
     #   * `_serve_http`     — beambam.serve_http
     #   * `_WEB_DIR_DEFAULT`— beambam package root (sibling of beambam/)
@@ -152,7 +152,10 @@ def cmd_daemon(args: argparse.Namespace) -> int:
               f"{queue_mgr._path}", file=sys.stderr)
 
     def make_on_state(name: str):
-        def on_state(state: dict) -> None:
+        def on_state(msg: dict) -> None:
+            # Fold the report into the cached state (acks, `info` replies and
+            # delta pushes must not replace it) — see state_hub.merge_report.
+            state = merge_report(states.get(name), msg)
             states[name] = state
             # Fan out to every subscriber of the per-printer hub.
             # Slow consumers drop oldest entries; the MQTT thread
@@ -179,7 +182,7 @@ def cmd_daemon(args: argparse.Namespace) -> int:
             if not args.quiet:
                 print(json.dumps({"ts": time.time(),
                                   "printer": name,
-                                  "state": state}), flush=True)
+                                  "state": msg}), flush=True)
         return on_state
 
     clients: dict[str, X2DClient] = {}
@@ -217,8 +220,19 @@ def cmd_daemon(args: argparse.Namespace) -> int:
             print(f"[x2d-bridge] {name or '<default>'}: pushall "
                   f"failed: {e}", file=sys.stderr)
 
+    def _request_versions(name: str, cli: X2DClient) -> None:
+        # Firmware versions (printer, each AMS, buffer, …) only arrive as the
+        # reply to `info.get_version`; merged into the cached state as `info`.
+        try:
+            cli.publish({"info": {"sequence_id": _next_seq(),
+                                  "command": "get_version"}})
+        except Exception as e:
+            print(f"[x2d-bridge] {name or '<default>'}: get_version "
+                  f"failed: {e}", file=sys.stderr)
+
     for name, cli in clients.items():
         _safe_pushall(name, cli)
+        _request_versions(name, cli)
 
     if args.http:
         def get_state(printer: str):
@@ -257,11 +271,17 @@ def cmd_daemon(args: argparse.Namespace) -> int:
     _signal.signal(_signal.SIGINT, _handle_sig)
     _signal.signal(_signal.SIGTERM, _handle_sig)
 
+    last_versions = time.time()
     while not stop.is_set():
         if stop.wait(period):
             break
+        refresh_versions = time.time() - last_versions >= 3600
         for name, cli in clients.items():
             _safe_pushall(name, cli)
+            if refresh_versions:
+                _request_versions(name, cli)
+        if refresh_versions:
+            last_versions = time.time()
     for cli in clients.values():
         try:
             cli.disconnect()
