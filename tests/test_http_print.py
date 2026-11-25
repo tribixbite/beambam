@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import socket
+import sys
 import threading
 import time
 import urllib.error
@@ -194,6 +195,11 @@ def test_slice_print_spawns_the_cli(tmp_path, daemon, monkeypatch):
     assert "--slot" not in argv and "--printer" not in argv and "--yes" in argv
 
 
+# The headless slicer (bs-bionic) is a POSIX executable, and so is its stand-in (a shebang script):
+# Windows cannot exec either, so the daemon's slicing is tested where it exists.
+_POSIX_SLICER = pytest.mark.skipif(sys.platform == "win32", reason="the headless slicer is POSIX-only")
+
+
 def _fake_slicer(root: Path, *, ok: bool = True) -> Path:
     """A stand-in `bs-bionic/.../bambu-studio`: records its argv, writes result.json and the
     .gcode.3mf the way the real CLI does (into --outputdir, named by --export-3mf)."""
@@ -202,8 +208,7 @@ def _fake_slicer(root: Path, *, ok: bool = True) -> Path:
     machine = root / "bs-bionic" / "resources" / "profiles" / "BBL" / "machine"
     machine.mkdir(parents=True)
     (machine / "Bambu Lab X2D 0.4 nozzle.json").write_text("{}")
-    import sys as _sys
-    exe.write_text(f"#!{_sys.executable}\n" + """import json, os, sys
+    exe.write_text(f"#!{sys.executable}\n" + """import json, os, sys
 a = sys.argv[1:]
 out = a[a.index("--outputdir") + 1]; name = a[a.index("--export-3mf") + 1]
 open(os.path.join(out, "argv.json"), "w").write(json.dumps(a))
@@ -239,6 +244,7 @@ def _wait(port: int, poll: str) -> dict:
     raise AssertionError(f"job never finished: {job}")
 
 
+@_POSIX_SLICER
 def test_slice_a_project_then_plan_it(tmp_path, daemon, monkeypatch):
     import beambam.slice_service as ss
     port, _ = daemon
@@ -261,6 +267,7 @@ def test_slice_a_project_then_plan_it(tmp_path, daemon, monkeypatch):
     assert argv[0] == "--slice" and argv[-1].endswith("_jolteon_pokefit.3mf")
 
 
+@_POSIX_SLICER
 def test_slice_refusals(tmp_path, daemon, monkeypatch):
     import beambam.slice_service as ss
     port, _ = daemon
