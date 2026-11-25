@@ -4,6 +4,19 @@ All notable changes to this project.
 
 ## [Unreleased]
 
+### Fixed
+- **Files sliced in the Filament Track Switch's automatic nozzle mode now
+  print** (`enable_filament_dynamic_map`, read from the plate's
+  `slice_info.config` first, then `project_settings.config`, as Bambu Studio
+  does). Bambu Studio asks the printer for a nozzle mapping only on printers
+  with a hotend rack (`fun` bit 60); the X2D and H2D have none, so nothing
+  extra is sent. beambam now applies Bambu Studio's checks instead of
+  refusing: the switch must be installed and set up, and since the gcode may
+  move a filament between nozzles, each filament needs a tray that reaches
+  both (any switch-routed AMS tray; an external spool feeds only one nozzle).
+  The plan shows such filaments on nozzle `both`. Rack printers are still
+  refused with an explanation.
+
 ## v1.6.0 — filament mapping, AMS sync, man-page help (2026-11-24)
 
 ### Added

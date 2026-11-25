@@ -24,7 +24,8 @@ from beambam import mqtt_sign
 
 def make_3mf(tmp_path: Path, filaments: list[tuple[str, str, str, str]], *,
              used: dict[int, list[int]] | None = None, name: str = "job.gcode.3mf",
-             switcher: bool = False, dynamic: bool = False) -> Path:
+             switcher: bool = False, dynamic: bool = False,
+             plate_dynamic: bool | None = None) -> Path:
     """filaments: [(type, colour, profile_id, nozzle '1'|'2')]; used: {plate: [1-based ids]}."""
     used = used or {1: [1]}
     ps = {
@@ -42,7 +43,10 @@ def make_3mf(tmp_path: Path, filaments: list[tuple[str, str, str, str]], *,
     for plate, ids in used.items():
         fil = "".join(f'<filament id="{i}" type="{filaments[i - 1][0]}" '
                       f'color="{filaments[i - 1][1]}" used_g="1.5"/>' for i in ids)
-        plates.append(f'<plate><metadata key="index" value="{plate}"/>{fil}</plate>')
+        meta = ("" if plate_dynamic is None else
+                f'<metadata key="enable_filament_dynamic_map" '
+                f'value="{"true" if plate_dynamic else "false"}"/>')
+        plates.append(f'<plate><metadata key="index" value="{plate}"/>{meta}{fil}</plate>')
     path = tmp_path / name
     with zipfile.ZipFile(path, "w") as z:
         z.writestr("Metadata/project_settings.config", json.dumps(ps))
@@ -192,14 +196,79 @@ def test_left_nozzle_filament_cannot_use_right_only_ams(tmp_path):
     assert any("only feeds the right nozzle" in e for e in plan.errors)
 
 
-def test_switch_mismatch_is_a_note_and_dynamic_map_is_refused(tmp_path, x2d_state):
+def test_switch_mismatch_is_a_note(tmp_path, x2d_state):
     p = make_3mf(tmp_path, [("PLA", "#FFFFFF", "", "1")], switcher=False)
     assert any("Filament Track Switch" in n for n in
                fm.plan_print(fm.read_project(p), x2d_state).notes)
-    d = make_3mf(tmp_path, [("PLA", "#FFFFFF", "", "1")], name="d.gcode.3mf",
-                 switcher=True, dynamic=True)
-    with pytest.raises(fm.MappingError, match="automatic nozzle mode"):
-        fm.plan_print(fm.read_project(d), x2d_state)
+
+
+# --------------------------------------------------------------------------
+# the switch's automatic nozzle mode (enable_filament_dynamic_map)
+# --------------------------------------------------------------------------
+
+def _dynamic(tmp_path: Path, filaments=None, **kw) -> Path:
+    return make_3mf(tmp_path, filaments or [("PLA", "#FFFFFF", "", "1")],
+                    name="d.gcode.3mf", switcher=True, dynamic=True, **kw)
+
+
+def test_dynamic_map_prints_on_an_x2d_with_the_switch_set_up(tmp_path, x2d_state):
+    """No hotend rack → Bambu Studio sends no nozzle_mapping; every filament
+    must sit on a switch-routed tray (reaches both nozzles)."""
+    proj = fm.read_project(_dynamic(tmp_path, [("PLA", "#FFFFFF", "", "1"),
+                                               ("PETG", "#F72323", "GFG99", "2")],
+                                    used={1: [1, 2]}))
+    assert proj.dynamic_nozzle_map
+    assert all(f.extruders == {fm.MAIN_EXTRUDER, fm.DEPUTY_EXTRUDER} for f in proj.used)
+    plan = fm.plan_print(proj, x2d_state)
+    assert not plan.errors
+    assert [a.tray.tray_id for a in plan.assignments] == [7, 0]   # B4 white PLA, A1 red PETG
+    assert any("automatic nozzle mode" in n for n in plan.notes)
+    assert fm.plan_to_json(plan)["filaments"][0]["nozzle"] == "both"
+    assert "both" in fm.format_plan(plan, color=False)
+
+
+def test_plate_metadata_decides_the_dynamic_mode(tmp_path):
+    """slice_info's per-plate flag wins over project_settings (as the real
+    slicer writes it: project 0, plate "true" — or the reverse)."""
+    on = make_3mf(tmp_path, [("PLA", "#FFFFFF", "", "1")], name="on.gcode.3mf",
+                  plate_dynamic=True)
+    off = make_3mf(tmp_path, [("PLA", "#FFFFFF", "", "1")], name="off.gcode.3mf",
+                   dynamic=True, plate_dynamic=False)
+    assert fm.read_project(on).dynamic_nozzle_map
+    assert not fm.read_project(off).dynamic_nozzle_map
+
+
+def test_dynamic_map_refuses_an_external_spool(tmp_path, x2d_state):
+    """An external spool feeds one nozzle only; the gcode may need the other."""
+    plan = fm.plan_print(fm.read_project(_dynamic(tmp_path)), x2d_state, slot=254)
+    assert any("automatic nozzle mode" in e and "routed through the switch" in e
+               for e in plan.errors)
+
+
+def test_dynamic_map_needs_the_switch(tmp_path):
+    st = make_state([(RIGHT_ONLY, [tray(0, "PLA", "#FFFFFF")])], switch=False)
+    with pytest.raises(fm.MappingError, match="needs a Filament Track Switch"):
+        fm.plan_print(fm.read_project(_dynamic(tmp_path)), st)
+
+
+def test_dynamic_map_needs_the_switch_set_up(tmp_path):
+    st = make_state([("10001E03", [tray(0, "PLA", "#FFFFFF")]),
+                     ("1E001E03", [tray(0, "PLA", "#FFFFFF")])])   # bits 24-27 = E: no input
+    assert not fm.read_topology(st).switch_ready
+    with pytest.raises(fm.MappingError, match="not set up"):
+        fm.plan_print(fm.read_project(_dynamic(tmp_path)), st)
+
+
+def test_dynamic_map_on_a_rack_printer_is_still_refused(tmp_path, x2d_state):
+    x2d_state["print"]["fun"] = format(1 << 60, "X")        # nozzle rack supported
+    assert fm.read_topology(x2d_state).nozzle_rack
+    with pytest.raises(fm.MappingError, match="hotend rack"):
+        fm.plan_print(fm.read_project(_dynamic(tmp_path)), x2d_state)
+
+
+def test_live_x2d_fun_word_has_no_rack(x2d_state):
+    x2d_state["print"]["fun"] = "44029FD1B30F9CB3"         # the user's X2D, 2026-11-25
+    assert not fm.read_topology(x2d_state).nozzle_rack
 
 
 # --------------------------------------------------------------------------

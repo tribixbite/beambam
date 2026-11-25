@@ -44,8 +44,16 @@ beambam differences, deliberately:
     → colour first. Material CLASS compatibility (PLA vs PETG …) is always a
     hard constraint — the gcode's temperatures are per filament.
   * Files sliced with `enable_filament_dynamic_map` (the switch's automatic
-    nozzle mode) are refused: they need a printer-computed `nozzle_mapping`
-    that beambam cannot send yet (see print_job.request_auto_nozzle_mapping).
+    nozzle mode) let the gcode move a filament between nozzles, so
+    `filament_map` no longer says which nozzle prints it. Bambu Studio's rule
+    (`SelectMachineDialog::CheckErrorDynamicSwitchNozzle`,
+    `get_mapped_nozzles`): the switch must be installed AND set up, and the
+    printer is asked for a `nozzle_mapping` (`get_auto_nozzle_mapping`) only
+    when it has a hotend rack (`fun` bit 60, `DevNozzleRack::IsSupported`).
+    The X2D/H2D have no rack, so nothing extra is sent; beambam treats every
+    filament of such a file as needing a tray that reaches BOTH nozzles
+    (every switch-routed AMS tray does; an external spool feeds only one).
+    Rack printers (H2C) are still refused: their mapping is printer-computed.
 """
 from __future__ import annotations
 
@@ -126,6 +134,13 @@ class ProjectFilament:
     profile_id: str       # e.g. "GFA00" ('' when the slice didn't record one)
     nozzle: int           # extruder id it was sliced for (MAIN/DEPUTY)
     used_g: float
+    # Extruders the gcode may print this filament from: {nozzle}, or every
+    # extruder when the file was sliced in the switch's automatic nozzle mode.
+    nozzles: frozenset[int] = frozenset()
+
+    @property
+    def extruders(self) -> frozenset[int]:
+        return self.nozzles or frozenset({self.nozzle})
 
     @property
     def number(self) -> int:
@@ -179,10 +194,13 @@ def read_project(path: Path | str, plate: int = 1) -> ProjectInfo:
 
     # slice_info lists the filaments each plate really uses (1-based ids).
     used_ids: dict[int, float] = {}
+    plate_dynamic: str | None = None
     for block in re.findall(r"<plate>.*?</plate>", slice_info, re.S):
         m = re.search(r'key="index"\s+value="(\d+)"', block)
         if not m or int(m.group(1)) != plate:
             continue
+        dm = re.search(r'key="enable_filament_dynamic_map"\s+value="([^"]*)"', block)
+        plate_dynamic = dm.group(1) if dm else None
         for fm in re.finditer(r"<filament\s+([^>]*)/>", block):
             attrs = dict(re.findall(r'(\w+)="([^"]*)"', fm.group(1)))
             try:
@@ -192,6 +210,11 @@ def read_project(path: Path | str, plate: int = 1) -> ProjectInfo:
     if not used_ids:
         # Older slices without slice_info: assume filament 1 only.
         used_ids = {0: 0.0}
+    # The plate's own value wins, then the project's — the order Bambu Studio
+    # reads it in for a file already on the printer (use_dynamic_nozzle_map).
+    dynamic = _flag(plate_dynamic if plate_dynamic is not None
+                    else ps.get("enable_filament_dynamic_map")) and nozzle_count > 1
+    every_nozzle = frozenset({MAIN_EXTRUDER, DEPUTY_EXTRUDER})
 
     used = tuple(
         ProjectFilament(
@@ -201,6 +224,7 @@ def read_project(path: Path | str, plate: int = 1) -> ProjectInfo:
             profile_id=(ids[i] if i < len(ids) else "").strip(),
             nozzle=nozzle_of(i),
             used_g=g,
+            nozzles=every_nozzle if dynamic else frozenset({nozzle_of(i)}),
         )
         for i, g in sorted(used_ids.items()))
     return ProjectInfo(
@@ -208,7 +232,7 @@ def read_project(path: Path | str, plate: int = 1) -> ProjectInfo:
         total_filaments=max(len(types), max(used_ids) + 1),
         used=used, nozzle_count=nozzle_count,
         has_switcher=_flag(ps.get("has_filament_switcher")),
-        dynamic_nozzle_map=_flag(ps.get("enable_filament_dynamic_map")),
+        dynamic_nozzle_map=dynamic,
     )
 
 
@@ -253,6 +277,7 @@ class Topology:
     switch_installed: bool
     switch_ready: bool
     trays: tuple[Tray, ...]
+    nozzle_rack: bool = False    # hotend rack (H2C): nozzle mapping is printer-computed
 
     def tray(self, tray_id: int) -> Tray | None:
         return next((t for t in self.trays if t.tray_id == tray_id), None)
@@ -287,6 +312,8 @@ def read_topology(state: dict) -> Topology:
     ext_info = ((p.get("device") or {}).get("extruder") or {}).get("info") or []
     nozzle_count = max(1, len(ext_info))
     switch_installed = bool(_bits(_hexint(p.get("aux")), 29, 1))
+    # `fun` bit 60 = nozzle rack supported (DeviceManager.cpp parse of "fun").
+    nozzle_rack = bool(_bits(_hexint(p.get("fun")), 60, 1))
 
     trays: list[Tray] = []
     ams_ready = True
@@ -346,7 +373,8 @@ def read_topology(state: dict) -> Topology:
             switch_input=None, unit_type="External", remain=-1,
         ))
     return Topology(nozzle_count=nozzle_count, switch_installed=switch_installed,
-                    switch_ready=switch_installed and ams_ready, trays=tuple(trays))
+                    switch_ready=switch_installed and ams_ready, trays=tuple(trays),
+                    nozzle_rack=nozzle_rack)
 
 
 # ---------------------------------------------------------------------------
@@ -362,6 +390,14 @@ def nozzle_name(extruder: int, nozzle_count: int) -> str:
     if nozzle_count < 2:
         return "-"
     return "right" if extruder == MAIN_EXTRUDER else "left"
+
+
+def nozzles_name(f: "ProjectFilament", nozzle_count: int) -> str:
+    """Display name of the nozzle(s) a filament prints from ('both' in the
+    switch's automatic nozzle mode)."""
+    if nozzle_count >= 2 and len(f.extruders) > 1:
+        return "both"
+    return nozzle_name(f.nozzle, nozzle_count)
 
 
 @dataclass
@@ -416,12 +452,12 @@ def _candidates(f: ProjectFilament, topo: Topology, *, use_ams: bool) -> list[Tr
 
     def fits(t: Tray) -> bool:
         # External spools may report no type; accept them unless they say otherwise.
-        return f.nozzle in t.extruders and (
+        return f.extruders <= t.extruders and (
             _material_class(t.type) == want if t.type else t.external)
 
     ams = [t for t in topo.trays if not t.external and not t.empty and fits(t)]
     ext = [t for t in topo.trays if t.external and fits(t)]
-    nozzle_has_ams = any(not t.external and f.nozzle in t.extruders for t in topo.trays)
+    nozzle_has_ams = any(not t.external and f.extruders <= t.extruders for t in topo.trays)
     if not use_ams or not nozzle_has_ams:
         return ext
     return ams
@@ -572,28 +608,34 @@ def material_conflicts(sync: AmsColourSync, sliced_type: str) -> list[str]:
             if want and _material_class(ttype) != want]
 
 
+def _nozzle_phrase(f: ProjectFilament, topo: Topology) -> str:
+    name = nozzles_name(f, topo.nozzle_count)
+    return "both nozzles" if name == "both" else f"{name} nozzle"
+
+
 def _check(a: Assignment, project: ProjectInfo, topo: Topology) -> None:
     """Fill in hard errors and soft warnings for one assignment."""
     f, t = a.filament, a.tray
     if t is None:
         a.errors.append(
             f"no loaded {f.type or 'compatible'} tray can feed the "
-            f"{nozzle_name(f.nozzle, topo.nozzle_count)} nozzle — load one, or pick a tray "
+            f"{_nozzle_phrase(f, topo)} — load one, or pick a tray "
             f"with --map {f.number}=<slot>")
         return
     if t.empty and not t.external:   # external spools don't report presence
         a.errors.append(f"{t.label()} is empty")
         return
-    if f.nozzle not in t.extruders:
+    if not f.extruders <= t.extruders:
         if not t.extruders:
             why = "is routed to a Filament Track Switch the printer doesn't report as set up"
         else:
             why = ("only feeds the " + "/".join(nozzle_name(e, topo.nozzle_count)
                                                 for e in sorted(t.extruders)) + " nozzle")
-        a.errors.append(
-            f"sliced for the {nozzle_name(f.nozzle, topo.nozzle_count)} nozzle but "
-            f"{t.label()} {why} — re-slice with this filament on that nozzle, or choose "
-            f"another tray")
+        fix = ("this file was sliced in the switch's automatic nozzle mode, so the "
+               "filament may print from either nozzle — choose a tray routed through the "
+               "switch" if len(f.extruders) > 1 else
+               "re-slice with this filament on that nozzle, or choose another tray")
+        a.errors.append(f"sliced for the {_nozzle_phrase(f, topo)} but {t.label()} {why} — {fix}")
     if f.type and t.type and _material_class(f.type) != _material_class(t.type):
         a.errors.append(f"sliced as {f.type} but {t.label()} holds {t.type} — different "
                         f"material, the gcode's temperatures would be wrong")
@@ -665,11 +707,25 @@ def plan_print(project: ProjectInfo, state: dict, *, use_ams: bool = True,
     topo = read_topology(state)
     notes: list[str] = []
     if project.dynamic_nozzle_map:
-        raise MappingError(
-            "this file was sliced for the Filament Track Switch's automatic nozzle "
-            "mode (enable_filament_dynamic_map); beambam cannot send the printer-"
-            "computed nozzle mapping it needs yet. Re-slice with a fixed filament → "
-            "nozzle assignment, or start it from Bambu Studio / Handy.")
+        # Bambu Studio's CheckErrorDynamicSwitchNozzle: hard stops, not notes.
+        if topo.nozzle_rack:
+            raise MappingError(
+                "this file was sliced for the automatic nozzle mode and this printer has "
+                "a hotend rack: the nozzle mapping it needs is computed by the printer "
+                "(get_auto_nozzle_mapping v1), which beambam does not send yet. Start it "
+                "from Bambu Studio, or re-slice with a fixed filament → nozzle assignment.")
+        if not topo.switch_installed:
+            raise MappingError(
+                "this file was sliced for the Filament Track Switch's automatic nozzle "
+                "mode, which needs a Filament Track Switch — install one, or re-slice with "
+                "a fixed filament → nozzle assignment")
+        if not topo.switch_ready:
+            raise MappingError(
+                "this file was sliced for the Filament Track Switch's automatic nozzle "
+                "mode but the switch is not set up for every AMS — run its setup on the "
+                "printer first")
+        notes.append("sliced in the switch's automatic nozzle mode: each filament may "
+                     "print from either nozzle, so only switch-routed trays are used")
     if project.has_switcher != topo.switch_installed:
         notes.append(
             "the file was sliced " + ("with" if project.has_switcher else "without")
@@ -733,7 +789,7 @@ def format_plan(plan: PrintPlan, *, color: bool = False) -> str:
     for a in plan.assignments:
         f, t = a.filament, a.tray
         left = (f"{f.number:>2}. {swatch(f.colour)}{f.type:<6} {f.colour:<8} "
-                f"{f.profile_id or '-':<6} {nozzle_name(f.nozzle, topo.nozzle_count):>5}")
+                f"{f.profile_id or '-':<6} {nozzles_name(f, topo.nozzle_count):>5}")
         if t is None:
             right = sgr("1;31", "(no tray)")
         else:
@@ -762,7 +818,7 @@ def plan_to_json(plan: PrintPlan) -> dict[str, Any]:
         "filaments": [{
             "filament": a.filament.number, "type": a.filament.type,
             "colour": a.filament.colour, "profile_id": a.filament.profile_id,
-            "nozzle": nozzle_name(a.filament.nozzle, plan.topology.nozzle_count),
+            "nozzle": nozzles_name(a.filament, plan.topology.nozzle_count),
             "tray": None if a.tray is None else {
                 "tray_id": a.tray.tray_id, "label": a.tray.label(), "type": a.tray.type,
                 "colour": a.tray.colour, "profile_id": a.tray.profile_id,
