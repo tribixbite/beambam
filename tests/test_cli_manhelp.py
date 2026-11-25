@@ -26,9 +26,11 @@ def _run(*argv: str, env: dict[str, str] | None = None) -> subprocess.CompletedP
     # change the output, then apply this test's overrides.
     full_env = {k: v for k, v in os.environ.items()
                 if k not in ("FORCE_COLOR", "CLICOLOR_FORCE", "NO_COLOR", "BEAMBAM_DEBUG")}
-    full_env.update({"COLUMNS": "80", **(env or {})})
+    # UTF-8 both ways: Windows pipes default to cp1252, which would mangle
+    # the — and → in the pages before the assertions see them.
+    full_env.update({"COLUMNS": "80", "PYTHONIOENCODING": "utf-8", **(env or {})})
     return subprocess.run([sys.executable, "-m", "beambam.cli", *argv],
-                          capture_output=True, text=True, timeout=60,
+                          capture_output=True, text=True, encoding="utf-8", timeout=60,
                           cwd=str(REPO_ROOT), env=full_env)
 
 
@@ -162,7 +164,7 @@ def test_roff_manual_has_every_command(root):
 def test_install_man_writes_page(tmp_path):
     r = _run("help", "--install-man", str(tmp_path / "man1"))
     assert r.returncode == 0, r.stderr
-    page = (tmp_path / "man1" / "beambam.1").read_text()
+    page = (tmp_path / "man1" / "beambam.1").read_text(encoding="utf-8")
     assert page.startswith(".TH BEAMBAM 1 ")
 
 
@@ -253,3 +255,13 @@ def test_doctor_runs_without_a_configured_printer(tmp_path):
     assert r.returncode == 2 and "Traceback" not in r.stderr
     assert "Printer configured" in r.stdout and "beambam init" in r.stdout
     assert "\033[" not in r.stdout
+
+
+def test_narrow_console_encoding_does_not_crash():
+    """A redirected Windows console is cp1252: pages with → / — must still print."""
+    for argv in (("ams", "map", "--help"), ("help", "filament"), ("print", "x", "--slto", "1")):
+        r = subprocess.run([sys.executable, "-m", "beambam.cli", *argv], capture_output=True,
+                           cwd=str(REPO_ROOT), timeout=60,
+                           env={**os.environ, "PYTHONIOENCODING": "cp1252", "COLUMNS": "80"})
+        assert b"UnicodeEncodeError" not in r.stderr, argv
+        assert r.returncode in (0, 1, 2), (argv, r.stderr[-300:])

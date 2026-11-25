@@ -95,6 +95,10 @@ All notable changes to this project.
   with `beambam cam start` instead of a bare "Connection refused".
 - A missing input file is reported as `file not found: PATH` (some paths
   printed only the bare file name).
+- **Windows:** `beambam help --install-man` crashed writing the page (cp1252
+  can't encode `→`); it is written as UTF-8. Help, plans and errors no longer
+  raise `UnicodeEncodeError` when stdout/stderr is a narrow-codec stream (a
+  redirected Windows console); unencodable characters print as `?`.
 - `beambam jog` validates the axis (X/Y/Z/E, any case) at parse time.
 - `CloudClient.login_code_only` asked Bambu to email a login code *before*
   checking it had a way to read the code, so a call without a resolver sent a

@@ -588,7 +588,7 @@ def _install_man(parser: argparse.ArgumentParser, dest: str) -> int:
             d.mkdir(parents=True, exist_ok=True)
             out = d / "beambam.1"
             tmp = d / ".beambam.1.tmp"
-            tmp.write_text(text)
+            tmp.write_text(text, encoding="utf-8")   # roff source is UTF-8 everywhere
             tmp.replace(out)  # atomic: a concurrent `man` never sees half a file
         except OSError as e:
             print(f"cannot write {d}: {e}", file=sys.stderr)

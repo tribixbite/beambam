@@ -1357,8 +1357,26 @@ def _trailing_help(root: argparse.ArgumentParser, argv: list[str]) -> list[str]:
     return argv[:-1] + ["--help"]
 
 
+def _tolerate_narrow_stdio() -> None:
+    """Never crash on output a stream can't encode.
+
+    Help pages and plans use → ✓ ✗ — and box characters. A redirected or
+    piped Windows console is cp1252, where printing those raises
+    UnicodeEncodeError mid-command; substitute '?' there instead. UTF-8
+    streams are left as they are."""
+    for stream in (sys.stdout, sys.stderr):
+        enc = (getattr(stream, "encoding", None) or "").lower().replace("-", "")
+        reconfigure = getattr(stream, "reconfigure", None)
+        if enc != "utf8" and reconfigure is not None:
+            try:
+                reconfigure(errors="replace")
+            except (ValueError, OSError):   # detached / already-closed stream
+                pass
+
+
 def main() -> int:
     """`beambam` console-script entry point: parse argv and dispatch."""
+    _tolerate_narrow_stdio()
     p = build_parser()
     args = p.parse_args(_trailing_help(p, sys.argv[1:]))
     try:
