@@ -289,6 +289,13 @@ def cmd_daemon(args: argparse.Namespace) -> int:
         _safe_pushall(name, cli)
         _request_versions(name, cli)
 
+    stop = Event()
+    # Set when the HTTP API cannot start (port taken, bad address): the
+    # daemon then exits non-zero instead of running on without its API,
+    # which looked like a healthy daemon while requests went to whatever
+    # held the port.
+    http_failed: list[str] = []
+
     if args.http:
         def get_state(printer: str):
             fo = fanouts.get(printer)
@@ -301,7 +308,16 @@ def cmd_daemon(args: argparse.Namespace) -> int:
         def get_hub(printer: str):
             return hubs.get(printer)
 
-        Thread(target=_serve_http,
+        def _run_http(**kw) -> None:
+            try:
+                _serve_http(**kw)
+            except OSError as e:
+                http_failed.append(str(e))
+                print(f"[x2d-bridge] HTTP API on {args.http} failed to start: {e}; "
+                      "stopping the daemon", file=sys.stderr)
+                stop.set()
+
+        Thread(target=_run_http,
                kwargs={"bind": args.http, "get_state": get_state,
                        "get_last_ts": get_last_ts,
                        "max_staleness": float(args.max_staleness),
@@ -323,8 +339,6 @@ def cmd_daemon(args: argparse.Namespace) -> int:
     print(f"[x2d-bridge] daemon up; {len(clients)} printer(s); "
           f"polling every {period}s. Ctrl-C / SIGTERM to quit.",
           file=sys.stderr)
-
-    stop = Event()
 
     def _handle_sig(signum, frame):  # noqa: ARG001
         stop.set()
@@ -348,7 +362,7 @@ def cmd_daemon(args: argparse.Namespace) -> int:
             cli.disconnect()
         except Exception:
             pass
-    return 0
+    return 1 if http_failed else 0
 
 
 def cmd_serve(args: argparse.Namespace) -> int:
