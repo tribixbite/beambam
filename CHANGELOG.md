@@ -4,6 +4,8 @@ All notable changes to this project.
 
 ## [Unreleased]
 
+## v1.6.1 — print from another app over HTTP, track-switch auto nozzle files, Home Assistant fixes (2026-11-25)
+
 ### Added
 - **Print through the daemon's HTTP API** (`docs/HTTP_API.md`), for web apps
   and scripts that have no terminal: `POST /print/plan` returns the filament →
