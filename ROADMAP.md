@@ -440,8 +440,7 @@ IMPROVEMENTS is closed.
 ## How this file flows with TaskList
 
 The [TaskCreate tool](#) is **session-local** scratch space — it tracks the
-agent's current work, and the loop hook (`~/.claude/hooks/loop-tasks.sh`) keeps
-sessions going while tasks are pending. ROADMAP.md is the **durable** record.
+agent's current work. ROADMAP.md is the **durable** record.
 On session start, a new agent should read ROADMAP.md first, pick a v1.3.0
 candidate, and create a TaskCreate entry for the in-session work. On session
 end (everything completed), update ROADMAP.md so the next agent can see what
