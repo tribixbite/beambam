@@ -31,3 +31,9 @@ Running GUI apps (BambuStudio / wxWidgets 3.3) on termux-x11. These lessons were
   argument text missing at the `add_argument` site is filled from `beambam/cli/arghelp.py`.
   `tests/test_cli_manhelp.py` fails if any argument has no help, or an EXAMPLES entry does not
   parse.
+- **UX sweep for the CLI:** run every parser from `manhelp.iter_parsers(build_parser())` with no
+  arguments under an empty `HOME` (no creds, no cloud session) and `X2D_*` cleared; flag
+  tracebacks, hangs (`ha`, `cam watch` legitimately run forever) and unhelpful one-liners. A
+  missing printer must exit with `config.missing_creds_message`, never a template or traceback.
+  A user-site package (e.g. `cffi`) vanishes under a fake `HOME`, so `ModuleNotFoundError` there
+  is an artefact.
