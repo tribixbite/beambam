@@ -296,7 +296,7 @@ def _pid_alive(pid: int) -> bool:
     """
     if pid <= 0:
         return False
-    if os.name == "nt":
+    if sys.platform == "win32":
         import ctypes
         from ctypes import wintypes
         kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
@@ -385,9 +385,14 @@ def _cmd_cam_start(args: argparse.Namespace) -> int:
         # Detach from this console: a new session on POSIX, a new
         # process group without a window on Windows (where
         # start_new_session is ignored).
-        detach: dict = ({"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP
-                                          | subprocess.CREATE_NO_WINDOW}
-                        if os.name == "nt" else {"start_new_session": True})
+        # An `if` on sys.platform, not a conditional expression: mypy only
+        # narrows statements, and these constants exist only on Windows.
+        detach: dict
+        if sys.platform == "win32":
+            detach = {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP
+                                       | subprocess.CREATE_NO_WINDOW}
+        else:
+            detach = {"start_new_session": True}
         proc = subprocess.Popen(
             [sys.executable, "-m", "beambam.cli", *argv],
             stdout=log_fh, stderr=subprocess.STDOUT,

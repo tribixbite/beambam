@@ -125,13 +125,10 @@ def allowed_host_names(bind_host: str,
     except OSError:
         hn = ""
     if hn:
+        # No socket.getfqdn(): it is a reverse-DNS lookup, which takes ~30 s
+        # on macOS without a resolver answer and ran before the daemon bound
+        # its port. A fully qualified name goes in --allow-host.
         names.update({hn, f"{hn}.local"})
-        try:
-            fq = socket.getfqdn(hn).strip().lower()
-        except OSError:
-            fq = ""
-        if fq:
-            names.add(fq)
     b = bind_host.strip().strip("[]").lower()
     if b and not _is_ip_literal(b):
         names.add(b)

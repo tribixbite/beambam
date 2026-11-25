@@ -225,6 +225,28 @@ def _is_printer_active(state: dict | None) -> bool:
     return gs is not None and gs not in _IDLE_GCODE_STATES
 
 
+def _unlink_retrying(path: Path, total_s: float = 1.0) -> None:
+    """Remove the lock file. On Windows an unlink fails with EACCES while any
+    other thread or process has the file open (a waiter reading the holder's
+    pid in `_break_if_stale`); a single attempt then left the lock behind
+    until it went stale, and four busy writers could starve each other past
+    the 10 s timeout (seen in CI on windows-latest / 3.10). Readers keep it
+    open for microseconds, so retry briefly."""
+    deadline = time.monotonic() + total_s
+    while True:
+        try:
+            path.unlink()
+            return
+        except FileNotFoundError:
+            return
+        except PermissionError:
+            if time.monotonic() >= deadline:
+                return
+            time.sleep(0.005)
+        except OSError:
+            return
+
+
 class _QueueFileLock:
     """Cross-process exclusive lock: an ``O_CREAT | O_EXCL`` lock file.
 
@@ -276,12 +298,10 @@ class _QueueFileLock:
         if gone or age > self.stale_s:
             LOG.warning("breaking stale queue lock %s (%.0fs old, holder pid %s%s)",
                         self.path, age, holder or "?", " gone" if gone else "")
-            with contextlib.suppress(OSError):
-                self.path.unlink()
+            _unlink_retrying(self.path)
 
     def __exit__(self, *_exc: object) -> None:
-        with contextlib.suppress(OSError):
-            self.path.unlink()
+        _unlink_retrying(self.path)
 
 
 class QueueManager:
