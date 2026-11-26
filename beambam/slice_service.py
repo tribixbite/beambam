@@ -31,7 +31,7 @@ from pathlib import Path
 from typing import Any
 
 from beambam.slice_options import (MESH_SUFFIXES, SliceOptions, apply_to_project, has_print_settings,
-                                   mesh_args)
+                                   made_for_another_printer, mesh_args, retarget)
 
 # Wall-clock limit for one slice. A figure on the phone takes ~10 s; a full
 # multi-colour plate a few minutes.
@@ -186,8 +186,22 @@ def slice_project(src: Path, out_dir: Path, *, timeout: float = SLICE_TIMEOUT_S,
         if track_switch:
             cmd.append("--has-filament-switcher=1")
         model = src.resolve()
-    else:
+    retargeted = None
+    if not mesh:
         settings = project_settings(src)
+        retargeted = made_for_another_printer(settings)
+    if retargeted:
+        # Made for another printer (a P2S project from MakerWorld): sliced for this one with its bundled
+        # profiles, keeping the model, paint and filament assignment and the project's portable settings;
+        # its own printer profile would make a print file for the wrong printer.
+        n = len(settings.get("filament_settings_id") or []) or 1
+        cmd += mesh_args(r, retarget(settings, opts), out_dir, n_filaments=n, keep=settings, arrange=False)
+        if track_switch:
+            cmd.append("--has-filament-switcher=1")
+        model = src.resolve()
+        from beambam.slice_options import MESH_PRINTER
+        machine = r / "bs-bionic" / "resources" / "profiles" / "BBL" / "machine" / f"{MESH_PRINTER}.json"
+    elif not mesh:
         model = src.resolve()
         if opts != SliceOptions():
             model = out_dir / f"options_{src.name}"
@@ -221,7 +235,10 @@ def slice_project(src: Path, out_dir: Path, *, timeout: float = SLICE_TIMEOUT_S,
                 "error": f"{res.get('error_string') or 'slicing failed'} (code {res.get('return_code')})"
                          + (f": {why}" if why else "")}
     per = [float(f.get("total_used_g", 0)) for p in plates for f in p.get("filaments", [])]
-    return {"ok": True, "mesh": mesh, "file": str(out), "seconds": sum(float(p.get("total_predication", 0)) for p in plates),
+    if retargeted:
+        warnings.insert(0, f"Made for {retargeted}: sliced for the X2D with its own profiles (the project's "
+                           "walls, infill, shells and supports kept)")
+    return {"ok": True, "mesh": mesh, "retargeted_from": retargeted, "file": str(out), "seconds": sum(float(p.get("total_predication", 0)) for p in plates),
             "grams": sum(per), "grams_per_filament": per, "warnings": warnings,
             "machine_profile": machine.name if machine else None, "wall_seconds": time.time() - t0}
 

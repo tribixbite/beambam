@@ -197,6 +197,32 @@ def plate_map(model_settings: str, fmap: list[str]) -> str:
 
 # --------------------------------------------------------------------------- bare meshes
 
+def made_for_another_printer(settings: dict[str, Any]) -> str | None:
+    """The printer a project was made for when it is not MESH_PRINTER's model (an X2D project with another
+    nozzle size is the same printer), else None."""
+    name = str(settings.get("printer_settings_id") or "")
+    model = MESH_PRINTER.rsplit(" ", 2)[0]                       # "Bambu Lab X2D"
+    return name if name and not name.startswith(model) else None
+
+
+def retarget(settings: dict[str, Any], opts: SliceOptions) -> SliceOptions:
+    """Options for slicing a project made for another printer on MESH_PRINTER: its layer height and its
+    filaments' ids and materials, unless the caller gave them."""
+    from dataclasses import replace
+
+    def floats(v: Any) -> float | None:
+        try:
+            return round(float(v), 3)
+        except (TypeError, ValueError):
+            return None
+    lh = opts.layer_height if opts.layer_height is not None else floats(settings.get("layer_height"))
+    if lh is not None and not LAYER_RANGE[0] <= lh <= LAYER_RANGE[1]:
+        lh = None
+    return replace(opts, layer_height=lh,
+                   filament_ids=opts.filament_ids or tuple(str(x) for x in settings.get("filament_ids") or ()),
+                   filament_types=opts.filament_types or tuple(str(x) for x in settings.get("filament_type") or ()))
+
+
 def has_print_settings(path: Path) -> bool:
     """A 3MF carrying Bambu/Orca print settings (else it is geometry only and slices like a mesh)."""
     try:
@@ -276,28 +302,39 @@ def process_profile(root: Path, layer_height: float | None) -> Path:
     return best[2] if best else folder / f"{DEFAULT_PROCESS}.json"
 
 
-def mesh_process(root: Path, opts: SliceOptions, out_dir: Path) -> Path:
-    """A user process profile: the bundled one nearest the layer height, with the options on top."""
+# Process settings a project made for another printer keeps when it is sliced for MESH_PRINTER (the rest are
+# printer-specific: speeds, accelerations, line widths come from the bundled process).
+PORTABLE_KEYS = ("wall_loops", "sparse_infill_density", "sparse_infill_pattern", "top_shell_layers",
+                 "bottom_shell_layers", "enable_support", "support_type", "support_on_build_plate_only",
+                 "brim_type", "seam_position", "ironing_type", "only_one_wall_top")
+
+
+def mesh_process(root: Path, opts: SliceOptions, out_dir: Path, keep: dict[str, Any] | None = None) -> Path:
+    """A user process profile: the bundled one nearest the layer height, with `keep` (a project's portable
+    settings) and then the options on top."""
     base = process_profile(root, opts.layer_height)
     sysd = json.loads(base.read_text(encoding="utf-8"))
     user = {"type": "process", "name": "beambam process", "from": "User", "inherits": sysd["name"],
             "print_settings_id": "beambam process",
             "compatible_printers": sysd.get("compatible_printers") or [MESH_PRINTER]}
-    user.update(opts.process_keys(sysd))
+    user.update({k: str(v) for k, v in (keep or {}).items() if k in PORTABLE_KEYS and isinstance(v, (str, int, float))})
+    user.update(opts.process_keys({**sysd, **user}))
     path = out_dir / "beambam_process.json"
     path.write_text(json.dumps(user, indent=1), encoding="utf-8")
     return path
 
 
-def mesh_args(root: Path, opts: SliceOptions, out_dir: Path, n_filaments: int = 1) -> list[str]:
-    """The CLI arguments that slice a bare mesh for MESH_PRINTER with `opts` (place it on the bed, process,
-    filaments, nozzle map)."""
+def mesh_args(root: Path, opts: SliceOptions, out_dir: Path, n_filaments: int = 1,
+              keep: dict[str, Any] | None = None, arrange: bool = True) -> list[str]:
+    """The CLI arguments that slice a bare mesh, or a project made for another printer (`keep`: its portable
+    process settings; `arrange` False keeps its placement), for MESH_PRINTER with `opts` (process, filaments,
+    nozzle map)."""
     machine = _profiles(root, "machine") / f"{MESH_PRINTER}.json"
     n = max(n_filaments, len(opts.filament_ids), len(opts.filament_types), 1)
     fils = [filament_profile(root, opts.filament_ids[i] if i < len(opts.filament_ids) else None,
                              opts.filament_types[i] if i < len(opts.filament_types) else None) for i in range(n)]
-    args = ["--arrange", "1",
-            "--load-settings", f"{machine};{mesh_process(root, opts, out_dir)}",
+    args = (["--arrange", "1"] if arrange else []) + [
+            "--load-settings", f"{machine};{mesh_process(root, opts, out_dir, keep)}",
             "--load-filaments", ";".join(str(f) for f in fils)]
     if opts.nozzles:
         args += ["--filament-map-mode", "Manual", "--filament-map", ",".join(nozzle_map(opts.nozzles, n))]

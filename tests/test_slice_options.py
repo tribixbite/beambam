@@ -133,3 +133,28 @@ def test_mesh_profiles_follow_the_spool_and_the_layer(tmp_path):
     user = json.loads((out / "beambam_process.json").read_text())
     assert (user["inherits"], user["from"], user["wall_loops"], user["outer_wall_line_width"],
             user["compatible_printers"]) == ("0.20mm Standard @BBL X2D", "User", "3", "0.22", [so.MESH_PRINTER])
+
+
+def test_a_project_for_another_printer_is_sliced_for_this_one(tmp_path):
+    """A P2S project from MakerWorld: its own printer profile made a one-nozzle P2S print file (every filament
+    group 0, the nozzle map ignored). It is sliced for the X2D, keeping its walls / infill / supports."""
+    assert so.made_for_another_printer({"printer_settings_id": "Bambu Lab P2S 0.4 nozzle"}) == "Bambu Lab P2S 0.4 nozzle"
+    assert so.made_for_another_printer({"printer_settings_id": "Bambu Lab X2D 0.6 nozzle"}) is None
+    assert so.made_for_another_printer({}) is None
+    settings = {"layer_height": "0.2", "filament_ids": ["GFA00", "GFG02"], "filament_type": ["PLA", "PETG"],
+                "wall_loops": "5", "sparse_infill_density": "40%", "enable_support": "1", "outer_wall_speed": "200"}
+    opts = so.retarget(settings, so.SliceOptions(nozzles=(2, 1)))
+    assert (opts.layer_height, opts.filament_ids, opts.filament_types, opts.nozzles) == (
+        0.2, ("GFA00", "GFG02"), ("PLA", "PETG"), (2, 1))
+    assert so.retarget(settings, so.SliceOptions(layer_height=0.12, filament_ids=("GFL99",))).filament_ids == ("GFL99",)
+    root = _resources(tmp_path / "r")
+    out = tmp_path / "o"
+    out.mkdir()
+    args = so.mesh_args(root, opts, out, n_filaments=2, keep=settings, arrange=False)
+    assert "--arrange" not in args                                   # the project's own placement
+    user = json.loads((out / "beambam_process.json").read_text())
+    assert (user["wall_loops"], user["sparse_infill_density"], user["enable_support"]) == ("5", "40%", "1")
+    assert "outer_wall_speed" not in user                            # printer-specific: the bundled process's
+    # The caller's options still win over the project's.
+    so.mesh_args(root, so.SliceOptions(wall_loops=2), out, keep=settings)
+    assert json.loads((out / "beambam_process.json").read_text())["wall_loops"] == "2"

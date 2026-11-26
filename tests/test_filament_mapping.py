@@ -518,3 +518,20 @@ def test_the_nozzle_is_the_one_the_slicer_used_not_the_map_asked_for(tmp_path):
     # Without group ids (older slices): the project's map, as before.
     info = fm.read_project(make_3mf(tmp_path, fils, used={1: [1, 2]}, name="old.gcode.3mf"))
     assert [fm.nozzle_name(f.nozzle, info.nozzle_count) for f in info.used] == ["left", "left"]
+
+
+def test_a_file_sliced_for_a_printer_with_other_nozzles_is_refused(tmp_path):
+    """A one-nozzle printer's print file (a P2S project sliced as it came) must not start on the X2D."""
+    path = make_3mf(tmp_path, [("PLA", "#FFFFFFFF", "GFA00", "1")])
+    with zipfile.ZipFile(path) as z:
+        files = {n: z.read(n) for n in z.namelist()}
+    ps = json.loads(files["Metadata/project_settings.config"])
+    ps["nozzle_diameter"] = ["0.4"]
+    files["Metadata/project_settings.config"] = json.dumps(ps).encode()
+    one = tmp_path / "p2s.gcode.3mf"
+    with zipfile.ZipFile(one, "w") as z:
+        for n, b in files.items():
+            z.writestr(n, b)
+    state = make_state([("10001", [tray(0, "PLA", "#FFFFFF", "GFA00")])])
+    with pytest.raises(fm.MappingError, match="1 nozzle"):
+        fm.plan_print(fm.read_project(one), state)

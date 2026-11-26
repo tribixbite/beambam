@@ -715,6 +715,12 @@ def plan_print(project: ProjectInfo, state: dict, *, use_ams: bool = True,
     --map) overrides per filament; anything not chosen is auto-mapped."""
     topo = read_topology(state)
     notes: list[str] = []
+    if project.nozzle_count != topo.nozzle_count:
+        # A print file made for another printer (a one-nozzle P2S project's G-code on the X2D): its moves,
+        # bed size and tool changes are that printer's.
+        raise MappingError(
+            f"this file was sliced for a printer with {project.nozzle_count} nozzle(s); this printer has "
+            f"{topo.nozzle_count} — slice it again for this printer (beambam's POST /slice does that)")
     if project.dynamic_nozzle_map:
         # Bambu Studio's CheckErrorDynamicSwitchNozzle: hard stops, not notes.
         if topo.nozzle_rack:
