@@ -4,6 +4,8 @@ All notable changes to this project.
 
 ## [Unreleased]
 
+## v1.10.0 — the key, and a key-free print (2026-11-26)
+
 ### Added
 - **`beambam key` with a rooted phone, start to finish:** it finds the rooted adb device with Bambu Handy (or
   `--adb <IP>` on the LAN, connected if needed), starts Handy and opens its Devices tab when the key is not
