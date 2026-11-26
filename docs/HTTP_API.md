@@ -12,6 +12,8 @@ beambam daemon --http 0.0.0.0:8765 --auth-token "$(openssl rand -hex 16)" --quie
 ```
 
 A loopback bind needs no token. Any other bind requires one, sent as `Authorization: Bearer <token>`.
+beambam.boo/print and pokefit.party ask for it when the daemon's address is not this device, and keep it in
+that browser.
 `?printer=NAME` picks a `[printer:NAME]` section of `~/.x2d/credentials`. Without it, the default printer is used.
 
 ## Browsers and other origins
@@ -45,7 +47,7 @@ beambam daemon --http 127.0.0.1:8765 --cors-origin https://pokefit.party
 | `GET /state.events` | Server-sent events: the report on every printer push |
 | `GET /ams` | The AMS block of the report |
 | `GET /healthz` | 200 while the printer reports, 503 when it went silent; `version`, `capabilities`, and `camera` (the camera proxy answers) |
-| `GET /camera.mjpeg` | The chamber camera, live (`multipart/x-mixed-replace`, renders in an `<img>`), relayed from the camera proxy (`beambam cam start`, or `daemon --camera`); 503 with the reason when the proxy is down or 4 viewers already watch. A browser page from another site needs an allowed Origin (`--cors-origin`; use `<img crossorigin="anonymous">`), else 403 |
+| `GET /camera.mjpeg` | The chamber camera, live (`multipart/x-mixed-replace`, renders in an `<img>`), relayed from the camera proxy (`beambam cam start`, or `daemon --camera`); 503 with the reason when the proxy is down or 4 viewers already watch. A browser page from another site needs an allowed Origin (`--cors-origin`), else 403. beambam.boo and pokefit.party read it with `fetch` (so it carries `Authorization` and Chrome's Local Network Access for a LAN daemon) and split the parts by `Content-Length`; a plain `<img crossorigin="anonymous">` works for a loopback daemon without a token |
 | `GET /snapshot.jpg` | One frame from the camera proxy |
 | `GET /doctor` | `beambam doctor`'s checks on the cached report |
 | `POST /analyze` | Raw `.gcode.3mf` body → `beambam analyze` report (time, weight, purge, nozzle swaps) |
@@ -114,7 +116,9 @@ curl -s http://127.0.0.1:8765/slice/jobs/9c1e…
   project saved by a newer Bambu Studio can carry start G-code this build cannot parse.
 - The headless CLI resets `has_filament_switcher` and `enable_filament_dynamic_map` to off unless they are given as
   options, whatever the project says; the daemon passes them on (`--has-filament-switcher=1`) when the project has
-  them on, so a project made for a printer with the Filament Track Switch is sliced for it.
+  them on. It also turns the switch on when the printer reports one: the slice is for the printer it will print
+  on, as Bambu Studio does once it syncs the printer (a project saved without it would otherwise plan with
+  "sliced without the Filament Track Switch").
 - The print file is named after `X-Filename` (the printer shows it as the job).
 - One slice runs at a time; another `POST /slice` meanwhile gets 409. Job states: `queued`, `slicing`, `done`,
   `failed` (with `message`).
@@ -160,7 +164,7 @@ answers the project with the options applied, as the `.3mf` to keep (`Content-Di
 what `/slice` would slice. 400 for a sliced file or a 3MF without print settings. `X-Beambam-Warnings` (a JSON list)
 says what the spools could not change: a spool with no bundled profile, or a project for another nozzle size, keeps
 the project's preset. A slice job's `warnings` say the same, and it reports `grams_by_filament` (by filament
-number), `plates`, `plate_seconds` and `plate_grams` (a print starts plate 1).
+number), `plates`, `plate_seconds` and `plate_grams` (a print starts plate 1 unless `/print/plan` and `/print` name another `plate`).
 
 `/print/plan` also compares the plate: when the printer reports a known plate marker (`device.plate.cur_id`;
 P0301 = SuperTack, `filament_mapping.PLATE_MARKERS`) and the file was sliced for another plate, `warnings` says so

@@ -221,7 +221,7 @@ if ok:
     open(os.path.join(out, name), "wb").write(b"PK\\x03\\x04sliced")
 json.dump({"return_code": 0 if ok else -100, "error_string": "" if ok else "Failed slicing the model",
            "sliced_plates": [{"total_predication": 3600.5, "warning_message": "",
-                              "filaments": [{"total_used_g": 10.0}, {"total_used_g": 2.5}]}] if ok else []},
+                              "filaments": [{"id": 1, "total_used_g": 10.0}, {"id": 3, "total_used_g": 2.5}]}] if ok else []},
           open(os.path.join(out, "result.json"), "w"))
 """ % (log_line, ok))
     exe.chmod(0o755)
@@ -266,12 +266,28 @@ def test_slice_a_project_then_plan_it(tmp_path, daemon, monkeypatch):
     assert Path(job["file"]).name == "jolteon_pokefit.gcode.3mf" and Path(job["file"]).is_file()
     assert job["source"] == "jolteon_pokefit.3mf"
     assert job["seconds"] == 3600.5 and job["grams"] == 12.5 and job["grams_per_filament"] == [10.0, 2.5]
+    # By filament number (filament 2 unused), over the file and per plate (a client shows the plate it prints).
+    assert job["grams_by_filament"] == {"1": 10.0, "3": 2.5}
+    assert job["plates"] == 1 and job["plate_grams_by_filament"] == [{"1": 10.0, "3": 2.5}]
     argv = json.loads((Path(job["file"]).parent / "argv.json").read_text())
     # The bundled machine profile replaces the project's (newer Bambu Studio start G-code).
     assert argv[argv.index("--load-settings") + 1].endswith("Bambu Lab X2D 0.4 nozzle.json")
     assert argv[0] == "--slice" and argv[-1].endswith("_jolteon_pokefit.3mf")
     # The CLI would reset the track switch to off: it is passed on, the dynamic map (off) is not.
     assert "--has-filament-switcher=1" in argv and not any("dynamic" in a for a in argv)
+
+
+def test_a_project_is_sliced_for_the_printers_track_switch():
+    """A project keeps its own switch / dynamic-map flags (the CLI would reset both), and the printer's track
+    switch turns the switch on: seen live, a pokefit project (saved without it) sliced by beambam still drew
+    "the file was sliced without the Filament Track Switch" on an X2D that has one."""
+    from beambam.slice_service import forced_flags
+    off = {"has_filament_switcher": "0", "enable_filament_dynamic_map": "0"}
+    assert forced_flags(off, None) == [] and forced_flags(off, False) == []
+    assert forced_flags(off, True) == ["--has-filament-switcher=1"]
+    both = {"has_filament_switcher": "true", "enable_filament_dynamic_map": "1"}
+    # A printer without the switch does not take a project's away: the plan check says what to do then.
+    assert forced_flags(both, False) == ["--has-filament-switcher=1", "--enable-filament-dynamic-map=1"]
 
 
 @_POSIX_SLICER

@@ -202,6 +202,13 @@ def _flush_matrix(mat: list[Any], old_colours: list[str], new_colours: list[str]
     return out
 
 
+def _filaments(nums: list[int]) -> str:
+    """ "filament 3" / "filaments 1, 2 and 11" for a note."""
+    if len(nums) == 1:
+        return f"filament {nums[0]}"
+    return f"filaments {', '.join(map(str, nums[:-1]))} and {nums[-1]}"
+
+
 def adopt_filaments(settings: dict[str, Any], root: Path, spools: list[Spool],
                     warnings: list[str] | None = None) -> dict[str, Any]:
     """`settings` (a project's Metadata/project_settings.config) with project filament i set to `spools[i]`:
@@ -231,22 +238,24 @@ def adopt_filaments(settings: dict[str, Any], root: Path, spools: list[Spool],
     variants_all: list[Any] = raw_variants if isinstance(raw_variants, list) else []
     vk = len(variants_all) // n if len(variants_all) % n == 0 else 0   # variants per filament (0 = none)
 
+    # Filament numbers per note, so a full AMS of one unprofiled filament gives one note, not sixteen.
+    kept: dict[tuple[str, str], list[int]] = {}         # (spool's material or id, project preset) -> filaments
+    stood_in: dict[tuple[str, str], list[int]] = {}     # (spool's id, preset used instead) -> filaments
+
     for i, (fid, material, colour) in enumerate(spools[:n]):
         new_colours[i] = _colour(colour)
         if (not fid and not material) or other_nozzle:
             continue
         name_path = find_filament_profile(root, fid, material)
         if name_path is None:
-            notes.append(f"filament {i + 1}: no bundled Bambu profile for {material or fid}: it keeps the "
-                         f"project's preset ({names[i]}); only its colour changed")
+            kept.setdefault((str(material or fid), str(names[i])), []).append(i + 1)
             continue
         values = flatten_profile(root, name_path)
         name = str(values.get("name") or name_path.stem)
         if fid and _resolved_id(values) != fid:
             # Matched by material only (the bundled build lacks this filament's X2D profile, e.g. PLA Pure):
             # the plan will still flag the id, so say which preset stood in.
-            notes.append(f"filament {i + 1}: no bundled X2D profile for {fid}: it slices with {name} (same "
-                         "material), not that filament's own temperatures and flow")
+            stood_in.setdefault((fid, name), []).append(i + 1)
         old_variants = [str(v) for v in variants_all[i * vk:(i + 1) * vk]] if vk else None
         new_variants = [str(v) for v in _as_list(values["filament_extruder_variant"])] \
             if values.get("filament_extruder_variant") else None
@@ -266,6 +275,14 @@ def adopt_filaments(settings: dict[str, Any], root: Path, spools: list[Spool],
             if isinstance(v, list) and len(v) == n + 2:
                 v[1 + i] = ""          # a system preset: no parent, no differences from it
 
+    for (what, preset), nums in kept.items():
+        notes.append(f"{_filaments(nums)}: no bundled Bambu profile for {what}: "
+                     f"{'it keeps' if len(nums) == 1 else 'they keep'} the project's preset ({preset}); "
+                     "only the colour changed")
+    for (fid, preset), nums in stood_in.items():
+        notes.append(f"{_filaments(nums)}: no bundled X2D profile for {fid}: "
+                     f"{'it slices' if len(nums) == 1 else 'they slice'} with {preset} (same material), "
+                     "not that filament's own temperatures and flow")
     out["filament_colour"] = new_colours
     mat = settings.get("flush_volumes_matrix")
     if isinstance(mat, list) and mat:

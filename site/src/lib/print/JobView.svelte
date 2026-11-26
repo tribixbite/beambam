@@ -7,6 +7,7 @@
      * tapped, so looking at the page never puts a Stop button under a stray finger.
      */
     import type { Daemon } from './daemon';
+    import { confirmFocus } from './focus';
     import { isBusy, minutesText, stateText, type PrinterStatus } from './printer';
 
     interface Props {
@@ -51,13 +52,15 @@
 
 <div class="pp-card job">
     <div class="job-head">
-        <span class="job-state" class:running={status.state === 'RUNNING'} class:paused={status.state === 'PAUSE'}>
+        <span class="job-state" aria-live="polite" class:running={status.state === 'RUNNING'} class:paused={status.state === 'PAUSE'}>
             {stateText(status.state)}
         </span>
         {#if status.job}<span class="job-name">{status.job}</span>{/if}
     </div>
 
-    <div class="job-progress" aria-live="polite">
+    <!-- No aria-live here: it announced every percent. The progressbar reads out on demand, and the state
+         line above announces the changes that matter (paused, failed, finished). -->
+    <div class="job-progress">
         <div class="job-pct pp-mono">{status.percent}<span>%</span></div>
         <div class="pp-bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow={status.percent}
              aria-label="Print progress">
@@ -91,17 +94,18 @@
                     </button>
                 {/if}
                 {#if confirmStop}
-                    <div class="pp-msg err job-confirm">
+                    <div class="pp-msg err job-confirm" role="alertdialog" aria-label="Stop this print?"
+                         use:confirmFocus={{ initial: '.keep', returnTo: '.stop-open', onEscape: () => (confirmStop = false) }}>
                         <div>Stop this print? The printer cancels the job; it cannot be resumed.</div>
                         <div class="pp-row" style="margin-top: var(--space-sm);">
                             <button type="button" class="pp-btn danger solid" disabled={!!sending} onclick={() => send('stop')}>
                                 {sending === 'stop' ? 'Stopping…' : 'Yes, stop it'}
                             </button>
-                            <button type="button" class="pp-btn" onclick={() => (confirmStop = false)}>Keep printing</button>
+                            <button type="button" class="pp-btn keep" onclick={() => (confirmStop = false)}>Keep printing</button>
                         </div>
                     </div>
                 {:else}
-                    <button type="button" class="pp-btn danger" disabled={!!sending} onclick={() => (confirmStop = true)}>Stop…</button>
+                    <button type="button" class="pp-btn danger stop-open" disabled={!!sending} onclick={() => (confirmStop = true)}>Stop…</button>
                 {/if}
             </div>
         {:else}

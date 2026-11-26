@@ -39,6 +39,8 @@ export interface PreviewPart {
     states: Uint8Array | null;
     /** Per-vertex normals (filled by `withNormals`, in the worker). */
     normals?: Float32Array;
+    /** The project plate (1-based) the part is on; positions are as stored, plate N offset from plate 1. */
+    plate?: number;
 }
 
 /** A filament of the file (index 0 = filament 1). */
@@ -73,6 +75,8 @@ export interface LoadedModel {
     sliced: SlicedInfo | null;
     /** The build plate the project is set up for (`curr_bed_type`), null when it names none. */
     plate: string | null;
+    /** How many plates the project has (1 for anything that is not a multi-plate project). */
+    plates: number;
 }
 
 export const DEFAULT_BED = { minX: 0, minY: 0, maxX: 256, maxY: 256 };
@@ -387,6 +391,51 @@ function metaValue(block: string, key: string): string | null {
     return m ? decodeEntities(m[1]) : null;
 }
 
+/** Metadata/model_settings.config -> object id -> the plate it is on (`<plate>` blocks' plater_id). */
+export function parsePlateObjects(xml: string): Map<string, number> {
+    const out = new Map<string, number>();
+    const plateRe = /<plate>([\s\S]*?)<\/plate>/g;
+    let m: RegExpExecArray | null;
+    while ((m = plateRe.exec(xml)) !== null) {
+        const n = Number(metaValue(m[1], 'plater_id'));
+        if (!Number.isInteger(n) || n < 1) continue;
+        const instRe = /<model_instance>([\s\S]*?)<\/model_instance>/g;
+        let i: RegExpExecArray | null;
+        while ((i = instRe.exec(m[1])) !== null) {
+            const oid = metaValue(i[1], 'object_id');
+            if (oid !== null) out.set(oid, n);
+        }
+    }
+    return out;
+}
+
+/**
+ * Where Bambu Studio puts plate `n` (1-based) of `count` relative to plate 1, in mm: a grid `ceil(√count)` wide,
+ * each plate one bed plus a fifth apart, rows going towards -Y (PartPlate.cpp `compute_shape_position`,
+ * `plate_stride_x`, `compute_colum_count`).
+ */
+export function plateOffset(n: number, count: number, bed: LoadedModel['bed']): { x: number; y: number } {
+    const root = Math.sqrt(count);
+    const cols = root > Math.round(root) ? Math.round(root) + 1 : Math.round(root);
+    const i = n - 1;
+    return { x: (i % cols) * (bed.maxX - bed.minX) * 1.2, y: -Math.floor(i / cols) * (bed.maxY - bed.minY) * 1.2 };
+}
+
+/** The parts on plate `n`, moved onto the bed (a multi-plate project stores later plates beside the first). */
+export function partsOnPlate(model: Pick<LoadedModel, 'parts' | 'plates' | 'bed'>, n: number): PreviewPart[] {
+    if (model.plates <= 1) return model.parts;
+    const { x, y } = plateOffset(n, model.plates, model.bed);
+    return model.parts.filter((p) => (p.plate ?? 1) === n).map((p) => {
+        if (!x && !y) return p;
+        const positions = new Float32Array(p.positions);
+        for (let k = 0; k < positions.length; k += 3) {
+            positions[k] -= x;
+            positions[k + 1] -= y;
+        }
+        return { ...p, positions };
+    });
+}
+
 /** Metadata/model_settings.config -> object id -> settings. */
 export function parseModelSettings(xml: string): Map<string, ObjectSettings> {
     const out = new Map<string, ObjectSettings>();
@@ -515,12 +564,14 @@ export function assemble3mf(name: string, files: Map<string, ModelFile>, meta: M
         files.get('3D/3dmodel.model') ?? [...files.values()].find((f) => f.build.length > 0) ?? [...files.values()][0];
     if (!root) throw new Error('this 3MF has no 3D model in it');
     const settings = parseModelSettings(meta.modelSettings);
+    const plateOf = parsePlateObjects(meta.modelSettings);
+    const plates = Math.max(1, ...plateOf.values());
     const project = parseProjectSettings(meta.projectSettings || '{}');
     const sliced = meta.sliceInfo ? parseSliceInfo(meta.sliceInfo) : null;
 
     const parts: PreviewPart[] = [];
     let triangles = 0;
-    const visit = (path: string, oid: string, xf: Xf, top: ObjectSettings | undefined, depth: number): void => {
+    const visit = (path: string, oid: string, xf: Xf, top: ObjectSettings | undefined, depth: number, plate: number): void => {
         const file = files.get(path);
         const obj = file?.objects.get(oid);
         if (!obj || depth > 8) return;
@@ -548,14 +599,15 @@ export function assemble3mf(name: string, files: Map<string, ModelFile>, meta: M
                 filament,
                 positions: transformPositions(obj.mesh.positions, xf),
                 indices,
-                states: obj.mesh.states
+                states: obj.mesh.states,
+                plate
             });
         }
-        for (const c of obj.components) visit(c.path, c.objectId, compose(c.transform, xf), top, depth + 1);
+        for (const c of obj.components) visit(c.path, c.objectId, compose(c.transform, xf), top, depth + 1, plate);
     };
     for (const item of root.build) {
         if (!item.printable) continue;
-        visit(root.path, item.objectId, item.transform, settings.get(item.objectId), 0);
+        visit(root.path, item.objectId, item.transform, settings.get(item.objectId), 0, plateOf.get(item.objectId) ?? 1);
     }
     if (!parts.length) throw new Error('this 3MF has no printable objects on its plate');
 
@@ -584,7 +636,8 @@ export function assemble3mf(name: string, files: Map<string, ModelFile>, meta: M
         bed: project.bed,
         triangles: countTriangles(parts),
         sliced: isSliced ? (sliced?.info ?? null) : null,
-        plate: project.plate
+        plate: project.plate,
+        plates: kind === 'project' ? plates : 1
     };
 }
 
@@ -708,7 +761,8 @@ export function meshModel(name: string, positions: Float32Array, indices: Uint32
         bed: { ...DEFAULT_BED },
         triangles: countTriangles(parts),
         sliced: null,
-        plate: null
+        plate: null,
+        plates: 1
     };
 }
 

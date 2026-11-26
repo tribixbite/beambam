@@ -10,12 +10,12 @@
     import { onDestroy, onMount } from 'svelte';
     import CodeBlock from '$lib/CodeBlock.svelte';
     import '$lib/print/print.css';
-    import { Daemon, DaemonError, DEFAULT_URL, SITE_ORIGIN, startCommand, type Health, type SliceResult } from '$lib/print/daemon';
+    import { Daemon, DaemonError, DEFAULT_URL, isLoopback, SITE_ORIGIN, startCommand, type Health, type SliceResult } from '$lib/print/daemon';
     import CameraView from '$lib/print/CameraView.svelte';
     import JobView from '$lib/print/JobView.svelte';
     import MappingPanel from '$lib/print/MappingPanel.svelte';
     import { fileType, type FileType } from '$lib/print/load';
-    import { NEUTRAL, type LoadedModel } from '$lib/print/model';
+    import { NEUTRAL, partsOnPlate, type LoadedModel } from '$lib/print/model';
     import {
         BED_TYPES,
         BRIM_MODES_UI,
@@ -48,6 +48,7 @@
         type PrinterStatus,
         type Tray
     } from '$lib/print/printer';
+    import { confirmFocus } from '$lib/print/focus';
     import Preview from '$lib/print/Preview.svelte';
     import SpoolPicker from '$lib/print/SpoolPicker.svelte';
     import Swatch from '$lib/print/Swatch.svelte';
@@ -61,6 +62,8 @@
 
     // ---------------------------------------------------------------- connection
     let urlInput = $state(DEFAULT_URL);
+    /** The daemon's --auth-token: a daemon on another machine needs one (one on this device does not). */
+    let tokenInput = $state('');
     let origin = $state(SITE_ORIGIN);
     let daemon = $state<Daemon | null>(null);
     let health = $state<Health | null>(null);
@@ -80,6 +83,8 @@
     const hasNozzlePlan = $derived(caps.includes('plan-sliced-nozzles'));
     const loaded = $derived(loadedTrays(trays));
     const command = $derived(startCommand(origin, safeUrl(urlInput)));
+    /** Ask for the token only where it is needed, so the usual same-device connect stays one field. */
+    const askToken = $derived(!isLoopback(safeUrl(urlInput)) || !!tokenInput || connError?.kind === 'auth');
 
     function safeUrl(u: string): string {
         try {
@@ -89,9 +94,10 @@
         }
     }
 
-    function remember(url: string, auto: boolean): void {
+    /** The address (and token) to reconnect to on the next visit; kept in this browser only. */
+    function remember(url: string, auto: boolean, token = ''): void {
         try {
-            localStorage.setItem(STORE_KEY, JSON.stringify({ url, auto }));
+            localStorage.setItem(STORE_KEY, JSON.stringify({ url, auto, ...(token ? { token } : {}) }));
         } catch {
             /* storage blocked: remembered for this visit only */
         }
@@ -112,7 +118,7 @@
         connecting = true;
         let d: Daemon;
         try {
-            d = new Daemon(urlInput);
+            d = new Daemon(urlInput, { token: tokenInput });
         } catch (e) {
             connError = new DaemonError(e instanceof Error ? e.message : String(e), 'bad-request');
             connecting = false;
@@ -123,7 +129,7 @@
             daemon = d;
             health = h;
             urlInput = d.url;
-            remember(d.url, true);
+            remember(d.url, true, d.token);
             await readPrinter();
         } catch (e) {
             daemon = null;
@@ -301,6 +307,8 @@
     let slicedKey = $state('');
     let chosenNozzles = $state<number[] | null>(null);
     let printFile = $state<string | null>(null);
+    /** The plate of a multi-plate project to preview and print (1-based); beambam slices every plate. */
+    let printPlate = $state(1);
     let reslicing = $state(false);
     let resliceNote = $state('');
 
@@ -312,6 +320,7 @@
 
     function resetSlice(): void {
         sliceResult = null;
+        printPlate = 1;
         sliceError = '';
         sliceTick = '';
         printFile = null;
@@ -392,17 +401,22 @@
         }
     }
 
+    /** The preview shows the plate that prints (a multi-plate project stores the others beside it). */
+    const shownModel = $derived(model && model.plates > 1 ? { ...model, parts: partsOnPlate(model, printPlate) } : model);
+
     const summary = $derived.by(() => {
         if (sliceResult) {
-            // Filament-indexed grams (beambam ≥ 1.9 names each filament; older ones list the used ones in order).
-            const by = sliceResult.gramsByFilament;
+            // A multi-plate project prints one plate: show its numbers.
+            const many = sliceResult.plateSeconds.length > 1;
+            const k = Math.min(printPlate, sliceResult.plateSeconds.length) - 1;
+            // Filament-indexed grams (beambam ≥ 1.9 names each filament; older ones list the used ones in order),
+            // the printed plate's when beambam says them per plate.
+            const by = (many && sliceResult.plateGramsByFilament[k]) || sliceResult.gramsByFilament;
             const n = Math.max(0, ...Object.keys(by).map(Number));
             const per = n ? Array.from({ length: n }, (_, i) => by[String(i + 1)] ?? 0) : sliceResult.gramsPerFilament;
-            // A print starts plate 1: show its numbers when the project has several plates.
-            const many = sliceResult.plateSeconds.length > 1;
             return {
-                seconds: many ? sliceResult.plateSeconds[0] : sliceResult.seconds,
-                grams: many ? sliceResult.plateGrams[0] : sliceResult.grams,
+                seconds: many ? sliceResult.plateSeconds[k] : sliceResult.seconds,
+                grams: many ? sliceResult.plateGrams[k] : sliceResult.grams,
                 per, plates: sliceResult.plateSeconds.length
             };
         }
@@ -492,7 +506,7 @@
             // The warnings on screen when Start was pressed are the user's OK; beambam checks the spools again.
             const said = await daemon.print(printFile, startSlots, plan.warnings.length > 0, (sec, what) => {
                 startTick = `${what || 'Sending'}… ${Math.round(sec)} s`;
-            }, plan.digest);
+            }, plan.digest, printPlate);
             startedHere = true;
             startedJobBusy = startedJobEnded = false;
             startDone = said ? `The printer accepted the print: ${said}` : 'The printer accepted the print.';
@@ -521,8 +535,9 @@
         try {
             const raw = localStorage.getItem(STORE_KEY);
             if (raw) {
-                const v = JSON.parse(raw) as { url?: string; auto?: boolean };
+                const v = JSON.parse(raw) as { url?: string; auto?: boolean; token?: string };
                 if (typeof v.url === 'string' && v.url) urlInput = v.url;
+                if (typeof v.token === 'string') tokenInput = v.token;
                 auto = v.auto === true;
             }
         } catch {
@@ -580,12 +595,20 @@
                     <input class="pp-input" type="url" inputmode="url" autocomplete="off" spellcheck="false"
                            bind:value={urlInput} placeholder={DEFAULT_URL} />
                 </label>
+                {#if askToken}
+                    <label class="pp-field">
+                        <span>Access token</span>
+                        <input class="pp-input" type="password" autocomplete="off" spellcheck="false"
+                               bind:value={tokenInput} placeholder="the --auth-token beambam was started with" />
+                    </label>
+                {/if}
                 <button type="submit" class="pp-btn primary" disabled={connecting}>{connecting ? 'Connecting…' : 'Connect'}</button>
             </form>
             <p class="pp-muted pp-small">
                 Chrome and Edge may ask to let this site <strong>reach apps on this device</strong> (Local Network Access):
-                allow it, or the page cannot talk to beambam. On another machine, run the daemon with
-                <code>--http 0.0.0.0:8765</code> and enter its LAN address.
+                allow it, or the page cannot talk to beambam. On another machine, enter its LAN address: the command
+                above then starts it on every interface with an access token, which goes in the field that appears
+                (it is kept in this browser).
             </p>
             {#if connError}
                 <div class="pp-msg err" role="alert">
@@ -676,7 +699,20 @@
     <!-- 03 PREVIEW + FILAMENTS ------------------------------------------------->
     <section class="pp-step" class:locked={!file} aria-labelledby="s3">
         <div class="pp-step-head"><span class="pp-step-num">03</span><h2 class="pp-step-title" id="s3">Preview</h2></div>
-        <Preview {model} {palette} />
+        {#if model && model.plates > 1}
+            <div class="pp-field plates">
+                <span class="pp-legend" id="lbl-plate-pick">Plate to print ({model.plates})</span>
+                <div class="pp-seg" style="--cols: 4" role="radiogroup" aria-labelledby="lbl-plate-pick">
+                    {#each Array.from({ length: model.plates }, (_, i) => i + 1) as n (n)}
+                        <button type="button" role="radio" aria-checked={printPlate === n} disabled={starting}
+                                onclick={() => (printPlate = n)}>
+                            {n}{#if sliceResult?.plateSeconds[n - 1] !== undefined}<span class="plate-time">{secondsText(sliceResult.plateSeconds[n - 1])}</span>{/if}
+                        </button>
+                    {/each}
+                </div>
+            </div>
+        {/if}
+        <Preview model={shownModel} {palette} />
         {#if model}
             <div class="fils">
                 <div class="pp-legend">{isMeshKind ? 'Filament' : `Filaments (${model.filaments.length})`}</div>
@@ -818,7 +854,7 @@
                 <div class="pp-msg warn">beambam reports no filament used: the model may be too small or too thin to print. Check its size and the layer height.</div>
             {/if}
             {#if summary.plates > 1}
-                <div class="pp-msg warn">This project has {summary.plates} plates. beambam prints plate 1: the time and filament above are plate 1's. Open the project in Bambu Studio to print another plate.</div>
+                <div class="pp-msg info">This project has {summary.plates} plates; plate {printPlate} prints (choose it in step 03). The time and filament above are plate {printPlate}'s.</div>
             {/if}
             {#if resliceNote}<div class="pp-msg ok">{resliceNote}</div>{/if}
             {#each sliceResult?.warnings ?? [] as w}<div class="pp-msg warn">⚠ {w}</div>{/each}
@@ -829,10 +865,11 @@
     <section class="pp-step" class:locked={!printFile} aria-labelledby="s6">
         <div class="pp-step-head"><span class="pp-step-num">06</span><h2 class="pp-step-title" id="s6">Spools</h2></div>
         {#if daemon && printFile}
-            {#key file}
+            {#key `${fileSerial}#${printPlate}`}
                 <MappingPanel
                     {daemon}
                     file={printFile}
+                    plate={printPlate}
                     {trays}
                     {traySig}
                     canRenozzle={canRenozzle}
@@ -842,7 +879,7 @@
                     initialSlots={isMeshKind && meshTray !== null ? [meshTray] : null}
                     locked={starting}
                     onrenozzle={(n, what) => slice(n, what)}
-                    onchange={(p, s, f) => { plan = f === printFile ? p : null; startSlots = f === printFile ? s : null; }}
+                    onchange={(p, s, f, n) => { const ours = f === printFile && n === printPlate; plan = ours ? p : null; startSlots = ours ? s : null; }}
                 />
             {/key}
             {#if spoolSync && hasProjectSync && hasOptions}
@@ -900,15 +937,16 @@
     <section class="pp-step" class:locked={!plan && !printerBusy} aria-labelledby="s7">
         <div class="pp-step-head"><span class="pp-step-num">07</span><h2 class="pp-step-title" id="s7">Print</h2></div>
         {#if !confirmOpen}
-            <button type="button" class="pp-btn primary wide" disabled={!!startBlock || starting} onclick={() => { confirmOpen = true; plateClean = false; }}>
+            <button type="button" id="start-open" class="pp-btn primary wide" disabled={!!startBlock || starting} onclick={() => { confirmOpen = true; plateClean = false; }}>
                 Start print…
             </button>
             {#if startBlock && plan}<p class="pp-muted pp-small">{startBlock}</p>{/if}
         {:else}
-            <div class="pp-card confirm" role="dialog" aria-labelledby="confirm-title">
+            <div class="pp-card confirm" role="dialog" aria-labelledby="confirm-title"
+                 use:confirmFocus={{ initial: 'input[type=checkbox]', returnTo: '#start-open', onEscape: () => { if (!starting) confirmOpen = false; } }}>
                 <div class="pp-step-title" id="confirm-title" style="font-size: var(--text-lg);">Before it starts</div>
                 <ul class="confirm-list pp-small">
-                    <li>File: <span class="pp-mono">{printFile?.split(/[\\/]/).pop()}</span>{summary ? ` · ${secondsText(summary.seconds)} · ${gramsText(summary.grams)}` : ''}{summary && summary.plates > 1 ? ` (plate 1 of ${summary.plates})` : ''}</li>
+                    <li>File: <span class="pp-mono">{printFile?.split(/[\\/]/).pop()}</span>{summary ? ` · ${secondsText(summary.seconds)} · ${gramsText(summary.grams)}` : ''}{summary && summary.plates > 1 ? ` (plate ${printPlate} of ${summary.plates})` : ''}</li>
                     <li>Spools: {plan?.filaments.map((f) => `${f.filament}→${f.tray ? f.tray.label.replace(/\s*\(slot \d+\)$/, '') : '?'}`).join(', ')}</li>
                     {#if plan?.warnings.length}<li class="pp-warn-text">Starting accepts {plan.warnings.length} ⚠ warning{plan.warnings.length > 1 ? 's' : ''}.</li>{/if}
                 </ul>
@@ -967,6 +1005,8 @@
     .drop-title { font-family: var(--font-mono); font-size: var(--text-sm); overflow-wrap: anywhere; }
     .load { display: grid; gap: var(--space-xs); margin-top: var(--space-md); }
     .fils { margin-top: var(--space-lg); display: grid; gap: var(--space-sm); }
+    .plates { margin-bottom: var(--space-md); }
+    .plate-time { display: block; color: var(--color-mute); font-size: var(--text-xs); letter-spacing: 0; text-transform: none; }
     .fil-list { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--space-sm); }
     .fil-list li { display: grid; grid-template-columns: auto auto minmax(0, 1fr) auto; align-items: center; gap: var(--space-md); }
     .fil-g { font-family: var(--font-mono); }

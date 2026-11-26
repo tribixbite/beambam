@@ -34,6 +34,8 @@
         daemon: Daemon;
         /** The print file's path on the daemon's machine. */
         file: string;
+        /** The plate of `file` to print (1-based): its filaments are the ones planned. */
+        plate: number;
         trays: Tray[];
         /** Changes whenever the loaded spools change (printer.ts `traySignature`). */
         traySig: string;
@@ -54,9 +56,9 @@
          * The current plan, the trays Start would send and the print file the plan is for (null plan: cannot
          * start — also while a check is pending, so Start never sends a plan the screen has moved past).
          */
-        onchange: (plan: PrintPlan | null, slots: number[] | null, file: string) => void;
+        onchange: (plan: PrintPlan | null, slots: number[] | null, file: string, plate: number) => void;
     }
-    let { daemon, file, trays, traySig, canRenozzle, nozzles, reslicing, grams, initialSlots, locked, onrenozzle, onchange }: Props =
+    let { daemon, file, plate, trays, traySig, canRenozzle, nozzles, reslicing, grams, initialSlots, locked, onrenozzle, onchange }: Props =
         $props();
 
     let plan = $state<PrintPlan | null>(null);
@@ -77,24 +79,25 @@
     function replan(reason: string): Promise<void> {
         const gen = ++generation;
         const forFile = file;
+        const forPlate = plate;
         // Until this check answers, nothing may be started from the previous plan.
-        onchange(null, null, forFile);
+        onchange(null, null, forFile, forPlate);
         const run = async (): Promise<void> => {
             if (gen !== generation) return; // a newer request supersedes this one
             planning = true;
             try {
                 let raw;
                 try {
-                    raw = await daemon.plan(forFile, slots);
+                    raw = await daemon.plan(forFile, slots, forPlate);
                 } catch (e) {
                     // The kept trays may not fit a re-sliced file (another set of filaments in use): let beambam
                     // choose instead of resending the same refused trays forever.
                     if (!slots) throw e;
                     slots = null;
-                    raw = await daemon.plan(forFile, null);
+                    raw = await daemon.plan(forFile, null, forPlate);
                     reason = reason || 'The trays picked before did not fit this slice: beambam chose again.';
                 }
-                if (gen !== generation || forFile !== file) return;
+                if (gen !== generation || forFile !== file || forPlate !== plate) return;
                 const p = raw as unknown as PrintPlan;
                 p.filaments = Array.isArray(p.filaments) ? p.filaments : [];
                 p.errors = Array.isArray(p.errors) ? p.errors : [];
@@ -107,12 +110,12 @@
                 slots = slotsFromPlan(p) ?? slots;
                 error = '';
                 if (reason) sync = reason;
-                onchange(p, slotsFromPlan(p), forFile);
+                onchange(p, slotsFromPlan(p), forFile, forPlate);
             } catch (e) {
                 if (gen !== generation) return;
                 plan = null;
                 error = e instanceof Error ? e.message : String(e);
-                onchange(null, null, forFile);
+                onchange(null, null, forFile, forPlate);
             } finally {
                 if (gen === generation) planning = false;
             }

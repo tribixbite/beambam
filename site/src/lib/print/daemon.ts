@@ -26,7 +26,7 @@ const SLICE_TIMEOUT_MS = 30 * 60_000;
 const PRINT_TIMEOUT_MS = 240_000;
 
 /** Why a call failed, so the page can show the right fix. */
-export type FailKind = 'unreachable' | 'origin' | 'busy' | 'bad-request' | 'printer' | 'timeout' | 'http';
+export type FailKind = 'unreachable' | 'origin' | 'auth' | 'busy' | 'bad-request' | 'printer' | 'timeout' | 'http';
 
 export class DaemonError extends Error {
     constructor(
@@ -54,13 +54,20 @@ export function normaliseUrl(raw: string): string {
     return `${u.protocol}//${u.host}`;
 }
 
-/** The command that starts a daemon this page may use. */
+/**
+ * The command that starts a daemon this page may use. Off this device the daemon listens on every interface and
+ * needs an access token (it refuses to serve a non-loopback bind without one): the page then sends that token.
+ */
 export function startCommand(origin: string = SITE_ORIGIN, url: string = DEFAULT_URL): string {
     let host = '127.0.0.1:8765';
     try {
         host = new URL(url).host;
     } catch {
         /* keep the default */
+    }
+    if (!isLoopback(`http://${host}`)) {
+        const port = host.includes(':') ? host.slice(host.lastIndexOf(':') + 1) : '8765';
+        return `beambam daemon --http 0.0.0.0:${port} --auth-token "$(openssl rand -hex 16)" --cors-origin ${origin}`;
     }
     return `beambam daemon --http ${host} --cors-origin ${origin}`;
 }
@@ -105,6 +112,8 @@ export interface SliceResult {
     /** Per sliced plate: time and grams (a print starts plate 1); [] from an older beambam. */
     plateSeconds: number[];
     plateGrams: number[];
+    /** Per sliced plate: grams by filament number on that plate; [] from an older beambam. */
+    plateGramsByFilament: Record<string, number>[];
     warnings: string[];
 }
 
@@ -116,6 +125,15 @@ const POLL_RETRIES = 4;
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
+/** {"1": 10.5, …} from a reply; anything that is not a number is dropped. */
+function gramsMap(v: unknown): Record<string, number> {
+    const out: Record<string, number> = {};
+    if (v && typeof v === 'object' && !Array.isArray(v)) {
+        for (const [k, g] of Object.entries(v)) if (typeof g === 'number' && Number.isFinite(g)) out[k] = g;
+    }
+    return out;
+}
+
 /** The error text in a daemon reply, if any. */
 function replyError(body: Json): string {
     return typeof body.error === 'string' ? body.error : typeof body.message === 'string' ? body.message : '';
@@ -126,11 +144,14 @@ function replyError(body: Json): string {
  */
 export class Daemon {
     readonly url: string;
+    /** The daemon's `--auth-token` (a daemon off this device needs one), sent as `Authorization: Bearer`. */
+    readonly token: string;
     private readonly fetchImpl: FetchLike;
     private readonly origin: string;
 
-    constructor(url: string, opts: { fetchImpl?: FetchLike; origin?: string } = {}) {
+    constructor(url: string, opts: { fetchImpl?: FetchLike; origin?: string; token?: string } = {}) {
         this.url = normaliseUrl(url);
+        this.token = (opts.token ?? '').trim();
         this.fetchImpl = opts.fetchImpl ?? ((input, init) => fetch(input, init));
         this.origin = opts.origin ?? (typeof location !== 'undefined' ? location.origin : SITE_ORIGIN);
     }
@@ -145,6 +166,10 @@ export class Daemon {
         // Chrome's Local Network Access: an https page may call an http address on the LAN only
         // when it says so (loopback needs nothing: it is a secure origin already).
         if (!isLoopback(this.url) && this.origin.startsWith('https:')) out.targetAddressSpace = 'local';
+        // The token on every call (an opaque no-cors probe cannot carry it, and needs none).
+        if (this.token && init.mode !== 'no-cors') {
+            out.headers = { ...(init.headers as Record<string, string> | undefined), Authorization: `Bearer ${this.token}` };
+        }
         return out;
     }
 
@@ -228,6 +253,16 @@ export class Daemon {
                 body
             );
         }
+        if (res.status === 401) {
+            throw new DaemonError(
+                this.token
+                    ? `beambam at ${this.url} refused the access token: enter the --auth-token it was started with.`
+                    : `beambam at ${this.url} needs its access token: enter the --auth-token it was started with.`,
+                'auth',
+                401,
+                body
+            );
+        }
         if (res.status === 409) {
             throw new DaemonError(`beambam is busy: ${said || 'another job is running'}. Try again when it finishes.`,
                 'busy', 409, body);
@@ -263,28 +298,32 @@ export class Daemon {
     }
 
     /**
-     * The chamber camera's live MJPEG, for an <img> (multipart/x-mixed-replace renders natively).
-     * `n` makes each (re)connect a new URL, so a dropped stream can be restarted.
+     * Open the chamber camera's live MJPEG (read it with `readMjpeg`). A fetch, not an <img>: it carries the
+     * access token and Local Network Access like every other call, and `signal` ends it. A refusal throws a
+     * DaemonError in beambam's words (503: the camera proxy is down and how to start it).
      */
-    cameraUrl(n = 0): string {
-        return `${this.url}/camera.mjpeg${n ? `?n=${n}` : ''}`;
-    }
-
-    /**
-     * Why the live view does not show, in beambam's words (its 503 text), or null when a frame
-     * comes through now (the stream dropped and a reconnect should work).
-     */
-    async cameraProblem(): Promise<string | null> {
+    async camera(signal: AbortSignal): Promise<Response> {
+        let res: Response;
         try {
-            const ctl = new AbortController();
-            const t = setTimeout(() => ctl.abort(), 25_000);
-            const r = await this.fetchImpl(`${this.url}/snapshot.jpg`, { ...this.init({}), signal: ctl.signal });
-            clearTimeout(t);
-            if (r.ok) return null;
-            return (await r.text()).trim() || `beambam answered HTTP ${r.status}`;
+            res = await this.fetchImpl(`${this.url}/camera.mjpeg`, { ...this.init({}), signal });
         } catch (e) {
-            return `beambam did not answer (${e instanceof Error ? e.message : String(e)})`;
+            if (signal.aborted) throw e;
+            throw await this.diagnoseNetworkFailure(false);
         }
+        if (res.ok) return res;
+        const text = (await res.text().catch(() => '')).trim();
+        let said = text;
+        try {
+            const j: unknown = JSON.parse(text);
+            if (j && typeof j === 'object' && !Array.isArray(j)) said = replyError(j as Json) || text;
+        } catch {
+            /* plain text (the 503 says how to start the proxy) */
+        }
+        if (res.status === 401) {
+            throw new DaemonError(`beambam at ${this.url} needs its access token for the camera: enter the --auth-token it was started with.`,
+                'auth', 401);
+        }
+        throw new DaemonError(said || `beambam answered HTTP ${res.status}`, res.status === 503 ? 'printer' : 'http', res.status);
     }
 
     /** The printer's report (the daemon's cached copy). */
@@ -343,11 +382,11 @@ export class Daemon {
                 seconds: Number(job.seconds ?? 0) || 0,
                 grams: Number(job.grams ?? 0) || 0,
                 gramsPerFilament: Array.isArray(job.grams_per_filament) ? job.grams_per_filament.map(Number) : [],
-                gramsByFilament: job.grams_by_filament && typeof job.grams_by_filament === 'object'
-                    ? Object.fromEntries(Object.entries(job.grams_by_filament as Record<string, unknown>).map(([k, v]) => [k, Number(v) || 0]))
-                    : {},
+                gramsByFilament: gramsMap(job.grams_by_filament),
                 plateSeconds: Array.isArray(job.plate_seconds) ? job.plate_seconds.map(Number) : [],
                 plateGrams: Array.isArray(job.plate_grams) ? job.plate_grams.map(Number) : [],
+                plateGramsByFilament: Array.isArray(job.plate_grams_by_filament)
+                    ? job.plate_grams_by_filament.map((m) => gramsMap(m)) : [],
                 warnings: Array.isArray(job.warnings) ? job.warnings.map(String) : []
             };
         }, 'Slicing is taking too long: check beambam', (e) => new DaemonError(
@@ -399,9 +438,15 @@ export class Daemon {
         return body.file;
     }
 
-    /** beambam's filament -> tray plan for `file` (null slots: beambam's own choice). Touches nothing. */
-    async plan(file: string, slots: number[] | null): Promise<Json> {
-        const { body } = await this.postJson('/print/plan', slots ? { file, slot: slots } : { file },
+    /**
+     * beambam's filament -> tray plan for `file` (null slots: beambam's own choice) and its plate `plate`
+     * (1-based; a multi-plate project prints one plate). Touches nothing.
+     */
+    async plan(file: string, slots: number[] | null, plate = 1): Promise<Json> {
+        const req: Json = { file };
+        if (slots) req.slot = slots;
+        if (plate > 1) req.plate = plate;
+        const { body } = await this.postJson('/print/plan', req,
             (s, b) => (s === 409 || s === 422) && Array.isArray(b.filaments));
         return body;
     }
@@ -411,9 +456,10 @@ export class Daemon {
      * (the plan's): beambam starts only that plan, and answers 409 with the new one when spools, the plate or
      * the file changed since (a DaemonError whose `body.plan` is the new plan).
      */
-    async print(file: string, slots: number[], acceptWarnings: boolean, onTick?: Tick, digest?: string): Promise<string> {
+    async print(file: string, slots: number[], acceptWarnings: boolean, onTick?: Tick, digest?: string, plate = 1): Promise<string> {
         const t0 = Date.now();
         const req: Json = { file, slot: slots, confirm: true, accept_warnings: acceptWarnings };
+        if (plate > 1) req.plate = plate;
         if (digest) req.plan_digest = digest;
         // A 409 here is beambam refusing this print (mapping, warnings, a changed plan), not "busy": say why.
         const { status, body } = await this.postJson('/print', req, (s) => s === 409);

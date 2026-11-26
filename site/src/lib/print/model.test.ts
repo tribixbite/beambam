@@ -1,7 +1,8 @@
 import { describe, expect, test } from 'bun:test';
 import { strToU8, zipSync } from 'fflate';
 import { loadModel, read3mf } from './load';
-import { attr, bedFromArea, computeNormals, compose, determinant, ModelScanner, parseModelSettings, parseObj, parseSliceInfo, parseStl,
+import { attr, bedFromArea, computeNormals, compose, determinant, ModelScanner, parseModelSettings, parseObj, parsePlateObjects, parseSliceInfo, parseStl,
+    partsOnPlate, plateOffset,
     parseTransform, vertexColours } from './model';
 
 const ROOT = `<?xml version="1.0"?><model xmlns:p="x"><resources>
@@ -182,5 +183,41 @@ describe('a project saved after slicing', () => {
         expect(saved.filaments[0].colour).toBe('#FF0000');
         expect(saved.sliced).toBeNull();
         expect((await read3mf('benchy.3mf', new Blob([mk(true)]))).kind).toBe('sliced');
+    });
+});
+
+describe('plates', () => {
+    // Bambu Studio's layout, read from a real 8-plate download (Eevee+Evolutions.3mf, 256 mm bed): plate 2 at
+    // x + 307.2, plate 4 one row down at y - 307.2 (3 columns).
+    test('each plate sits a bed and a fifth from the last, ceil(√n) to a row', () => {
+        const bed = { minX: 0, minY: 0, maxX: 256, maxY: 256 };
+        expect(plateOffset(1, 8, bed)).toEqual({ x: 0, y: -0 });
+        expect(plateOffset(2, 8, bed).x).toBeCloseTo(307.2);
+        expect(plateOffset(4, 8, bed)).toEqual({ x: 0, y: expect.closeTo(-307.2) as unknown as number });
+        expect(plateOffset(2, 2, bed).x).toBeCloseTo(307.2);   // two plates: two columns
+        expect(plateOffset(4, 4, bed).y).toBeCloseTo(-307.2);  // four plates: 2 × 2
+    });
+
+    test('a multi-plate project: objects know their plate, and the preview shows one plate on the bed', async () => {
+        const root = `<?xml version="1.0"?><model><resources>${MESH('1', '')}${MESH('3', '')}</resources>
+ <build><item objectid="1" transform="1 0 0 0 1 0 0 0 1 100 100 0" printable="1"/>
+ <item objectid="3" transform="1 0 0 0 1 0 0 0 1 520 100 0" printable="1"/></build></model>`;
+        const settings = `<config><object id="1"><metadata key="name" value="a"/></object><object id="3"><metadata key="name" value="b"/></object>
+ <plate><metadata key="plater_id" value="1"/><model_instance><metadata key="object_id" value="1"/></model_instance></plate>
+ <plate><metadata key="plater_id" value="2"/><model_instance><metadata key="object_id" value="3"/></model_instance></plate></config>`;
+        expect(parsePlateObjects(settings)).toEqual(new Map([['1', 1], ['3', 2]]));
+        const m = await read3mf('two.3mf', new Blob([zipSync({
+            '3D/3dmodel.model': strToU8(root),
+            'Metadata/model_settings.config': strToU8(settings),
+            'Metadata/project_settings.config': strToU8(PROJECT)
+        })]));
+        expect(m.plates).toBe(2);
+        expect(m.parts.map((p) => p.plate)).toEqual([1, 2]);
+        const two = partsOnPlate(m, 2);
+        expect(two.length).toBe(1);
+        // 350 mm bed (PROJECT): plate 2 is 420 mm to the right, so x 520 lands at 100, like plate 1's object.
+        expect(two[0].positions[0]).toBeCloseTo(100);
+        expect(m.parts[1].positions[0]).toBeCloseTo(520);           // the model itself is not changed
+        expect(partsOnPlate(m, 1)).toEqual([m.parts[0]]);
     });
 });

@@ -62,6 +62,23 @@ All notable changes to this project.
   - a multi-plate project shows plate 1's numbers;
   - a preview part budget, non-ASCII option escaping, and a regular /healthz re-read.
 
+### Fixed (remaining gaps, 2026-11-26)
+- **A daemon on the LAN from beambam.boo/print:** the page asks for the access token (`--auth-token`, required off
+  loopback) when the address is not this device, sends it on every call, and its start command includes one. The
+  page could not talk to a LAN daemon at all before.
+- **The camera is read with `fetch`** (`site/src/lib/print/mjpeg.ts`, ported to pokefit): it carries the token and
+  Chrome's Local Network Access, which an `<img>` cannot, and aborting it closes beambam's relay at once. Frames
+  are decoded before they are shown, and a slow phone skips frames instead of falling behind.
+- **Multi-plate projects:** beambam.boo/print previews, plans and prints the plate you pick, with each plate's time
+  and grams (a slice job adds `plate_grams_by_filament`).
+- **Track switch:** a project for the X2D is sliced for the printer's Filament Track Switch when the printer has
+  one, so beambam's own slices no longer plan with "sliced without the Filament Track Switch".
+- **Spool notes:** one note per filament type instead of one per slot ("filaments 1, 2, 3, 11 and 16: no bundled X2D
+  profile for GFL03…").
+- **beambam.boo/print on a phone and with a keyboard:** the 3D preview lets an up/down swipe scroll the page; the
+  Start and Stop confirms take focus (Stop on "Keep printing"), close with Escape, and give focus back; the job's
+  percentage is no longer announced every percent (the state line is).
+
 ## v1.8.0 — print any file from beambam.boo (2026-11-26)
 
 ### Added

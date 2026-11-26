@@ -2,7 +2,9 @@
     /**
      * Interactive 3D preview of a loaded model on its build plate.
      *
-     * Touch: one finger rotates, two fingers pinch to zoom and drag to pan; mouse: left drag
+     * Touch: one finger drags sideways to rotate (an up / down swipe scrolls the page: the preview is
+     * up to 60vh, and a phone page must not get stuck on it), two fingers pinch to zoom and drag to
+     * pan; mouse: left drag
      * rotates, wheel zooms, right drag pans. Kept light for a phone: one BufferGeometry per
      * part with byte vertex colours and precomputed normals, Lambert shading, no shadows, and
      * frames are drawn only while the view moves. three.js is loaded on first use so the
@@ -199,6 +201,10 @@
                 controls.screenSpacePanning = true;
                 controls.touches = { ONE: T.TOUCH.ROTATE, TWO: T.TOUCH.DOLLY_PAN };
                 controls.addEventListener('change', requestRender);
+                // OrbitControls sets `touch-action: none`, which turns the whole canvas into a scroll trap on a
+                // phone. pan-y gives vertical one-finger swipes back to the page; sideways drags and pinches
+                // still reach the controls.
+                canvas.style.touchAction = 'pan-y';
                 // three.js rebuilds its GPU state after a lost context (common on phones under
                 // memory pressure); with on-demand frames the view must be redrawn by hand.
                 canvas.addEventListener('webglcontextrestored', () => requestRender());
@@ -239,7 +245,7 @@
 </script>
 
 <div class="pv" bind:this={wrap}>
-    <canvas bind:this={canvas} aria-label="3D preview of the model on the build plate. Drag to rotate, pinch to zoom."></canvas>
+    <canvas bind:this={canvas} aria-label="3D preview of the model on the build plate. Drag sideways to rotate, pinch to zoom."></canvas>
     {#if failed}
         <div class="pv-note pp-msg warn">{failed}</div>
     {:else if !model}
@@ -265,7 +271,7 @@
         display: block;
         width: 100%;
         height: 100%;
-        touch-action: none;
+        touch-action: pan-y;
     }
     .pv-note {
         position: absolute;

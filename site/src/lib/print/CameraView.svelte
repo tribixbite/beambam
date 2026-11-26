@@ -1,12 +1,14 @@
 <script lang="ts">
     /**
      * The chamber camera, live through beambam (`GET /camera.mjpeg`, which relays the camera
-     * proxy's MJPEG). Off until asked for (the stream is ~1.5 MB/s), remembered per browser;
-     * the stream is dropped while the tab is hidden and picked up again when it is shown. When
-     * it fails the card says why in beambam's words (`Daemon.cameraProblem`).
+     * proxy's MJPEG), read with fetch (`readMjpeg`) so it carries the daemon's access token and
+     * Local Network Access like every other call. Off until asked for (the stream is ~1.5 MB/s),
+     * remembered per browser; the stream is dropped while the tab is hidden and picked up again
+     * when it is shown. When it fails the card says why in beambam's words.
      */
     import { onDestroy, onMount } from 'svelte';
     import type { Daemon } from './daemon';
+    import { newestFrame, readMjpeg } from './mjpeg';
 
     interface Props {
         daemon: Daemon;
@@ -20,12 +22,11 @@
     const STORE_KEY = 'beambam.print.camera';
     let on = $state(false);
     let hidden = $state(false);
-    /** Bumped for every (re)connect: a new URL restarts the stream. */
+    /** Bumped for every (re)connect: the stream effect restarts. */
     let attempt = $state(1);
-    let showing = $state(false);
+    /** The frame on screen (an object URL from `newestFrame`), '' before the first and once stopped. */
+    let frame = $state('');
     let problem = $state('');
-    let checking = $state(false);
-    let retried = false;
 
     onMount(() => {
         try {
@@ -58,42 +59,39 @@
     function reconnect(): void {
         void recheck?.();
         problem = '';
-        showing = false;
-        retried = false;
         attempt += 1;
     }
 
-    async function failed(e: Event): Promise<void> {
-        if (e.currentTarget && torn.has(e.currentTarget)) return;
-        showing = false;
-        checking = true;
-        const why = await daemon.cameraProblem();
-        checking = false;
-        if (why === null && !retried) {
-            // A frame comes through now: the stream dropped (proxy restart, network blip). One quiet retry.
-            retried = true;
-            attempt += 1;
-            return;
-        }
-        problem = why ?? 'The live view stopped.';
-    }
+    const streaming = $derived(on && !hidden && available === true && !problem);
 
-    /**
-     * Close the MJPEG connection when the image goes (hidden, toggled off, a retry): Chrome keeps a removed
-     * multipart <img> streaming unless its src is cleared first (seen: 14 s and counting, a second stream on
-     * the next show).
-     */
-    const torn = new WeakSet<EventTarget>();
-    function stream(node: HTMLImageElement): { destroy: () => void } {
-        return {
-            destroy: () => {
-                torn.add(node);             // its error event from the cleared src is not a camera failure
-                node.removeAttribute('src');
+    // One stream per (re)connect while it should show; its teardown aborts the fetch, which closes the
+    // daemon's relay at once (an <img> kept streaming after removal unless its src was cleared).
+    $effect(() => {
+        if (!streaming) return;
+        void attempt;
+        const d = daemon;
+        const ctl = new AbortController();
+        const onFrame = newestFrame((url) => (frame = url), ctl.signal);
+        (async () => {
+            let dropped = 0;
+            while (!ctl.signal.aborted) {
+                try {
+                    const res = await d.camera(ctl.signal);
+                    await readMjpeg(res, (jpeg) => {
+                        dropped = 0;
+                        onFrame(jpeg);
+                    });
+                    // The stream ended (the proxy restarted): one quiet reconnect, then say so.
+                    if (++dropped > 1) throw new Error('The live view stopped.');
+                } catch (e) {
+                    if (ctl.signal.aborted) return;
+                    problem = e instanceof Error ? e.message : String(e);
+                    return;
+                }
             }
-        };
-    }
-
-    const streaming = $derived(on && !hidden && available !== false && available !== null && !problem);
+        })();
+        return () => ctl.abort();       // also takes the frame off screen (newestFrame)
+    });
 </script>
 
 <div class="cam">
@@ -117,17 +115,11 @@
             {problem} <button type="button" class="pp-link" onclick={reconnect}>Try again</button>
         </div>
     {:else}
-        <div class="cam-frame" class:ready={showing}>
-            {#if streaming}
-                {#key attempt}
-                    <!-- crossorigin: the request carries this page's Origin, which beambam checks (another site's
-                         page cannot start the camera). -->
-                    <img use:stream src={daemon.cameraUrl(attempt)} alt="Live view of the printer's chamber" crossorigin="anonymous"
-                         onload={() => (showing = true)} onerror={failed} />
-                {/key}
-            {/if}
-            {#if !showing}
-                <span class="cam-wait pp-mono pp-small" aria-live="polite">{checking ? 'Checking the camera…' : hidden ? 'Paused while this tab is hidden' : 'Connecting to the camera…'}</span>
+        <div class="cam-frame" class:ready={!!frame}>
+            {#if frame}
+                <img src={frame} alt="Live view of the printer's chamber" />
+            {:else}
+                <span class="cam-wait pp-mono pp-small" aria-live="polite">{hidden ? 'Paused while this tab is hidden' : 'Connecting to the camera…'}</span>
             {/if}
         </div>
     {/if}
@@ -146,7 +138,6 @@
         overflow: hidden;
     }
     .cam-frame img { width: 100%; height: 100%; object-fit: contain; display: block; }
-    .cam-frame:not(.ready) img { position: absolute; inset: 0; opacity: 0; }
     .cam-wait { color: var(--color-mute); padding: var(--space-md); text-align: center; }
     .pp-link {
         background: none; border: 0; padding: 0; color: var(--color-accent); font: inherit;

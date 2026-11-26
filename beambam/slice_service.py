@@ -153,6 +153,19 @@ def is_mesh(src: Path) -> bool:
     return suffix == ".3mf" and zipfile.is_zipfile(src) and not has_print_settings(src)
 
 
+def forced_flags(settings: dict[str, Any], track_switch: bool | None) -> list[str]:
+    """The command-line flags that keep a project's `CLI_FORCED_OFF` settings. The CLI sets both to false unless
+    they are on its command line (BambuStudio.cpp, "In CLI mode, default enable_filament_dynamic_map to false"),
+    whatever the project says; the track switch changes how filaments are grouped onto nozzles (ToolOrdering).
+    A project keeps its own values, except that the printer's track switch (`track_switch`) turns the switch on:
+    the slice is for the printer it will print on, as Bambu Studio does when it syncs the printer (a project
+    saved without the printer, e.g. pokefit's, otherwise draws "sliced without the Filament Track Switch")."""
+    on = {key for key in CLI_FORCED_OFF if str(settings.get(key, "")).lower() in ("1", "true")}
+    if track_switch:
+        on.add("has_filament_switcher")
+    return [f"--{key.replace('_', '-')}=1" for key in CLI_FORCED_OFF if key in on]
+
+
 def slice_project(src: Path, out_dir: Path, *, timeout: float = SLICE_TIMEOUT_S,
                   root: Path | None = None, name: str | None = None,
                   options: SliceOptions | None = None, track_switch: bool | None = None) -> dict[str, Any]:
@@ -162,7 +175,7 @@ def slice_project(src: Path, out_dir: Path, *, timeout: float = SLICE_TIMEOUT_S,
     A Bambu Studio project keeps its own settings, with `options` on top
     (slice_options); a bare mesh (`is_mesh`) slices for the bundled X2D 0.4 mm
     profiles with `options`. `track_switch`: the printer has a Filament Track
-    Switch (a mesh is sliced for it; a project keeps its own flag).
+    Switch (a mesh, and a project for this printer, are sliced for it: `forced_flags`).
 
     Returns {"ok", "file", "seconds", "grams", "grams_per_filament", "warnings",
     "error", "mesh"}; slicer failures come back as `error`, never raised.
@@ -207,12 +220,7 @@ def slice_project(src: Path, out_dir: Path, *, timeout: float = SLICE_TIMEOUT_S,
         if opts != SliceOptions():
             model = out_dir / f"options_{src.name}"
             settings = apply_to_project(src, model, opts, r, adopt_notes)
-        # The CLI sets these two to false unless they are on its command line
-        # (BambuStudio.cpp, "In CLI mode, default enable_filament_dynamic_map to
-        # false"), whatever the project says. The track switch changes how
-        # filaments are grouped onto nozzles (ToolOrdering), so keep the project's.
-        cmd += [f"--{key.replace('_', '-')}=1" for key in CLI_FORCED_OFF
-                if str(settings.get(key, "")).lower() in ("1", "true")]
+        cmd += forced_flags(settings, track_switch)
         machine = machine_profile(settings, r)
         if machine is not None:
             cmd += ["--load-settings", str(machine)]
@@ -252,7 +260,11 @@ def slice_project(src: Path, out_dir: Path, *, timeout: float = SLICE_TIMEOUT_S,
             "plates": len(plates),
             # Per sliced plate, in order: a print starts one plate (/print `plate`, default 1).
             "plate_seconds": [float(p.get("total_predication", 0)) for p in plates],
-            "plate_grams": [sum(float(f.get("total_used_g", 0)) for f in p.get("filaments", [])) for p in plates], "warnings": warnings,
+            "plate_grams": [sum(float(f.get("total_used_g", 0)) for f in p.get("filaments", [])) for p in plates],
+            # …and by filament number on each plate, so a client showing one plate shows that plate's grams.
+            "plate_grams_by_filament": [{str(f["id"]): float(f.get("total_used_g", 0)) for f in p.get("filaments", [])
+                                         if isinstance(f.get("id"), int)} for p in plates],
+            "warnings": warnings,
             "machine_profile": machine.name if machine else None, "wall_seconds": time.time() - t0}
 
 

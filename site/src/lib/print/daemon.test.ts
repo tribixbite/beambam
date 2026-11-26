@@ -39,17 +39,41 @@ describe('Daemon', () => {
         expect(await d.health()).toEqual({ healthy: false, version: '1.7.0', capabilities: ['slice-options'], lastMessageAge: 99, printerSilent: true, camera: null });
     });
 
-    test('the camera: its stream URL, and why it does not show in beambam\'s words', async () => {
-        const d = new Daemon('http://127.0.0.1:8765', { origin: ORIGIN, fetchImpl: fake({
+    test('the camera: a fetch with the token, and why it does not show in beambam\'s words', async () => {
+        const calls: [string, RequestInit][] = [];
+        const d = new Daemon('http://127.0.0.1:8765', { origin: ORIGIN, token: 'sekrit', fetchImpl: fake({
             '/healthz': () => [200, { healthy: true, version: '1.9.0', capabilities: ['camera'], camera: true }],
-            '/snapshot.jpg': () => [503, 'camera proxy unreachable at http://127.0.0.1:8766/cam.jpg; start it with `beambam cam start`']
-        }) });
+            '/camera.mjpeg': () => [503, 'camera proxy unreachable at http://127.0.0.1:8766/cam.mjpeg; start it with `beambam cam start`']
+        }, calls) });
         expect((await d.health()).camera).toBe(true);
-        expect(d.cameraUrl()).toBe('http://127.0.0.1:8765/camera.mjpeg');
-        expect(d.cameraUrl(3)).toBe('http://127.0.0.1:8765/camera.mjpeg?n=3');
-        expect(await d.cameraProblem()).toContain('beambam cam start');
-        const ok = new Daemon('http://127.0.0.1:8765', { origin: ORIGIN, fetchImpl: fake({ '/snapshot.jpg': () => [200, 'jpeg'] }) });
-        expect(await ok.cameraProblem()).toBeNull();
+        const ctl = new AbortController();
+        const err = await d.camera(ctl.signal).catch((e: DaemonError) => e);
+        expect(err).toBeInstanceOf(DaemonError);
+        expect((err as DaemonError).message).toContain('beambam cam start');
+        expect((calls.at(-1)![1].headers as Record<string, string>).Authorization).toBe('Bearer sekrit');
+        const ok = new Daemon('http://127.0.0.1:8765', { origin: ORIGIN, fetchImpl: (async () =>
+            new Response('--frame', { status: 200, headers: { 'Content-Type': 'multipart/x-mixed-replace; boundary=frame' } })) as FetchLike });
+        expect((await ok.camera(ctl.signal)).status).toBe(200);
+        const refused = new Daemon('http://127.0.0.1:8765', { origin: ORIGIN, fetchImpl: fake({
+            '/camera.mjpeg': () => [403, { error: 'the camera is shown only to the pages this daemon allows (--cors-origin)' }] }) });
+        expect((await refused.camera(ctl.signal).catch((e: Error) => e.message))).toContain('only to the pages this daemon allows');
+    });
+
+    test('a daemon on the LAN: its start command has a token, and every call carries it', async () => {
+        expect(startCommand(ORIGIN, 'http://192.168.1.20:8765')).toBe(
+            'beambam daemon --http 0.0.0.0:8765 --auth-token "$(openssl rand -hex 16)" --cors-origin https://beambam.boo');
+        const calls: [string, RequestInit][] = [];
+        const d = new Daemon('http://192.168.1.20:8765', { origin: ORIGIN, token: ' t0k ', fetchImpl: fake({
+            '/print/plan': () => [200, { filaments: [], errors: [], warnings: [], notes: [], ok: true }] }, calls) });
+        await d.request('/print/plan', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+        const h = calls[0][1].headers as Record<string, string>;
+        expect(h.Authorization).toBe('Bearer t0k');
+        expect(h['Content-Type']).toBe('application/json');                // the call's own headers stay
+        expect((calls[0][1] as { targetAddressSpace?: string }).targetAddressSpace).toBe('local');
+        const missing = new Daemon('http://192.168.1.20:8765', { origin: ORIGIN, fetchImpl: fake({ '/healthz': () => [401, {}] }) });
+        const err = (await missing.health().catch((e: DaemonError) => e)) as DaemonError;
+        expect(err.kind).toBe('auth');
+        expect(err.message).toContain('needs its access token');
     });
 
     test('updateProject sends the options and hands back the file; a refusal says why', async () => {
@@ -101,11 +125,14 @@ describe('Daemon', () => {
         const d = new Daemon('http://127.0.0.1:8765', { origin: ORIGIN, fetchImpl: fake({
             '/slice': () => [202, { ok: true, poll: '/slice/jobs/s1' }],
             '/slice/jobs/s1': () => (++polls < 2 ? [200, { state: 'running', done: false, message: 'slicing' }]
-                : [200, { state: 'done', done: true, file: '/x/a.gcode.3mf', seconds: 600, grams: 12.5, grams_per_filament: [10, 2.5], warnings: ['w'] }])
+                : [200, { state: 'done', done: true, file: '/x/a.gcode.3mf', seconds: 600, grams: 12.5, grams_per_filament: [10, 2.5], warnings: ['w'],
+                    grams_by_filament: { 1: 10, 3: 2.5, 4: 'x' }, plate_seconds: [400, 200], plate_grams: [10, 2.5],
+                    plate_grams_by_filament: [{ 1: 10 }, { 3: 2.5 }] }])
         }, calls) });
         const r = await d.slice('hoop.stl', new Uint8Array(84), '{"layer_height":0.16}');
         expect(r).toEqual({ file: '/x/a.gcode.3mf', seconds: 600, grams: 12.5, gramsPerFilament: [10, 2.5], warnings: ['w'],
-            gramsByFilament: {}, plateSeconds: [], plateGrams: [] });
+            gramsByFilament: { 1: 10, 3: 2.5 }, plateSeconds: [400, 200], plateGrams: [10, 2.5],
+            plateGramsByFilament: [{ 1: 10 }, { 3: 2.5 }] });
         const h = calls[0][1].headers as Record<string, string>;
         expect(h['X-Filename']).toBe('hoop.stl');
         expect(h['X-Slice-Options']).toBe('{"layer_height":0.16}');
@@ -130,6 +157,8 @@ describe('Daemon', () => {
         const p = await d.plan('/x/a.gcode.3mf', [0]);
         expect(p.errors).toEqual(['tray A1 is empty']);
         expect(JSON.parse(String(calls[0][1].body))).toEqual({ file: '/x/a.gcode.3mf', slot: [0] });
+        await d.plan('/x/a.gcode.3mf', null, 3);                       // a multi-plate project: the plate it prints
+        expect(JSON.parse(String(calls[1][1].body))).toEqual({ file: '/x/a.gcode.3mf', plate: 3 });
         expect((calls[0][1].headers as Record<string, string>)['Content-Type']).toBe('application/json');
         expect((await d.control('pause')).ok).toBe(false);
     });
@@ -147,17 +176,20 @@ describe('Daemon', () => {
 describe('jobs and starting', () => {
     test('a few failed polls are tolerated; a print 409 says why, with the new plan', async () => {
         let polls = 0;
+        const sent: unknown[] = [];
         const d = new Daemon('http://127.0.0.1:8765', { origin: ORIGIN, fetchImpl: fake({
             '/slice': () => [202, { ok: true, poll: '/slice/jobs/s1' }],
             '/slice/jobs/s1': () => (++polls < 3 ? 'refuse'
                 : [200, { state: 'done', done: true, file: '/x/a.gcode.3mf', seconds: 1, grams: 1, grams_by_filament: { '2': 1 },
                     plate_seconds: [1], plate_grams: [1], warnings: [] }]),
             '/healthz': () => [200, {}],
-            '/print': () => [409, { ok: false, plan_changed: true, plan: { filaments: [], digest: 'b' }, error: 'changed' }]
+            '/print': (init) => (sent.push(JSON.parse(String(init.body))),
+                [409, { ok: false, plan_changed: true, plan: { filaments: [], digest: 'b' }, error: 'changed' }])
         }) });
         const r = await d.slice('a.3mf', new Uint8Array(4), null);
         expect(r.gramsByFilament).toEqual({ '2': 1 });
-        const e = await d.print('/x/a.gcode.3mf', [0], true, undefined, 'a').catch((x) => x);
+        const e = await d.print('/x/a.gcode.3mf', [0], true, undefined, 'a', 2).catch((x) => x);
+        expect(sent[0]).toEqual({ file: '/x/a.gcode.3mf', slot: [0], confirm: true, accept_warnings: true, plate: 2, plan_digest: 'a' });
         expect(e).toBeInstanceOf(DaemonError);
         expect(e.message).toContain('changed since this plan');
         expect(e.body.plan.digest).toBe('b');

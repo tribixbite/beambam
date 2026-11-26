@@ -141,6 +141,18 @@ def test_a_spool_whose_filament_has_no_bundled_profile_says_which_preset_stands_
     assert out["filament_settings_id"] == [PLA, PLA]
     assert notes == [f"filament 1: no bundled X2D profile for GFA19: it slices with {PLA} (same material), "
                      "not that filament's own temperatures and flow"]
+    # One note per filament, not per slot (a full AMS of eSUN PLA+ gave seven near-identical lines).
+    notes = []
+    ps.adopt_filaments(_settings(4), root, [("GFL03", "PLA", "#FF0000"), ("GFL03", "PLA", "#00FF00"),
+                                            ("GFA19", "PLA", "#0000FF"), ("GFL03", "PLA", "#000000")], notes)
+    assert notes == [f"filaments 1, 2 and 4: no bundled X2D profile for GFL03: they slice with {PLA} (same "
+                     "material), not that filament's own temperatures and flow",
+                     f"filament 3: no bundled X2D profile for GFA19: it slices with {PLA} (same material), "
+                     "not that filament's own temperatures and flow"]
+    notes = []
+    ps.adopt_filaments(_settings(2), root, [("GFZZ9", "PPS-CF", "#FF0000"), ("GFZZ9", "PPS-CF", "#00FF00")], notes)
+    assert notes == ["filaments 1 and 2: no bundled Bambu profile for PPS-CF: they keep the project's preset "
+                     "(Generic PLA @BBL X2D 0.4 nozzle); only the colour changed"]
 
 
 def test_flush_matrix_follows_the_closest_old_colours(tmp_path):
