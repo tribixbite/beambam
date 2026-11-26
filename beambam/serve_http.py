@@ -196,6 +196,18 @@ class SliceJobRegistry:
         for j in finished[:max(0, len(finished) - self._keep)]:
             self._jobs.pop(j.pid, None)
 
+# Advertised on /healthz. "plan-sliced-nozzles": /print/plan names the nozzle
+# each filament was really sliced on (slice_info group_id), so a client may
+# build a manual nozzle map from it; "slice-reason": a refused slice names the
+# setting.
+CAPABILITIES = ("plan-sliced-nozzles", "slice-reason")
+
+
+def _beambam_version() -> str:
+    from beambam import __version__
+    return str(__version__)
+
+
 def _serve_http(bind: str,
                 get_state: Callable[[str], dict | None],
                 get_last_ts: Callable[[str], float] | None = None,
@@ -866,6 +878,10 @@ def _serve_http(bind: str,
                     "last_message_ts":   last,
                     "last_message_age_s": None if last == 0.0 else round(age, 2),
                     "max_staleness_s":   max_staleness,
+                    # What this daemon can do, for web clients that need a newer one
+                    # (pokefit.party, beambam.boo) instead of guessing from versions.
+                    "version":           _beambam_version(),
+                    "capabilities":      list(CAPABILITIES),
                 }
                 body = json.dumps(payload, indent=2).encode()
                 self.send_response(200 if healthy else 503)

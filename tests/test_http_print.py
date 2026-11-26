@@ -203,7 +203,7 @@ def test_slice_print_spawns_the_cli(tmp_path, daemon, monkeypatch):
 _POSIX_SLICER = pytest.mark.skipif(sys.platform == "win32", reason="the headless slicer is POSIX-only")
 
 
-def _fake_slicer(root: Path, *, ok: bool = True) -> Path:
+def _fake_slicer(root: Path, *, ok: bool = True, log_line: str = "") -> Path:
     """A stand-in `bs-bionic/.../bambu-studio`: records its argv, writes result.json and the
     .gcode.3mf the way the real CLI does (into --outputdir, named by --export-3mf)."""
     exe = root / "bs-bionic" / "build" / "src" / "bambu-studio"
@@ -215,6 +215,7 @@ def _fake_slicer(root: Path, *, ok: bool = True) -> Path:
 a = sys.argv[1:]
 out = a[a.index("--outputdir") + 1]; name = a[a.index("--export-3mf") + 1]
 open(os.path.join(out, "argv.json"), "w").write(json.dumps(a))
+print(%r, flush=True)
 ok = %r
 if ok:
     open(os.path.join(out, name), "wb").write(b"PK\\x03\\x04sliced")
@@ -222,7 +223,7 @@ json.dump({"return_code": 0 if ok else -100, "error_string": "" if ok else "Fail
            "sliced_plates": [{"total_predication": 3600.5, "warning_message": "",
                               "filaments": [{"total_used_g": 10.0}, {"total_used_g": 2.5}]}] if ok else []},
           open(os.path.join(out, "result.json"), "w"))
-""" % ok)
+""" % (log_line, ok))
     exe.chmod(0o755)
     return exe
 
@@ -311,3 +312,24 @@ def test_a_refused_setting_is_named_from_the_slicer_log(tmp_path):
     log.write_text("nothing to see\n")
     assert validate_reason(log) == ""
     assert validate_reason(tmp_path / "missing.log") == ""
+
+
+@_POSIX_SLICER
+def test_a_refused_setting_reaches_the_slice_job(tmp_path, daemon, monkeypatch):
+    import beambam.slice_service as ss
+    port, _ = daemon
+    root = tmp_path / "root"
+    _fake_slicer(root, ok=False, log_line="[error]   got error when validate: Too small line width")
+    monkeypatch.setattr(ss, "_root", lambda: root)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    code, body, _ = _req(port, "/slice", _project(tmp_path), headers={"X-Filename": "x.3mf"})
+    job = _wait(port, body["poll"])
+    assert job["state"] == "failed" and job["message"].endswith(": Too small line width"), job
+
+
+
+def test_healthz_says_what_this_daemon_can_do(daemon):
+    """Web clients (pokefit.party, beambam.boo) check capabilities, not version numbers."""
+    port, _ = daemon
+    code, body, _ = _req(port, "/healthz", None, method="GET")
+    assert "plan-sliced-nozzles" in body["capabilities"] and body["version"]

@@ -69,6 +69,10 @@ class CommandRefused(RuntimeError):
         self.reply = reply
 
 
+class CommandUnconfirmed(RuntimeError):
+    """The command was sent but the printer never answered it (it may or may not have applied it)."""
+
+
 def command_payload(family: str, command: str, **fields: Any) -> dict[str, Any]:
     """`{family: {"command": command, "sequence_id": <n>, **fields}}`."""
     return {family: {"command": command, "sequence_id": _next_seq(), **fields}}

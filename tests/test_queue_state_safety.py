@@ -387,3 +387,21 @@ def test_fresh_lock_of_a_live_holder_is_respected(tmp_path):
         with lock:
             pass
     assert QM._LOCK_STALE_S < QM._LOCK_TIMEOUT_S
+
+
+def test_lock_unlink_retries_while_another_handle_holds_the_file(tmp_path, monkeypatch):
+    """Windows: unlink fails with EACCES while a waiter has the lock open; it must retry, not leave the lock."""
+    lock = tmp_path / "q.lock"
+    lock.write_text("1")
+    real = Path.unlink
+    fails = {"n": 2}
+
+    def flaky(self, *a, **k):
+        if self == lock and fails["n"]:
+            fails["n"] -= 1
+            raise PermissionError(13, "in use")
+        return real(self, *a, **k)
+    monkeypatch.setattr(Path, "unlink", flaky)
+    QM._unlink_retrying(lock)
+    assert not lock.exists() and fails["n"] == 0
+

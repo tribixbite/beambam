@@ -602,11 +602,11 @@ def cmd_ams(args: argparse.Namespace) -> int:
             print(json.dumps(payload, indent=2))
             return 0
 
-        from beambam.commands import CommandRefused
+        from beambam.commands import CommandRefused, CommandUnconfirmed
         with Printer() as printer:
             try:
                 printer.set_tray_metadata(
-                    args.slot,
+                    args.slot, require_reply=True,
                     tray_type=fields["tray_type"],
                     tray_info_idx=fields["tray_info_idx"],
                     nozzle_temp_min=fields["nozzle_temp_min"],
@@ -617,11 +617,14 @@ def cmd_ams(args: argparse.Namespace) -> int:
             except CommandRefused as e:
                 print(f"ams set: printer refused slot {args.slot} — {e}", file=sys.stderr)
                 return 1
+            except CommandUnconfirmed as e:
+                print(f"ams set: {e}: check the slot on the printer", file=sys.stderr)
+                return 1
         print(f"slot {args.slot}: {fields['tray_sub_brands']} "
               f"({fields['tray_type']}, {fields['nozzle_temp_min']}-"
               f"{fields['nozzle_temp_max']}°C)"
               + (f" color #{color.lstrip('#').upper()}" if color else "")
-              + " published")
+              + " set (printer confirmed)")
         return 0
 
     if args.ams_cmd == "sync":
@@ -694,13 +697,15 @@ def cmd_ams(args: argparse.Namespace) -> int:
                       f"color={color or '(keep)'}")
             return 0
 
-        from beambam.commands import CommandRefused
+        from beambam.commands import CommandRefused, CommandUnconfirmed
+        done: list[int] = []
+        unconfirmed: list[int] = []
         with Printer() as printer:
             for slot, fields, override_color in resolved:
                 color = override_color or live_colors.get(slot)
                 try:
                     printer.set_tray_metadata(
-                        slot,
+                        slot, require_reply=True,
                         tray_type=fields["tray_type"],
                         tray_info_idx=fields["tray_info_idx"],
                         nozzle_temp_min=fields["nozzle_temp_min"],
@@ -711,9 +716,19 @@ def cmd_ams(args: argparse.Namespace) -> int:
                 except CommandRefused as e:
                     # Stop at the first refusal: the rest would most likely
                     # fail the same way (signing, or a print running).
-                    print(f"ams sync: printer refused slot {slot} — {e}", file=sys.stderr)
+                    print(f"ams sync: printer refused slot {slot} — {e}; "
+                          f"{len(done)} slot(s) set before it: {done or 'none'}", file=sys.stderr)
                     return 1
+                except CommandUnconfirmed:
+                    unconfirmed.append(slot)
+                    print(f"  slot {slot:>2} ? {fields['tray_sub_brands']} (no answer from the printer)")
+                    continue
+                done.append(slot)
                 print(f"  slot {slot:>2} ← {fields['tray_sub_brands']}")
+        if unconfirmed:
+            print(f"sync incomplete: {len(done)} slot(s) confirmed, no answer for {unconfirmed}: "
+                  "check them on the printer", file=sys.stderr)
+            return 1
         print(f"sync complete: {len(resolved)} slot(s) updated")
         return 0
 

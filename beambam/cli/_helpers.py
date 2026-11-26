@@ -16,6 +16,7 @@ x2d_bridge.py re-exports each name so external callers + tests using
 """
 from __future__ import annotations
 
+import threading
 import time
 from typing import Any
 
@@ -32,6 +33,7 @@ from typing import Any
 # (cloud_control uses str(int(time.time()*1000))): always far above the floor,
 # and monotonic across process restarts so a fresh run never looks like a replay.
 _SEQ_COUNTER = int(time.time() * 1000)
+_SEQ_LOCK = threading.Lock()
 
 
 def _next_seq() -> str:
@@ -44,8 +46,11 @@ def _next_seq() -> str:
     timestamp, then monotonic + per-process — never reset within a run.
     """
     global _SEQ_COUNTER
-    _SEQ_COUNTER += 1
-    return str(_SEQ_COUNTER)
+    # HTTP handler threads send commands concurrently: two equal ids would
+    # mis-correlate their replies.
+    with _SEQ_LOCK:
+        _SEQ_COUNTER += 1
+        return str(_SEQ_COUNTER)
 
 
 def _print_cmd(command: str, **extra: Any) -> dict:

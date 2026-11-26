@@ -123,6 +123,14 @@ def cmd_daemon(args: argparse.Namespace) -> int:
     from beambam.filament_mapping import plan_print, read_project
     from beambam.print_job import PrintRefusal, start_print
     from beambam.state_hub import StateHub
+    # A bad --http address must stop the daemon before it connects: inside the
+    # HTTP thread it raised ValueError/OverflowError, which ended only that thread.
+    if args.http:
+        _host, _, port_s = str(args.http).rpartition(":")
+        if not port_s.isdigit() or not 0 < int(port_s) < 65536:
+            print(f"[x2d-bridge] --http {args.http!r}: expected HOST:PORT with a port 1-65535",
+                  file=sys.stderr)
+            return 2
     # Canonical homes for everything we need:
     #   * `_serve_http`     — beambam.serve_http
     #   * `_WEB_DIR_DEFAULT`— beambam package root (sibling of beambam/)
@@ -311,7 +319,7 @@ def cmd_daemon(args: argparse.Namespace) -> int:
         def _run_http(**kw) -> None:
             try:
                 _serve_http(**kw)
-            except OSError as e:
+            except (OSError, ValueError, OverflowError) as e:
                 http_failed.append(str(e))
                 print(f"[x2d-bridge] HTTP API on {args.http} failed to start: {e}; "
                       "stopping the daemon", file=sys.stderr)

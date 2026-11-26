@@ -242,3 +242,35 @@ def test_send_command_raises_a_low_print_seq_but_not_other_families():
     send_command(cli, sysmsg, timeout=0)
     assert cli.sent[-1]["system"]["sequence_id"] == "0"     # unsigned: left alone
     assert int(command_payload("print", "pause")["print"]["sequence_id"]) >= SIGNED_SEQ_FLOOR
+
+
+def test_set_tray_metadata_without_an_answer_raises_when_a_reply_is_required():
+    """ams set/sync ask for the printer's ack: no answer is reported, not printed as success."""
+    import pytest as _pytest
+    from beambam.commands import CommandUnconfirmed
+    p = Printer(creds=FAKE)
+    p._client = MagicMock()
+    with patch("beambam.commands.send_command", return_value=None):
+        p.set_tray_metadata(0, tray_type="PLA", tray_info_idx="GFL99", nozzle_temp_min=190, nozzle_temp_max=230)
+        with _pytest.raises(CommandUnconfirmed):
+            p.set_tray_metadata(0, tray_type="PLA", tray_info_idx="GFL99", nozzle_temp_min=190,
+                                nozzle_temp_max=230, require_reply=True)
+
+
+def test_sequence_ids_stay_unique_across_threads():
+    import threading
+    from beambam.cli._helpers import _next_seq
+    got: list[str] = []
+    lock = threading.Lock()
+
+    def take() -> None:
+        mine = [_next_seq() for _ in range(2000)]
+        with lock:
+            got.extend(mine)
+    threads = [threading.Thread(target=take) for _ in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert len(set(got)) == len(got) == 16000
+

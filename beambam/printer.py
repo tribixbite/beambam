@@ -262,8 +262,13 @@ class Printer(AbstractContextManager):
         nozzle_temp_max: int,
         tray_color: str | None = None,
         setting_id: str | None = None,
+        require_reply: bool = False,
     ) -> dict[str, Any]:
         """Publish `print.ams_filament_setting` for a single AMS tray.
+
+        `require_reply`: raise beambam.commands.CommandUnconfirmed when the
+        printer does not answer (the X2D acks it; no answer means the setting
+        may not have been applied).
 
         `slot` is global (0..15: unit*4 + tray). `tray_color` is 8-char
         RRGGBBAA hex (alpha auto-appended `FF` if 6 chars passed). When
@@ -287,7 +292,10 @@ class Printer(AbstractContextManager):
         )
         # print.* must go through the signed path like every other control
         # method here; a raw publish is refused by X2D/H2D (err 84033545).
-        self.publish(payload)
+        reply = self.publish(payload)
+        if reply is None and require_reply:
+            from beambam.commands import CommandUnconfirmed
+            raise CommandUnconfirmed(f"no answer from the printer for slot {slot}")
         return payload
 
     # --- FTPS (no MQTT) ---------------------------------------------------

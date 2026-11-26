@@ -13,6 +13,8 @@ import sys
 import threading
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import beambam.config as config  # noqa: E402
@@ -61,3 +63,18 @@ def test_daemon_exits_nonzero_when_http_port_is_taken(monkeypatch):
         t.start()
         t.join(20)
     assert result == [1]
+
+
+@pytest.mark.parametrize("bind", ["127.0.0.1:99999", "127.0.0.1:abc", "127.0.0.1"])
+def test_daemon_refuses_a_bad_http_address_before_connecting(monkeypatch, bind):
+    """A bad port raised ValueError / OverflowError inside the HTTP thread, which ended only that thread."""
+    connected: list[str] = []
+    monkeypatch.setattr(config.Creds, "list_names", staticmethod(lambda: []))
+    monkeypatch.setattr(config.Creds, "resolve", staticmethod(
+        lambda _ns: argparse.Namespace(ip="192.0.2.1", code="x", serial="S")))
+    monkeypatch.setattr(mqtt, "X2DClient", lambda *a, **k: connected.append("x") or _FakeClient(*a, **k))
+    args = argparse.Namespace(printer=None, http=bind, interval=1, quiet=True, max_staleness=30.0,
+                              auth_token=None, queue=False, timelapse=False, allow_host=None, cors_origin=None)
+    assert daemon.cmd_daemon(args) == 2
+    assert connected == []
+
