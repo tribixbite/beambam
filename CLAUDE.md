@@ -49,6 +49,17 @@ Running GUI apps (BambuStudio / wxWidgets 3.3) on termux-x11. These lessons were
   (model_settings `filament_map_mode` / `filament_maps`) before the project: "Manual" only in project_settings
   slices as auto (same groups and time for every map). Bad settings fail with code -51; the reason is the
   `got error when validate:` line in slicer.log (e.g. "Too small line width": a line no wider than the layer).
+- **Slicing for the X2D from other inputs (2026-11-26):** an STL / geometry 3MF slices with
+  `--load-settings "<machine>;<user process.json>" --load-filaments "<system filament>.json;…"`. A user process
+  profile needs `inherits` + `compatible_printers` (else code -17, "process not compatible"); a user filament
+  profile SEGFAULTS this CLI (rc -11), so filaments are system profiles picked by filament id. A MakerWorld project
+  made for another printer (P2S) keeps that printer's profile unless re-targeted: one-nozzle G-code, every group 0.
+  `--filament-map-mode Manual --filament-map 2,1` works for meshes. All in `beambam/slice_options.py`.
+- **Test browsers on this box are shared:** another session drives a headless Chromium on CDP port 9333 (it even
+  attached to one started here). Use an unusual port and your own `--user-data-dir`, select tabs by URL, and never
+  kill "chromium on port N" without checking whose it is. Edge on the phone: CDP via
+  `adb forward tcp:9238 localabstract:chrome_devtools_remote` only answers while Edge is in the foreground; the first
+  request after allowing its "reach apps on this device" prompt took ~7 s.
 - **No reverse-DNS on the daemon's start path:** `socket.getfqdn()` takes ~30 s on the macOS CI
   runners, and in `http_validate.allowed_host_names` (run before the bind) it made every HTTP
   test there fail with "connection refused" (2026-11-25).
