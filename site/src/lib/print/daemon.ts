@@ -146,7 +146,8 @@ export class Daemon {
     private async diagnoseNetworkFailure(timedOut: boolean): Promise<DaemonError> {
         if (timedOut) {
             return new DaemonError(
-                `beambam at ${this.url} did not answer in time. Check it is running: ${this.command()}`,
+                `beambam at ${this.url} did not answer in time. If the browser asked to let this site reach ` +
+                    `apps on this device, allow it and press Connect again; else check it is running: ${this.command()}`,
                 'timeout'
             );
         }
