@@ -378,6 +378,18 @@ def test_slice_a_mesh_with_options(tmp_path, daemon, monkeypatch):
     assert argv[-1].endswith("_hoop.stl") and Path(job["file"]).name == "hoop.gcode.3mf"
     user = json.loads((Path(job["file"]).parent / "beambam_process.json").read_text())
     assert user["wall_loops"] == "4" and user["inherits"] == so.DEFAULT_PROCESS
+    assert "curr_bed_type" not in user                  # the printer's plate marker is not known here
+
+    # With the SuperTack plate on the printer, a mesh is sliced for it unless the options name a plate (the
+    # profiles' default Cool Plate refuses PETG outright).
+    monkeypatch.setitem(STATE["print"], "device", {**STATE["print"].get("device", {}), "plate": {"cur_id": "P0301"}})
+    for opts, want in (('{"filament_types": ["PETG"]}', "Supertack Plate"),
+                       ('{"bed_type": "Textured PEI Plate"}', "Textured PEI Plate")):
+        code, body, _ = _req(port, "/slice", b"solid hoop\nendsolid hoop\n",
+                             headers={"X-Filename": "hoop.stl", "X-Slice-Options": opts})
+        job = _wait(port, body["poll"])
+        user = json.loads((Path(job["file"]).parent / "beambam_process.json").read_text())
+        assert user["curr_bed_type"] == want, opts
 
 
 def test_bad_slice_options_are_400(daemon):

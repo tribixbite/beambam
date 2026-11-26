@@ -587,7 +587,7 @@
         <div class="pp-step-head"><span class="pp-step-num">01</span><h2 class="pp-step-title" id="s1">Connect</h2></div>
 
         {#if !daemon}
-            <p class="pp-muted mb-[var(--space-md)]">Start beambam where it can reach your printer (<code>pip install beambam</code> first):</p>
+            <p class="pp-muted mb-[var(--space-md)]">Start beambam where it can reach your printer. New to it? On a computer run <code>uvx beambam init</code> and <code>uvx beambam slicer install</code> once (or <code>pip install beambam</code> first), then:</p>
             <CodeBlock code={command} ariaLabel="Copy the beambam start command" />
             <form class="connect" onsubmit={(e) => { e.preventDefault(); void connect(); }}>
                 <label class="pp-field">
@@ -624,6 +624,9 @@
                 </div>
                 {#if health?.printerSilent}
                     <div class="pp-msg warn">beambam runs but hears nothing from the printer{health.lastMessageAge !== null ? ` (last message ${Math.round(health.lastMessageAge)} s ago)` : ''}. Is the printer on and on this network?</div>
+                {/if}
+                {#if health?.slicerProblem}
+                    <div class="pp-msg warn">This beambam cannot slice yet: {health.slicerProblem}</div>
                 {/if}
                 {#if !hasOptions || !hasMesh}
                     <div class="pp-msg warn">

@@ -101,7 +101,14 @@ One print is sent to a printer at a time.
 ## Slicing a project
 
 A caller that builds a Bambu Studio project but cannot slice it (a web page) can have the daemon's machine slice
-it with the bundled headless Bambu Studio (`bs-bionic`):
+it with Bambu Studio's command line. The daemon uses, in this order: `$BAMBU_STUDIO`; the phone's source build
+(`bs-bionic`, in a checkout); the official build `beambam slicer install` downloaded; an installed Bambu Studio
+(on PATH or in the standard place for Windows, macOS or Linux). On a laptop:
+
+```bash
+beambam slicer install     # Bambu Lab's official build (Linux x86_64 AppImage, macOS dmg, Windows zip), ~1 GB unpacked
+beambam slicer             # which Bambu Studio slices, and whether it can
+```
 
 ```bash
 curl -s -X POST --data-binary @figure.3mf -H 'X-Filename: figure.3mf' http://127.0.0.1:8765/slice
@@ -112,8 +119,8 @@ curl -s http://127.0.0.1:8765/slice/jobs/9c1e…
 ```
 
 - The project's own process and filament settings are kept.
-- The printer profile is reloaded from bs-bionic's bundled profile of the same name (`printer_settings_id`). A
-  project saved by a newer Bambu Studio can carry start G-code this build cannot parse.
+- The printer profile is reloaded from the slicer's own profile of the same name (`printer_settings_id`). A
+  project saved by a newer Bambu Studio can carry start G-code an older build cannot parse.
 - The headless CLI resets `has_filament_switcher` and `enable_filament_dynamic_map` to off unless they are given as
   options, whatever the project says; the daemon passes them on (`--has-filament-switcher=1`) when the project has
   them on. It also turns the switch on when the printer reports one: the slice is for the printer it will print
@@ -128,8 +135,10 @@ curl -s http://127.0.0.1:8765/slice/jobs/9c1e…
 ### Meshes and slice options
 
 `/slice` also takes a bare mesh, `X-Filename: model.stl` (`.obj`, `.step` / `.stp`, or a 3MF with no print
-settings, such as another slicer's geometry export). It is placed on the bed and sliced with bs-bionic's bundled
-X2D 0.4 mm profiles, for the printer's Filament Track Switch when the printer has one.
+settings, such as another slicer's geometry export). It is placed on the bed and sliced with the slicer's own
+X2D 0.4 mm profiles (the filaments' flattened `filament_full` copies: `--load-filaments` does not follow
+`inherits`), for the printer's Filament Track Switch when the printer has one, and for the plate on the printer
+when its marker is known and `X-Slice-Options` names none (the profiles' default, Cool Plate, refuses PETG).
 
 Optional header `X-Slice-Options` (compact JSON, up to 4 KB) applies to projects and meshes alike:
 
@@ -172,7 +181,9 @@ P0301 = SuperTack, `filament_mapping.PLATE_MARKERS`) and the file was sliced for
 the print file (e.g. a plate too hot for a filament) are added to the slice job's `warnings`.
 
 `GET /healthz` lists `capabilities`; web clients check `slice-options`, `slice-mesh`, `camera`, `plate-check` and
-`project-sync` before using these.
+`project-sync` before using these. Those name what this version of beambam understands; `slice` is listed only
+while a slicer is there to use, and `slicer` says which: `{"ready", "kind"` (`phone` | `downloaded` | `installed`
+| null), `"version", "problem"}` (`problem`: why `/slice` would fail, e.g. no Bambu Studio found).
 
 ## Controls
 

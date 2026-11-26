@@ -1192,11 +1192,18 @@ def _serve_http(bind: str,
             switch = None
             cached = get_state(self._parse_printer())
             if cached:
-                from beambam.filament_mapping import read_topology
+                from beambam.filament_mapping import installed_plate, read_topology
                 try:
                     switch = read_topology(cached).switch_installed
                 except Exception:              # noqa: BLE001 — a partial report: slice without it
                     switch = None
+                # …and for the plate on it, when the caller names none and the printer's marker is known: a mesh
+                # has no plate of its own, and the profiles' default (Cool Plate) refuses PETG outright.
+                from beambam.slice_service import is_mesh
+                plate = installed_plate(cached)[1]
+                if plate and options.bed_type is None and is_mesh(dest):
+                    import dataclasses
+                    options = dataclasses.replace(options, bed_type=plate)
             try:
                 sjob = inproc_slicer.start(dest, name=fname, options=options, track_switch=switch)
             except ValueError as e:

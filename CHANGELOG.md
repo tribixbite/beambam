@@ -5,6 +5,19 @@ All notable changes to this project.
 ## [Unreleased]
 
 ### Added
+- **Slicing off the phone:** the daemon's `POST /slice` (pokefit.party, beambam.boo/print) slices with whatever
+  Bambu Studio it finds: `$BAMBU_STUDIO`, the phone's source build, the official build `beambam slicer install`
+  downloads, or an installed Bambu Studio. Before, it looked only for the phone build, so a beambam on a laptop
+  answered "the headless Bambu Studio is not installed" with Bambu Studio installed.
+- **`beambam slicer install`** downloads Bambu Lab's official Bambu Studio (v02.09.02.62 by default, the version CI
+  slices with; `--version latest`): the Linux x86_64 AppImage for the system's glibc, the macOS dmg, or the
+  Windows portable zip. It checks the sha256 GitHub lists and unpacks into the config dir. `beambam slicer` shows
+  which Bambu Studio slices; `beambam slicer remove` deletes the download.
+- `/healthz` says which slicer the daemon uses and why it cannot slice (`slicer`), and lists `slice` among its
+  `capabilities` only while it can.
+- A mesh sent to `/slice` without a `bed_type` is sliced for the plate on the printer when its marker is known
+  (the SuperTack plate): the profiles' default, Cool Plate, refuses PETG ("Plate 1: Cool Plate does not support
+  filament 1").
 - **Live camera in the browser**: `GET /camera.mjpeg` relays the camera proxy's MJPEG to the web pages the
   daemon lets in; `beambam daemon --camera` starts the proxy (`beambam cam start`) when none answers, and
   `/healthz` says whether it is up. beambam.boo/print and pokefit.party show it.
@@ -19,6 +32,12 @@ All notable changes to this project.
   the updated project.
 - A slice job's `warnings` include those the slicer writes into the print file only (slice_info), such as a
   plate too hot for a filament.
+
+### Fixed
+- **Mesh slices used the wrong filament settings:** an STL / OBJ / STEP was sliced with the source filament profile,
+  which `--load-filaments` reads without its `inherits` chain. Bambu PLA Basic came out with density 0 (0 g
+  reported), no filament id and the CLI's default plate temperatures (hot plate 45 instead of 55 °C). Meshes now
+  take the flattened (`filament_full`) profile.
 
 ### Fixed (Fable audit, 2026-11-26)
 - **Plate:** a plate's own bed type in a project no longer silently overrides `bed_type`. The plan check and the

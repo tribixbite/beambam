@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { Daemon, DaemonError, type FetchLike, headerName, normaliseUrl, startCommand, versionAtLeast } from './daemon';
+import { Daemon, DaemonError, type FetchLike, headerName, normaliseUrl, slicerProblem, startCommand, versionAtLeast } from './daemon';
 
 type Route = (init: RequestInit) => [number, unknown] | 'refuse';
 
@@ -36,7 +36,15 @@ describe('Daemon', () => {
         const d = new Daemon('http://127.0.0.1:8765', { origin: ORIGIN, fetchImpl: fake({
             '/healthz': () => [503, { healthy: false, version: '1.7.0', capabilities: ['slice-options'], last_message_age_s: 99 }]
         }) });
-        expect(await d.health()).toEqual({ healthy: false, version: '1.7.0', capabilities: ['slice-options'], lastMessageAge: 99, printerSilent: true, camera: null });
+        expect(await d.health()).toEqual({ healthy: false, version: '1.7.0', capabilities: ['slice-options'], lastMessageAge: 99, printerSilent: true, camera: null, slicerProblem: null });
+    });
+
+    test('health says when this beambam cannot slice, and why', () => {
+        expect(slicerProblem({ ready: true, kind: 'downloaded', problem: '' })).toBe('');
+        expect(slicerProblem({ ready: false, kind: null, problem: 'no Bambu Studio to slice with: run `beambam slicer install`' }))
+            .toContain('beambam slicer install');
+        expect(slicerProblem({ ready: false })).toBe('this beambam has no slicer');
+        expect(slicerProblem(undefined)).toBeNull();          // an older beambam does not say
     });
 
     test('the camera: a fetch with the token, and why it does not show in beambam\'s words', async () => {

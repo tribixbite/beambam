@@ -98,6 +98,17 @@ export interface Health {
     printerSilent: boolean;
     /** The camera proxy behind /camera.mjpeg is up; null from a beambam without a camera relay. */
     camera: boolean | null;
+    /** Why this beambam cannot slice (no Bambu Studio found, …); '' when it can, null from a beambam that does not
+     * say (before 1.9.0: it slices only where its own build is). */
+    slicerProblem: string | null;
+}
+
+/** `/healthz` `slicer` ({ready, problem, …}) → why it cannot slice, '' when it can, null when absent. */
+export function slicerProblem(slicer: unknown): string | null {
+    if (!slicer || typeof slicer !== 'object') return null;
+    const s = slicer as { ready?: unknown; problem?: unknown };
+    if (s.ready === true) return '';
+    return typeof s.problem === 'string' && s.problem ? s.problem : 'this beambam has no slicer';
 }
 
 /** A finished slice on the daemon's machine. */
@@ -293,7 +304,8 @@ export class Daemon {
             capabilities: Array.isArray(body.capabilities) ? body.capabilities.map(String) : [],
             lastMessageAge: typeof body.last_message_age_s === 'number' ? body.last_message_age_s : null,
             printerSilent: status === 503,
-            camera: typeof body.camera === 'boolean' ? body.camera : null
+            camera: typeof body.camera === 'boolean' ? body.camera : null,
+            slicerProblem: slicerProblem(body.slicer)
         };
     }
 

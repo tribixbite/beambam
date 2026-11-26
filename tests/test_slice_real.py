@@ -12,6 +12,7 @@ import pytest
 
 import beambam.slice_service as ss
 from beambam.slice_options import SliceOptions
+from tests.test_http_print import daemon  # noqa: F401  (the fixture)
 
 pytestmark = [pytest.mark.slow,
               pytest.mark.skipif(os.environ.get("BEAMBAM_REAL_SLICER") != "1",
@@ -83,3 +84,28 @@ def test_the_sliced_file_slices_again_as_a_project(tmp_path, slicer):
     res = ss.slice_project(project, tmp_path / "b", name="cube_project.3mf", track_switch=True)
     _check(res, tmp_path / "b").close()
     assert not res["mesh"] and res["machine_profile"] == "Bambu Lab X2D 0.4 nozzle.json"
+
+
+def test_the_daemon_slices_over_http(tmp_path, slicer, daemon):
+    """What pokefit.party and beambam.boo do: /healthz says it can slice, POST /slice an STL, poll the job."""
+    from tests.test_http_print import _req, _wait
+    port, _ = daemon
+    code, health, _ = _req(port, "/healthz", method="GET")
+    assert "slice" in health["capabilities"] and health["slicer"]["ready"], health
+    stl = _stl(tmp_path / "cube.stl", [(0, 15)]).read_bytes()
+    code, body, _ = _req(port, "/slice", stl, headers={"X-Filename": "cube.stl", "Origin": "https://pokefit.party",
+                                                     "X-Slice-Options": '{"filament_types":["PETG"],"bed_type":"Textured PEI Plate"}'})
+    assert code == 202, body
+    job = _wait(port, body["poll"])
+    assert job["state"] == "done", job
+    assert job["grams"] > 0 and job["mesh"] and Path(job["file"]).name == "cube.gcode.3mf"
+
+
+def test_a_mesh_slices_for_the_plate_asked_for(tmp_path, slicer):
+    """The profiles' default plate (Cool Plate) refuses PETG (code -61); the plate asked for is used."""
+    src = _stl(tmp_path / "cube.stl", [(0, 15)])
+    refused = ss.slice_project(src, tmp_path / "a", name="cube.stl", options=SliceOptions(filament_types=("PETG",)))
+    assert not refused["ok"] and "Cool Plate" in refused["error"]
+    res = ss.slice_project(src, tmp_path / "b", name="cube.stl",
+                           options=SliceOptions(filament_types=("PETG",), bed_type="Textured PEI Plate"))
+    _check(res, tmp_path / "b").close()

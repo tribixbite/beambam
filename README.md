@@ -190,6 +190,24 @@ beambam daemon --http 0.0.0.0:8765 \
 xdg-open http://localhost:8765/
 ```
 
+### pokefit.party / beambam.boo from a computer
+
+The web apps reach the printer through a beambam daemon on the same computer. With
+[uv](https://docs.astral.sh/uv/) nothing is installed system-wide:
+
+```bash
+uvx beambam init               # once: finds the printer, asks for its 8-digit access code
+uvx beambam slicer install     # once: Bambu Lab's official Bambu Studio, for Slice (~200-430 MB download)
+uvx beambam boo --http 127.0.0.1:8765 \
+    --cors-origin https://pokefit.party --cors-origin https://beambam.boo --camera
+```
+
+Then open pokefit.party (Print card) or beambam.boo/print, keep the address `127.0.0.1:8765`, press
+Connect and allow the browser's "access other apps and services on this device" prompt (Chrome / Edge).
+`--camera` needs `ffmpeg` on PATH. Starting a print needs the printer to accept beambam's commands: the
+key from `beambam key` (option A above) or the printer's Developer LAN Mode (option B). Without either,
+everything up to Start works: spools, colour matching, slicing, status, camera.
+
 ### aarch64 Termux + BambuStudio GUI (Android phones / tablets)
 
 ```bash
