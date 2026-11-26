@@ -304,6 +304,9 @@
     let sliceTick = $state('');
     let sliceError = $state('');
     let sliceResult = $state<SliceResult | null>(null);
+    /** Bambu Connect hand-off (POST /connect): its progress and the outcome shown under Start. */
+    let handingOff = $state(false);
+    let connectMsg = $state<{ ok: boolean; text: string } | null>(null);
     let slicedKey = $state('');
     let chosenNozzles = $state<number[] | null>(null);
     let printFile = $state<string | null>(null);
@@ -496,6 +499,21 @@
         if (printerBusy) return `The printer is busy (${stateText(status!.state).toLowerCase()}): wait for the current job to finish.`;
         return '';
     });
+
+    /** Hand the sliced file to Bambu Connect on the daemon's machine (no signing key: the user's Bambu login). */
+    async function sendToConnect(): Promise<void> {
+        if (!daemon || !printFile) return;
+        handingOff = true;
+        connectMsg = null;
+        try {
+            await daemon.connect(printFile, file?.name.replace(/\.(gcode\.)?3mf$|\.(stl|obj|stp|step)$/i, ''));
+            connectMsg = { ok: true, text: 'Opened in Bambu Connect: choose the printer and filaments there, then press Send.' };
+        } catch (e) {
+            connectMsg = { ok: false, text: e instanceof Error ? e.message : String(e) };
+        } finally {
+            handingOff = false;
+        }
+    }
 
     async function startPrint(): Promise<void> {
         if (!daemon || !printFile || !plan || !startSlots || startBlock) return;
@@ -944,6 +962,15 @@
                 Start print…
             </button>
             {#if startBlock && plan}<p class="pp-muted pp-small">{startBlock}</p>{/if}
+            {#if health?.signing && !health.signing.ready}
+                <p class="pp-muted pp-small">This beambam cannot sign a print start yet ({health.signing.problem}).{health.bambuConnect === '' ? ' Bambu Connect can send it with your Bambu login instead:' : ''}</p>
+            {/if}
+            {#if health?.bambuConnect === '' && printFile && !stale}
+                <button type="button" class="pp-btn wide" disabled={handingOff} onclick={sendToConnect}>
+                    {handingOff ? 'Opening Bambu Connect…' : 'Send with Bambu Connect…'}
+                </button>
+                {#if connectMsg}<div class="pp-msg {connectMsg.ok ? 'ok' : 'err'}" role="status">{connectMsg.text}</div>{/if}
+            {/if}
         {:else}
             <div class="pp-card confirm" role="dialog" aria-labelledby="confirm-title"
                  use:confirmFocus={{ initial: 'input[type=checkbox]', returnTo: '#start-open', onEscape: () => { if (!starting) confirmOpen = false; } }}>

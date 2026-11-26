@@ -57,6 +57,10 @@ slicing = [
     "numpy-stl",
     "Pillow",
 ]
+# `beambam key`: scanning Bambu Handy's heap for the signing key.
+key = [
+    "numpy",
+]
 mcp = [
     "mcp>=1.0",
 ]
@@ -68,7 +72,7 @@ assistant = [
     "openai>=1.30",
 ]
 all = [
-    "beambam[slicing,mcp,webui,assistant]",
+    "beambam[slicing,mcp,webui,assistant,key]",
 ]
 dev = [
     "pytest>=8.0",

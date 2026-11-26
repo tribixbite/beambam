@@ -123,3 +123,18 @@ def test_a_mesh_slices_for_the_plate_asked_for(tmp_path, slicer):
     res = ss.slice_project(src, tmp_path / "b", name="cube.stl",
                            options=SliceOptions(filament_types=("PETG",), bed_type="Textured PEI Plate"))
     _check(res, tmp_path / "b").close()
+
+
+def test_a_binary_stl_with_zero_normals_slices(tmp_path, slicer):
+    """Valid STL (normals left to the reader), refused by Bambu Studio as written (code -6 on the phone build):
+    beambam fills the normals in before slicing."""
+    import struct
+    from beambam.stl_normals import FACET
+    rows = []
+    for x0, size in [(0, 15)]:
+        v = _box(x0, size)
+        rows += [FACET.pack(0.0, 0.0, 0.0, *v[a], *v[b], *v[c], 0) for a, b, c in _FACES]
+    src = tmp_path / "zero_normals.stl"
+    src.write_bytes(b"\0" * 80 + struct.pack("<I", len(rows)) + b"".join(rows))
+    res = ss.slice_project(src, tmp_path / "out", name="zero_normals.stl")
+    _check(res, tmp_path / "out").close()

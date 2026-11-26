@@ -89,7 +89,8 @@ def signing_status(now: _dt.datetime | None = None,
     )
     if not st.key or not st.cert_id:
         st.problems.append("no recovered signing key / cert id — run `beambam key` "
-                           "(Bambu Handy on an adb-connected phone)")
+                           "(Bambu Handy on a rooted phone over adb), or start prints with "
+                           "Bambu Connect (`beambam connect`)")
     app_cert = config_path("printer_app_cert.pem")
     if app_cert.is_file():
         try:
@@ -99,7 +100,7 @@ def signing_status(now: _dt.datetime | None = None,
             if cert.not_valid_after_utc < now:
                 st.problems.append(
                     f"the Handy app cert expired {cert.not_valid_after_utc:%Y-%m-%d} — "
-                    f"re-capture it and re-run `beambam key`")
+                    f"run `beambam key` again (it reads Handy's renewed cert)")
             elif cert.not_valid_before_utc > now:
                 st.problems.append("the Handy app cert is not valid yet (check the clock)")
         except (ValueError, OSError) as e:

@@ -213,7 +213,7 @@ class SliceJobRegistry:
 CAMERA_MAX_VIEWERS = 4
 CAMERA_SEND_TIMEOUT_S = 15.0
 CAPABILITIES = ("plan-sliced-nozzles", "slice-reason", "slice-options", "slice-mesh", "camera", "plate-check",
-                "project-sync")
+                "project-sync", "bambu-connect")
 DEFAULT_CAMERA_URL = "http://127.0.0.1:8766"
 
 
@@ -1025,6 +1025,11 @@ def _serve_http(bind: str,
                 age = time.time() - last if last else float("inf")
                 healthy = age <= max_staleness
                 from beambam.slice_service import slicer_status
+                from beambam.bambu_connect import problem as _connect_problem
+                from beambam.signing import signing_status
+                sig = signing_status()
+                signing = {"ready": sig.ready, "problem": sig.summary() if not sig.ready else ""}
+                connect_problem = _connect_problem()
                 try:
                     slicer = slicer_status()
                 except OSError as e:           # a slicer path it may not read (EACCES): say so, stay up
@@ -1042,6 +1047,10 @@ def _serve_http(bind: str,
                     "capabilities":      list(CAPABILITIES) + (["slice"] if slicer["ready"] else []),
                     # Which Bambu Studio POST /slice uses, or why it cannot slice (slice_service.slicer_status).
                     "slicer":            slicer,
+                    # Can this machine sign print start (beambam key)? Else POST /connect hands the file to
+                    # Bambu Connect ("bambu_connect": why it cannot, '' when it can).
+                    "signing":           signing,
+                    "bambu_connect":     connect_problem,
                     # The camera proxy behind /camera.mjpeg is up (a TCP connect only).
                     "camera":            camera_listening(camera_url),
                 }
@@ -1223,6 +1232,29 @@ def _serve_http(bind: str,
             self._send_json({"ok": True, "job": sjob.to_dict(),
                              "poll": f"/slice/jobs/{sjob.id}"}, status=202)
 
+        def _handle_connect(self) -> None:
+            """POST /connect {"file": <a sliced file on this machine>, "name"?} — hand it to Bambu Connect here
+            (beambam.bambu_connect), which prints with the user's own Bambu login, no signing key. Bambu Connect
+            asks for the printer and filaments and the user presses Send there. 200 {"ok", "url"}; 400 for a
+            file that is not a sliced one; 503 where Bambu Connect is not installed (or has no build)."""
+            from beambam import bambu_connect as bc
+            body = self._json_body()
+            raw = body.get("file")
+            name = body.get("name")
+            if not isinstance(raw, str) or not raw or (name is not None and not isinstance(name, str)):
+                self._send_json({"error": 'expected {"file": "<path of a sliced file>", "name"?: str}'}, status=400)
+                return
+            why = bc.problem()
+            if why:
+                self._send_json({"ok": False, "error": why}, status=503)
+                return
+            try:
+                url = bc.open_file(Path(raw), name)
+            except bc.ConnectError as e:
+                self._send_json({"ok": False, "error": str(e)}, status=400)
+                return
+            self._send_json({"ok": True, "url": url})
+
         def _handle_print(self, path: str) -> None:
             """POST /print/upload | /print/plan | /print — see the docstring above."""
             if path == "/print/upload":
@@ -1380,6 +1412,9 @@ def _serve_http(bind: str,
                 return
             if path == "/project/update":
                 self._handle_project_update()
+                return
+            if path == "/connect":
+                self._handle_connect()
                 return
             # Item #57: AI assistant — POST chat.
             if path == "/assistant/chat":

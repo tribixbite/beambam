@@ -47,7 +47,7 @@ def test_expired_app_cert_is_named(home: Path, monkeypatch: pytest.MonkeyPatch) 
     _cert(home / "printer_app_cert.pem", dt.datetime(2026, 8, 22, tzinfo=dt.timezone.utc))
     monkeypatch.setenv("X2D_USER_ID", "12345")
     st = signing_status(NOW)
-    assert st.problems == ["the Handy app cert expired 2026-08-22 — re-capture it and re-run `beambam key`"]
+    assert st.problems == ["the Handy app cert expired 2026-08-22 — run `beambam key` again (it reads Handy's renewed cert)"]
     assert st.user_id_source == "X2D_USER_ID"
 
 

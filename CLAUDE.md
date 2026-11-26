@@ -64,6 +64,11 @@ Running GUI apps (BambuStudio / wxWidgets 3.3) on termux-x11. These lessons were
   `--load-filaments <file>` does NOT follow `inherits`: pass the `filament_full` copy, or PLA gets density 0 and
   default plate temps. A mesh with no `bed_type` gets Cool Plate, which refuses PETG (code -61; Windows' log names
   no plate). The phone build rejects a binary STL whose facet normals are all zero (code -6); ASCII is fine.
+- **Handy's heap over adb (`beambam key`, rooted Saga 192.168.0.82, 2026-11-26):** ~3.5 MB/s over Wi-Fi; `dd` of a
+  `[anon:stack_and_tls:*]` mapping hangs (guard page) even with `conv=noerror`: skip stacks. The app cert is in the
+  heap too (PEM/DER, issuer `GLOF<n>.bambulab.com`) once Handy's Devices tab has connected; the bottom tab's
+  content-desc is "Devices". A cloud print without any app key: only Bambu Connect (`bambu-connect://import-file`,
+  Windows/macOS); `/my/task` needs PoP signed with an app key (open-bamboo-networking §10.5).
 - **The X2D's plate marker** `device.plate.cur_id` P0301 is the SuperTack plate (owner-confirmed 2026-11-26; `base`
   9, `mat` 1). No public table: only confirmed markers go in `filament_mapping.PLATE_MARKERS` (and pokefit's copy).
 - **Test browsers on this box are shared:** another session drives a headless Chromium on CDP port 9333 (it even

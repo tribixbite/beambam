@@ -528,82 +528,29 @@ def _auto_adb_serial() -> "tuple[str | None, list[str]]":
 
 
 def cmd_key(args: argparse.Namespace) -> int:
-    """Recover the printer-control RSA signing key from the RUNNING Handy app's
-    Dart heap (no Frida / no hooking) and save it to ~/.x2d/ for signed cloud
-    control. Needs: adb access to the phone (`--adb ip:port`, or the sole
-    connected device is used automatically), Handy running **with the printer
-    connected in the Devices tab** (so the key is loaded — the 3D model preview
-    does NOT load it), and the app cert (`--cert`, default
-    ~/.x2d/printer_app_cert.pem) for the modulus. Also writes cert_id. Optional
-    setup step that unlocks `pause/resume/stop/…`."""
+    """Recover the printer-control signing key and its app cert from Bambu Handy on a rooted phone, over adb
+    (USB or the phone's LAN address), and save them to the config dir (beambam.handy_key: it finds the phone,
+    opens Handy's Devices tab when the key is not loaded yet, reads the cert and the key from Handy's heap and
+    checks they match). Unlocks signed control and print start on X2D / H2D firmware."""
     import os
     from pathlib import Path
-    sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "runtime" / "handy_extract"))
-    try:
-        import extract_signing_key as esk
-    except Exception as e:                                # noqa: BLE001
-        print(f"[key] cannot load extractor: {e}", file=sys.stderr)
-        return 1
+    from beambam import handy_key
     adb = getattr(args, "adb", None) or os.environ.get("X2D_ADB")
-    if not adb:
-        adb, devs = _auto_adb_serial()
-        if not adb:
-            if not devs:
-                print("[key] no adb device connected — plug the phone in (or "
-                      "`adb connect <ip:port>`) then re-run; or pass --adb / set "
-                      "X2D_ADB.", file=sys.stderr)
-            else:
-                print(f"[key] {len(devs)} adb devices connected "
-                      f"({', '.join(devs)}) — pick one with `--adb <serial>`.",
-                      file=sys.stderr)
-            return 1
-        print(f"[key] using the only connected adb device: {adb}", file=sys.stderr)
-    # The key and cert_id belong to the Handy install's app cert, not to a
-    # printer (cert_id = app cert serial + app cert ISSUER CN), so one global
-    # pair signs for every printer that install controls. Only the device
-    # cert is per printer (see cmd_device_cert).
-    cert = getattr(args, "cert", None) or str(config_path("printer_app_cert.pem"))
-    if not Path(cert).is_file():
-        print(f"[key] app cert not found at {cert} (capture security."
-              f"app_cert_install, or pass --cert)", file=sys.stderr)
-        return 1
-    key_out = config_path("printer_sign_key.pem")
-    key_out.parent.mkdir(parents=True, exist_ok=True)
-    out = str(key_out)
-    # Poll a short window: the key only appears after Handy connects+signs, so a
-    # few retries let the user open the Devices tab while this runs. Override with
-    # `--wait <seconds>`.
+    cert = getattr(args, "cert", None)
     wait = int(getattr(args, "wait", 0) or 0)
-    retries, delay = (max(2, wait // 10), 10) if wait else (3, 10)
-    # This interpreter + an argument list: `os.system("python3 ...")` hit
-    # the Microsoft Store stub (or another Python) on Windows, broke on
-    # paths with spaces and let an adb serial inject shell syntax.
-    import subprocess
-    rc = subprocess.run(
-        [sys.executable, str(esk.__file__), "--serial", str(adb), "--cert", str(cert),
-         "--out", out, "--retries", str(retries), "--retry-delay", str(delay)],
-        cwd=str(Path.home())).returncode
-    if rc != 0 or not Path(out).is_file():
-        print("[key] extraction failed. The signing key is only in the heap "
-              "after Handy CONNECTS TO THE PRINTER and signs — open Handy's "
-              "Devices tab and let it connect to the printer (the 3D model "
-              "preview does NOT load the key). If you re-logged-in to Handy "
-              "since capturing the app cert, the cert is stale — re-capture it. "
-              "Then re-run (optionally `beambam key --wait 60`).", file=sys.stderr)
-        return 1
-    # cert_id = <app cert serial, hex> + CN=<app cert issuer CN>. It used to be
-    # built from the PRINTER serial, which produced a cert_id the printer does
-    # not accept (verified 2026-11-09 against a working cert_id).
+    attempts = max(2, wait // 30 + 1) if wait else 3
     try:
-        from cryptography import x509
-        from beambam.cloud_control import mqtt_sign
-        cid = mqtt_sign.cert_id_from_app_cert(
-            x509.load_pem_x509_certificate(Path(cert).read_bytes()))
-        cid_out = config_path("printer_cert_id.txt")
-        cid_out.write_text(cid)
-        print(f"[key] OK → {out}\n[key] cert_id → {cid_out}")
-    except Exception as e:                                # noqa: BLE001
-        print(f"[key] key saved, but cert_id write failed: {e}", file=sys.stderr)
+        found = handy_key.extract(adb, Path(cert).expanduser() if cert else None, attempts=attempts)
+        written = handy_key.save(found, config_path())
+    except handy_key.KeyError_ as e:
+        print(f"[key] {e}", file=sys.stderr)
+        return 1
+    exp = found.cert.not_valid_after_utc
+    print(f"[key] OK: signing key, app cert (valid to {exp:%Y-%m-%d}) and cert_id saved:")
+    for path in written:
+        print(f"[key]   {path}")
+    if not config_path("printer_device_cert.pem").is_file():
+        print("[key] next, for an X2D / H2D print start: `beambam device-cert`")
     return 0
 
 

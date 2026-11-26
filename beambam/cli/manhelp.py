@@ -166,6 +166,10 @@ EXAMPLES: dict[str, list[tuple[str, str]]] = {
         ("beambam help print", "Show the full page for one command."),
         ("beambam help --all", "Read the manual for every command."),
     ],
+    "connect": [
+        ("beambam connect part.gcode.3mf", "Open it in Bambu Connect; pick the printer there and press Send."),
+        ("beambam connect part.gcode.3mf --print-url", "Only show the bambu-connect:// URL."),
+    ],
     "slicer": [
         ("beambam slicer", "Show which Bambu Studio slices (POST /slice, slice-print) and whether it can."),
         ("beambam slicer install", "Download Bambu Lab's official build (the version CI slices with)."),

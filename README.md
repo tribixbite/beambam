@@ -206,7 +206,13 @@ Then open pokefit.party (Print card) or beambam.boo/print, keep the address `127
 Connect and allow the browser's "access other apps and services on this device" prompt (Chrome / Edge).
 `--camera` needs `ffmpeg` on PATH. Starting a print needs the printer to accept beambam's commands: the
 key from `beambam key` (option A above) or the printer's Developer LAN Mode (option B). Without either,
-everything up to Start works: spools, colour matching, slicing, status, camera.
+everything up to Start works (spools, colour matching, slicing, status, camera), and on Windows or macOS
+beambam.boo/print offers **Send with Bambu Connect** instead: Bambu's own app prints the sliced file with your
+Bambu login (`beambam connect part.gcode.3mf` from the command line).
+
+`beambam key` does the whole key setup with a **rooted** Android phone that runs Bambu Handy (USB, or
+`--adb <phone IP>` on the LAN; `pip install numpy` for the scan): it finds the phone, opens Handy's Devices tab
+so the key loads, reads the app cert and the key from Handy's memory, checks they match and saves them.
 
 ### aarch64 Termux + BambuStudio GUI (Android phones / tablets)
 

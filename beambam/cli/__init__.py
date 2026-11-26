@@ -127,6 +127,7 @@ _COMMAND_GROUPS: list[tuple[str, list[tuple[str, str]]]] = [
         ("ams",            "AMS-specific commands"),
         ("slice",          "Slicer-specific commands"),
         ("slicer",         "Which Bambu Studio slices; subs: install, remove"),
+        ("connect",        "Hand a sliced file to Bambu Connect (no key)"),
         ("cloud-fetch",    "Cloud-side file fetch"),
     ]),
 ]
@@ -383,14 +384,13 @@ def build_parser() -> argparse.ArgumentParser:
     sa.set_defaults(fn=cmd_start)
 
     ky = sub.add_parser("key", aliases=["token"],
-                        help="Recover the printer-control RSA signing key from a running Handy (Dart heap)")
-    ky.add_argument("--adb", help="phone adb serial ip:port (or env X2D_ADB); "
-                                  "the sole connected device is used if omitted")
-    ky.add_argument("--cert", help="app cert PEM (default ~/.x2d/printer_app_cert.pem)")
+                        help="Get the printer-control signing key and its app cert from Bambu Handy on a rooted "
+                             "phone (adb over USB or the LAN)")
+    ky.add_argument("--adb", help="the phone: IP (port 5555), ip:port or an adb serial (or env X2D_ADB); "
+                                  "default: the one connected rooted device with Handy")
+    ky.add_argument("--cert", help="app cert PEM to use instead of reading the current one from Handy's heap")
     ky.add_argument("--wait", type=int, default=0, metavar="SECONDS",
-                    help="keep polling the heap for this many seconds — open "
-                         "Handy's Devices tab + connect to the printer while it "
-                         "runs so the key loads (default: ~30s)")
+                    help="keep trying this long for the key to load in Handy (default: three passes)")
     ky.set_defaults(fn=cmd_key)
 
     dvc = sub.add_parser("device-cert",
@@ -1242,6 +1242,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     from beambam.slicer_install import add_subparser as _slicer_subparser
     _slicer_subparser(sub)
+
+    from beambam.bambu_connect import add_subparser as _connect_subparser
+    _connect_subparser(sub)
 
     from beambam.find import add_subparser as _find_subparser
     _find_subparser(sub)

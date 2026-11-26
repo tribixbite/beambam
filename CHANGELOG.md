@@ -4,6 +4,23 @@ All notable changes to this project.
 
 ## [Unreleased]
 
+### Added
+- **`beambam key` with a rooted phone, start to finish:** it finds the rooted adb device with Bambu Handy (or
+  `--adb <IP>` on the LAN, connected if needed), starts Handy and opens its Devices tab when the key is not
+  loaded yet, reads the **app cert** as well as the key from Handy's heap (no separate cert capture), checks the
+  key is the cert's, and saves key, cert and cert_id (keeping a different previous copy). Every tap waits for
+  Handy to have the focus, and the app that was in front is put back. Verified against a rooted Saga: the same
+  key, cert and cert_id as the working setup. numpy is the `key` extra.
+- **Printing without a key, with your Bambu login:** `beambam connect part.gcode.3mf` and the daemon's
+  `POST /connect` hand a sliced file to Bambu Connect (Bambu's own bridge app, Windows and macOS), which prints
+  over the cloud or the LAN; beambam.boo/print shows **Send with Bambu Connect** where it is installed.
+  `/healthz` reports `signing` and `bambu_connect`.
+
+### Fixed
+- **A binary STL with zero facet normals** (valid STL, written by some exporters) was refused by Bambu Studio
+  ("The input model file to the slicer can not be parsed", code -6). beambam fills the normals in from the
+  vertices before slicing (a copy; the file is untouched).
+
 ## v1.9.0 — slice on any computer (2026-11-26)
 
 ### Added

@@ -185,6 +185,25 @@ the print file (e.g. a plate too hot for a filament) are added to the slice job'
 while a slicer is there to use, and `slicer` says which: `{"ready", "kind"` (`phone` | `downloaded` | `installed`
 | null), `"version", "problem"}` (`problem`: why `/slice` would fail, e.g. no Bambu Studio found).
 
+## Printing without a signing key: Bambu Connect
+
+X2D / H2D firmware starts a print only when the command is signed by a key Bambu certified (`beambam key`). On a
+machine without one, `POST /connect` hands a sliced file to Bambu Connect, Bambu's own bridge app, which prints
+with the user's Bambu login (cloud or LAN):
+
+```bash
+curl -s -X POST -H 'Content-Type: application/json' \
+     -d '{"file": "/…/.x2d/uploads/sliced/9c1e…/figure.gcode.3mf", "name": "figure"}' http://127.0.0.1:8765/connect
+# → {"ok": true, "url": "bambu-connect://import-file?path=…&name=figure&version=1.0.0"}
+```
+
+Bambu Connect opens on the daemon's machine and asks for the printer, the plate and the filament mapping; the
+user presses Send there, so this does not start the print by itself. 400 for a file that is not sliced; 503 where
+Bambu Connect is not installed or has no build (it exists for Windows and macOS). `GET /healthz` reports
+`signing` (`{"ready", "problem"}`: whether this machine can sign a print start) and `bambu_connect` (why
+`/connect` cannot work here, `""` when it can), and lists `bambu-connect` in `capabilities`. The CLI is
+`beambam connect part.gcode.3mf`.
+
 ## Controls
 
 `POST /control/<verb>` takes a JSON body:

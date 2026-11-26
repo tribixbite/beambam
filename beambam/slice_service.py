@@ -289,7 +289,9 @@ def slice_project(src: Path, out_dir: Path, *, timeout: float = SLICE_TIMEOUT_S,
         cmd += mesh_args(prof, opts, out_dir)
         if track_switch:
             cmd.append("--has-filament-switcher=1")
-        model = src.resolve()
+        # A binary STL with zero facet normals (valid STL) is refused by Bambu Studio: slice a copy with them set.
+        from beambam.stl_normals import with_normals
+        model = with_normals(src, out_dir).resolve()
     retargeted = None
     adopt_notes: list[str] = []          # what the spools could not change in a project (project_sync)
     if not mesh:

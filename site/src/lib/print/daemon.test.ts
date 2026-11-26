@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { Daemon, DaemonError, type FetchLike, headerName, normaliseUrl, slicerProblem, startCommand, versionAtLeast } from './daemon';
+import { Daemon, DaemonError, type FetchLike, headerName, normaliseUrl, signingOf, slicerProblem, startCommand, versionAtLeast } from './daemon';
 
 type Route = (init: RequestInit) => [number, unknown] | 'refuse';
 
@@ -36,7 +36,20 @@ describe('Daemon', () => {
         const d = new Daemon('http://127.0.0.1:8765', { origin: ORIGIN, fetchImpl: fake({
             '/healthz': () => [503, { healthy: false, version: '1.7.0', capabilities: ['slice-options'], last_message_age_s: 99 }]
         }) });
-        expect(await d.health()).toEqual({ healthy: false, version: '1.7.0', capabilities: ['slice-options'], lastMessageAge: 99, printerSilent: true, camera: null, slicerProblem: null });
+        expect(await d.health()).toEqual({ healthy: false, version: '1.7.0', capabilities: ['slice-options'], lastMessageAge: 99, printerSilent: true, camera: null, slicerProblem: null, signing: null, bambuConnect: null });
+    });
+
+    test('health says whether it can sign, and whether Bambu Connect can take the file instead', async () => {
+        const d = new Daemon('http://127.0.0.1:8765', { origin: ORIGIN, fetchImpl: fake({
+            '/healthz': () => [200, { healthy: true, version: '1.10.0', capabilities: ['bambu-connect'],
+                                      signing: { ready: false, problem: 'no recovered signing key' }, bambu_connect: '' }],
+            '/connect': () => [200, { ok: true, url: 'bambu-connect://import-file?path=%2Fx&name=x&version=1.0.0' }]
+        }) });
+        const h = await d.health();
+        expect(h.signing).toEqual({ ready: false, problem: 'no recovered signing key' });
+        expect(h.bambuConnect).toBe('');
+        expect(await d.connect('/x.gcode.3mf', 'x')).toStartWith('bambu-connect://import-file');
+        expect(signingOf({ ready: 'yes' })).toBeNull();
     });
 
     test('health says when this beambam cannot slice, and why', () => {

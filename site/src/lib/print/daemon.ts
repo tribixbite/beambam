@@ -101,6 +101,11 @@ export interface Health {
     /** Why this beambam cannot slice (no Bambu Studio found, …); '' when it can, null from a beambam that does not
      * say (before 1.9.0: it slices only where its own build is). */
     slicerProblem: string | null;
+    /** Whether this beambam can sign a print start (`beambam key`): null from one that does not say. */
+    signing: { ready: boolean; problem: string } | null;
+    /** Why POST /connect (hand the file to Bambu Connect) cannot work on the daemon's machine: '' when it can,
+     * null from a beambam without it. */
+    bambuConnect: string | null;
 }
 
 /** `/healthz` `slicer` ({ready, problem, …}) → why it cannot slice, '' when it can, null when absent. */
@@ -109,6 +114,13 @@ export function slicerProblem(slicer: unknown): string | null {
     const s = slicer as { ready?: unknown; problem?: unknown };
     if (s.ready === true) return '';
     return typeof s.problem === 'string' && s.problem ? s.problem : 'this beambam has no slicer';
+}
+
+/** `/healthz` `signing` ({ready, problem}) → itself, or null when absent or malformed. */
+export function signingOf(raw: unknown): { ready: boolean; problem: string } | null {
+    if (!raw || typeof raw !== 'object') return null;
+    const s = raw as { ready?: unknown; problem?: unknown };
+    return typeof s.ready === 'boolean' ? { ready: s.ready, problem: typeof s.problem === 'string' ? s.problem : '' } : null;
 }
 
 /** A finished slice on the daemon's machine. */
@@ -305,7 +317,9 @@ export class Daemon {
             lastMessageAge: typeof body.last_message_age_s === 'number' ? body.last_message_age_s : null,
             printerSilent: status === 503,
             camera: typeof body.camera === 'boolean' ? body.camera : null,
-            slicerProblem: slicerProblem(body.slicer)
+            slicerProblem: slicerProblem(body.slicer),
+            signing: signingOf(body.signing),
+            bambuConnect: typeof body.bambu_connect === 'string' ? body.bambu_connect : null
         };
     }
 
@@ -461,6 +475,15 @@ export class Daemon {
         const { body } = await this.postJson('/print/plan', req,
             (s, b) => (s === 409 || s === 422) && Array.isArray(b.filaments));
         return body;
+    }
+
+    /**
+     * Hand the sliced `file` (on the daemon's machine) to Bambu Connect there: it prints with the user's own Bambu
+     * login, no signing key; the printer and filaments are chosen in Bambu Connect. Resolves with the URL opened.
+     */
+    async connect(file: string, name?: string): Promise<string> {
+        const { body } = await this.postJson('/connect', name ? { file, name } : { file });
+        return typeof body.url === 'string' ? body.url : '';
     }
 
     /**
