@@ -333,3 +333,40 @@ def test_healthz_says_what_this_daemon_can_do(daemon):
     port, _ = daemon
     code, body, _ = _req(port, "/healthz", None, method="GET")
     assert "plan-sliced-nozzles" in body["capabilities"] and body["version"]
+
+
+@_POSIX_SLICER
+def test_slice_a_mesh_with_options(tmp_path, daemon, monkeypatch):
+    """An STL (no zip, no project) slices with the bundled printer profiles and the X-Slice-Options."""
+    import beambam.slice_options as so
+    import beambam.slice_service as ss
+    port, _ = daemon
+    root = tmp_path / "root"
+    _fake_slicer(root)
+    proc = root / "bs-bionic" / "resources" / "profiles" / "BBL" / "process"
+    proc.mkdir(parents=True)
+    (proc / f"{so.DEFAULT_PROCESS}.json").write_text(json.dumps({"name": so.DEFAULT_PROCESS}))
+    (root / "bs-bionic" / "resources" / "profiles" / "BBL" / "filament").mkdir()
+    so._filament_index.cache_clear()
+    monkeypatch.setattr(ss, "_root", lambda: root)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    opts = json.dumps({"wall_loops": 4, "nozzles": [2], "filament_types": ["PETG"]})
+    code, body, _ = _req(port, "/slice", b"solid hoop\nendsolid hoop\n",
+                         headers={"X-Filename": "hoop.stl", "X-Slice-Options": opts})
+    assert code == 202, body
+    job = _wait(port, body["poll"])
+    assert job["state"] == "done" and job["mesh"] is True, job
+    argv = json.loads((Path(job["file"]).parent / "argv.json").read_text())
+    assert argv[argv.index("--filament-map") + 1] == "2" and "--arrange" in argv
+    assert argv[-1].endswith("_hoop.stl") and Path(job["file"]).name == "hoop.gcode.3mf"
+    user = json.loads((Path(job["file"]).parent / "beambam_process.json").read_text())
+    assert user["wall_loops"] == "4" and user["inherits"] == so.DEFAULT_PROCESS
+
+
+def test_bad_slice_options_are_400(daemon):
+    port, _ = daemon
+    code, body, _ = _req(port, "/slice", b"solid x\n", headers={"X-Filename": "x.stl",
+                                                                "X-Slice-Options": '{"layer_height": 1}'})
+    assert code == 400 and "layer_height" in body["error"]
+    code, body, _ = _req(port, "/slice", b"solid x\n", headers={"X-Filename": "x.exe"})
+    assert code == 400 and ".stl" in body["error"]

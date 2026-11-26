@@ -199,8 +199,9 @@ class SliceJobRegistry:
 # Advertised on /healthz. "plan-sliced-nozzles": /print/plan names the nozzle
 # each filament was really sliced on (slice_info group_id), so a client may
 # build a manual nozzle map from it; "slice-reason": a refused slice names the
-# setting.
-CAPABILITIES = ("plan-sliced-nozzles", "slice-reason")
+# setting; "slice-options": /slice takes X-Slice-Options (slice_options.py);
+# "slice-mesh": /slice takes STL / OBJ / STEP and geometry-only 3MF.
+CAPABILITIES = ("plan-sliced-nozzles", "slice-reason", "slice-options", "slice-mesh")
 
 
 def _beambam_version() -> str:
@@ -344,7 +345,7 @@ def _serve_http(bind: str,
             self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
             self.send_header("Access-Control-Allow-Headers",
                              "Authorization, Content-Type, X-Filename, X-Printer, "
-                             "X-Slot, X-Bed-Type, X-No-AMS, X-Accept-Warnings")
+                             "X-Slot, X-Bed-Type, X-No-AMS, X-Accept-Warnings, X-Slice-Options")
             self.send_header("Access-Control-Max-Age", "600")
             # Chrome's Private Network Access: a public site (https://pokefit.party)
             # calling a loopback daemon asks first; only allowlisted origins get here.
@@ -934,27 +935,40 @@ def _serve_http(bind: str,
                                  f"available: {names}")
             return name
 
-        def _read_upload(self, suffix: str, hint: str) -> tuple[str, bytes] | None:
-            """The raw zip body of an upload and its sanitised X-Filename, or
-            None after answering 400."""
+        def _read_upload(self, suffix: str | tuple[str, ...], hint: str) -> tuple[str, bytes] | None:
+            """The raw body of an upload and its sanitised X-Filename, or None
+            after answering 400. Zips (.3mf) must start like one; meshes are
+            checked by the slicer."""
+            suffixes = (suffix,) if isinstance(suffix, str) else suffix
             fname = re.sub(r"[^a-zA-Z0-9._-]", "_",
-                           self.headers.get("X-Filename") or f"upload{suffix}")[:120]
-            if not fname.lower().endswith(suffix):
-                self._send_json({"error": f"X-Filename must end in {suffix} ({hint})"}, status=400)
+                           self.headers.get("X-Filename") or f"upload{suffixes[0]}")[:120]
+            if not fname.lower().endswith(suffixes):
+                self._send_json({"error": f"X-Filename must end in {' / '.join(suffixes)} ({hint})"},
+                                status=400)
                 return None
             cl = int(self.headers.get("Content-Length", 0) or 0)
             if cl <= 0 or cl > 200 * 1024 * 1024:
                 self._send_json({"error": "Content-Length must be 1..200 MiB"}, status=400)
                 return None
             body = self.rfile.read(cl)
-            if len(body) != cl or body[:2] != b"PK":
-                self._send_json({"error": f"body is not a complete {suffix} (zip)"}, status=400)
+            if len(body) != cl:
+                self._send_json({"error": "the body is shorter than its Content-Length"}, status=400)
+                return None
+            if fname.lower().endswith(".3mf") and body[:2] != b"PK":
+                self._send_json({"error": f"body is not a complete {fname.rsplit('.', 1)[-1]} (zip)"},
+                                status=400)
                 return None
             return fname, body
 
         def _handle_slice(self) -> None:
             """POST /slice — see the docstring above."""
-            got = self._read_upload(".3mf", "a Bambu Studio project")
+            from beambam.slice_options import MESH_SUFFIXES, SliceOptions
+            try:
+                options = SliceOptions.from_header(self.headers.get("X-Slice-Options"))
+            except ValueError as e:
+                self._send_json({"error": str(e)}, status=400)
+                return
+            got = self._read_upload((".3mf",) + MESH_SUFFIXES, "a Bambu Studio project, or a mesh")
             if got is None:
                 return
             fname, body = got
@@ -966,8 +980,17 @@ def _serve_http(bind: str,
             upload_dir.mkdir(parents=True, exist_ok=True)
             dest = upload_dir / f"{int(time.time())}_{fname}"
             dest.write_bytes(body)
+            # A mesh is sliced for the printer it will print on: with its track switch, if it has one.
+            switch = None
+            cached = get_state(self._parse_printer())
+            if cached:
+                from beambam.filament_mapping import read_topology
+                try:
+                    switch = read_topology(cached).switch_installed
+                except Exception:              # noqa: BLE001 — a partial report: slice without it
+                    switch = None
             try:
-                sjob = inproc_slicer.start(dest, name=fname)
+                sjob = inproc_slicer.start(dest, name=fname, options=options, track_switch=switch)
             except ValueError as e:
                 self._send_json({"error": str(e)}, status=400)
                 return

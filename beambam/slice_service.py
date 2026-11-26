@@ -30,6 +30,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from beambam.slice_options import (MESH_SUFFIXES, SliceOptions, apply_to_project, has_print_settings,
+                                   mesh_args)
+
 # Wall-clock limit for one slice. A figure on the phone takes ~10 s; a full
 # multi-colour plate a few minutes.
 SLICE_TIMEOUT_S = 900.0
@@ -139,33 +142,66 @@ def validate_reason(log: Path) -> str:
     return found[-1].strip() if found else ""
 
 
+def is_mesh(src: Path) -> bool:
+    """A file sliced with the bundled printer profiles instead of its own: STL / OBJ / STEP, or a 3MF without
+    print settings (geometry only)."""
+    suffix = src.suffix.lower()
+    if suffix in MESH_SUFFIXES:
+        return True
+    # A readable 3MF with no print settings is geometry (another slicer's export); a broken one is refused
+    # as a project (`project_settings` says why).
+    return suffix == ".3mf" and zipfile.is_zipfile(src) and not has_print_settings(src)
+
+
 def slice_project(src: Path, out_dir: Path, *, timeout: float = SLICE_TIMEOUT_S,
-                  root: Path | None = None, name: str | None = None) -> dict[str, Any]:
+                  root: Path | None = None, name: str | None = None,
+                  options: SliceOptions | None = None, track_switch: bool | None = None) -> dict[str, Any]:
     """Slice every plate of `src` into `out_dir/<stem>.gcode.3mf`, `<stem>` from
     `name` (the caller's file name; the printer shows it as the job) or `src`.
 
+    A Bambu Studio project keeps its own settings, with `options` on top
+    (slice_options); a bare mesh (`is_mesh`) slices for the bundled X2D 0.4 mm
+    profiles with `options`. `track_switch`: the printer has a Filament Track
+    Switch (a mesh is sliced for it; a project keeps its own flag).
+
     Returns {"ok", "file", "seconds", "grams", "grams_per_filament", "warnings",
-    "error"}; slicer failures come back as `error`, never raised. ValueError
-    only for a file that is not a project."""
-    settings = project_settings(src)
-    exe = slicer_binary(root)
+    "error", "mesh"}; slicer failures come back as `error`, never raised.
+    ValueError only for a file that is neither a project nor a mesh."""
+    opts = options or SliceOptions()
+    r = root or _root()
+    exe = slicer_binary(r)
     if not exe.is_file():
         return {"ok": False, "error": f"the headless Bambu Studio is not installed ({exe})"}
     out_dir.mkdir(parents=True, exist_ok=True)
     base = Path(name or src.name).name
-    stem = base[:-len(".3mf")] if base.lower().endswith(".3mf") else Path(base).stem
+    stem = re.sub(r"\.(3mf|stl|obj|step|stp)$", "", base, flags=re.I)
     out_name = f"{stem}.gcode.3mf"
     cmd = [str(exe), "--slice", "0", "--allow-newer-file=1"]
-    # The CLI sets these two to false unless they are on its command line
-    # (BambuStudio.cpp, "In CLI mode, default enable_filament_dynamic_map to
-    # false"), whatever the project says. The track switch changes how
-    # filaments are grouped onto nozzles (ToolOrdering), so keep the project's.
-    cmd += [f"--{key.replace('_', '-')}=1" for key in CLI_FORCED_OFF
-            if str(settings.get(key, "")).lower() in ("1", "true")]
-    machine = machine_profile(settings, root)
-    if machine is not None:
-        cmd += ["--load-settings", str(machine)]
-    cmd += ["--outputdir", str(out_dir), "--export-3mf", out_name, str(src.resolve())]
+    mesh = is_mesh(src)
+    machine: Path | None = None
+    if mesh:
+        from beambam.slice_options import MESH_PRINTER
+        machine = r / "bs-bionic" / "resources" / "profiles" / "BBL" / "machine" / f"{MESH_PRINTER}.json"
+        cmd += mesh_args(r, opts, out_dir)
+        if track_switch:
+            cmd.append("--has-filament-switcher=1")
+        model = src.resolve()
+    else:
+        settings = project_settings(src)
+        model = src.resolve()
+        if opts != SliceOptions():
+            model = out_dir / f"options_{src.name}"
+            settings = apply_to_project(src, model, opts)
+        # The CLI sets these two to false unless they are on its command line
+        # (BambuStudio.cpp, "In CLI mode, default enable_filament_dynamic_map to
+        # false"), whatever the project says. The track switch changes how
+        # filaments are grouped onto nozzles (ToolOrdering), so keep the project's.
+        cmd += [f"--{key.replace('_', '-')}=1" for key in CLI_FORCED_OFF
+                if str(settings.get(key, "")).lower() in ("1", "true")]
+        machine = machine_profile(settings, r)
+        if machine is not None:
+            cmd += ["--load-settings", str(machine)]
+    cmd += ["--outputdir", str(out_dir), "--export-3mf", out_name, str(model)]
     (out_dir / "result.json").unlink(missing_ok=True)
     t0 = time.time()
     try:
@@ -185,7 +221,7 @@ def slice_project(src: Path, out_dir: Path, *, timeout: float = SLICE_TIMEOUT_S,
                 "error": f"{res.get('error_string') or 'slicing failed'} (code {res.get('return_code')})"
                          + (f": {why}" if why else "")}
     per = [float(f.get("total_used_g", 0)) for p in plates for f in p.get("filaments", [])]
-    return {"ok": True, "file": str(out), "seconds": sum(float(p.get("total_predication", 0)) for p in plates),
+    return {"ok": True, "mesh": mesh, "file": str(out), "seconds": sum(float(p.get("total_predication", 0)) for p in plates),
             "grams": sum(per), "grams_per_filament": per, "warnings": warnings,
             "machine_profile": machine.name if machine else None, "wall_seconds": time.time() - t0}
 
@@ -221,18 +257,22 @@ class SliceJobs:
         with self._lock:
             return self._jobs.get(job_id)
 
-    def start(self, src: Path, name: str | None = None) -> SliceJob:
-        """Check `src` is a project now (ValueError), then slice it in a thread
-        (RuntimeError when a slice is already running). `name`: the caller's
-        file name, which the print file is named after."""
-        project_settings(src)
+    def start(self, src: Path, name: str | None = None, options: SliceOptions | None = None,
+              track_switch: bool | None = None) -> SliceJob:
+        """Check `src` is a project or a mesh now (ValueError), then slice it in a
+        thread (RuntimeError when a slice is already running). `name`: the
+        caller's file name, which the print file is named after; `options` /
+        `track_switch`: see `slice_project`."""
+        if not is_mesh(src):
+            project_settings(src)
         with self._lock:
             if self._busy:
                 raise RuntimeError("a slice is already running; wait for it to finish")
             self._busy = True
             job = SliceJob(id=uuid.uuid4().hex[:12], source=str(src), name=name or "")
             self._jobs[job.id] = job
-        threading.Thread(target=self._run, args=(job, src), name=f"slice-{job.id}", daemon=True).start()
+        threading.Thread(target=self._run, args=(job, src, options, track_switch), name=f"slice-{job.id}",
+                         daemon=True).start()
         return job
 
     def _set(self, job: SliceJob, state: str, message: str, result: dict[str, Any] | None = None) -> None:
@@ -243,11 +283,13 @@ class SliceJobs:
             if state in TERMINAL:
                 job.finished = time.time()
 
-    def _run(self, job: SliceJob, src: Path) -> None:
+    def _run(self, job: SliceJob, src: Path, options: SliceOptions | None = None,
+             track_switch: bool | None = None) -> None:
         out_root = self._out_root or (Path.home() / ".x2d" / "uploads" / "sliced")
         try:
             self._set(job, "slicing", f"slicing {src.name}")
-            res = slice_project(src, out_root / job.id, name=job.name or None)
+            res = slice_project(src, out_root / job.id, name=job.name or None, options=options,
+                                track_switch=track_switch)
             if res.get("ok"):
                 self._set(job, "done", "sliced", res)
             else:

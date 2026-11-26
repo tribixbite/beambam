@@ -114,6 +114,35 @@ curl -s http://127.0.0.1:8765/slice/jobs/9c1e…
 - One slice runs at a time; another `POST /slice` meanwhile gets 409. Job states: `queued`, `slicing`, `done`,
   `failed` (with `message`).
 - The finished `file` goes straight into `/print/plan` and `/print`.
+- A refused slice names the setting Bambu objected to (from its log), e.g. `… (code -51): Too small line width`.
+
+### Meshes and slice options
+
+`/slice` also takes a bare mesh, `X-Filename: model.stl` (`.obj`, `.step` / `.stp`, or a 3MF with no print
+settings, such as another slicer's geometry export). It is placed on the bed and sliced with bs-bionic's bundled
+X2D 0.4 mm profiles, for the printer's Filament Track Switch when the printer has one.
+
+Optional header `X-Slice-Options` (compact JSON, up to 4 KB) applies to projects and meshes alike:
+
+```json
+{"layer_height": 0.2, "wall_loops": 3, "infill": 20,
+ "supports": "auto", "brim": "no_brim",
+ "nozzles": [1, 2, 2, 1],
+ "filament_ids": ["GFA00"], "filament_types": ["PLA"]}
+```
+
+- `supports`: `auto` (Bambu adds them only where needed), `plate` (the same, standing on the plate only), `off`.
+- `brim`: `auto_brim`, `outer_only`, `no_brim`. `layer_height` 0.08–0.28 mm; a layer as tall as one of the
+  process's explicit line widths widens those lines to layer + 0.02 mm (Bambu refuses a line no wider than the
+  layer).
+- `nozzles`: the nozzle of each filament, 1 = left, 2 = right (Bambu's "Manual" grouping). For a project it is
+  written into the project settings and every plate: Bambu Studio's CLI reads a plate's grouping before the
+  project's. Read back the result from `/print/plan`: it names the nozzle each filament was really sliced on.
+- `filament_ids` / `filament_types` (meshes): the bundled filament profile per filament, by the spool's
+  `tray_info_idx` (e.g. `GFA00`), else by material, else Bambu PLA Basic.
+- Unknown keys or values out of range answer 400.
+
+`GET /healthz` lists `capabilities`; web clients check `slice-options` and `slice-mesh` before using these.
 
 ## Controls
 

@@ -4,6 +4,14 @@ All notable changes to this project.
 
 ## [Unreleased]
 
+### Added
+- `POST /slice` slices bare meshes (STL / OBJ / STEP, geometry-only 3MF) with
+  the bundled X2D 0.4 mm profiles, for the printer's track switch, and takes
+  `X-Slice-Options` (layer height, walls, infill, supports, brim, a manual
+  nozzle per filament, the spools' filament ids) for projects and meshes
+  (`beambam/slice_options.py`, docs/HTTP_API.md). `/healthz` advertises
+  `slice-options` and `slice-mesh`.
+
 ## v1.7.0 — signed control on LAN, a guarded daemon, real nozzle reports (2026-11-26)
 
 Control, security and correctness work done alongside 1.6.x and merged on
