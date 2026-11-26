@@ -21,6 +21,16 @@ are tracked in their own deep-dive plan files.
 
 ## Shipped
 
+**v1.7.0** (2026-11-26) — [changelog](CHANGELOG.md)
+- pause / resume / stop / skip / G-code / tray settings signed on LAN with the
+  per-install key, each reporting the printer's verdict; sequence ids above
+  the firmware's signed-frame floor.
+- The HTTP daemon guards against cross-site and DNS-rebinding requests
+  (`--allow-host`, `--cors-origin`), exits when its API cannot start, and
+  advertises its capabilities on `/healthz`.
+- `/print/plan` names the nozzle each filament was really sliced on; a slice
+  Bambu refuses names the setting.
+
 **v1.6.2** (2026-11-25) — [changelog](CHANGELOG.md)
 - `POST /slice` keeps the project's Filament Track Switch setting: the headless
   CLI resets it unless passed as `--has-filament-switcher=1`. Print files are

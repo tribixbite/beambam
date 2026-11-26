@@ -4,8 +4,10 @@ All notable changes to this project.
 
 ## [Unreleased]
 
+## v1.7.0 — signed control on LAN, a guarded daemon, real nozzle reports (2026-11-26)
+
 Control, security and correctness work done alongside 1.6.x and merged on
-2026-11-25 (`087e5ed`).
+2026-11-25 (`087e5ed`), plus fixes from an independent audit.
 
 ### Changed — check these when upgrading
 - **The HTTP daemon refuses cross-site and DNS-rebinding requests.** The
@@ -52,6 +54,11 @@ Control, security and correctness work done alongside 1.6.x and merged on
   starts. An empty md5 is refused.
 - `beambam key` builds the cert id from the app cert's issuer, not the
   printer serial (a fresh `key` wrote one the printer rejects).
+- `ams set` / `ams sync` are signed and wait for the printer's answer: a
+  refusal or no answer exits 1, naming the slots already set and the ones
+  left unconfirmed (they used to print success either way).
+- Command sequence ids are unique across daemon threads (a lock), so two
+  concurrent commands never take each other's reply.
 - `ams dry` sends the real, signed `ams_filament_drying` command. AMS
   humidity shows Bambu's level (6 − index) and the RH %. `ams set/sync` use
   each material's generic profile id (ABS, PC, PA… were written as PLA).
@@ -66,7 +73,11 @@ Control, security and correctness work done alongside 1.6.x and merged on
   command reply is kept under `last_command` instead of overwriting
   `print.command` / `result` / `sequence_id`.
 - `beambam daemon --http` exits 1 when it cannot bind its port, instead of
-  running on without the API while another program answers on it.
+  running on without the API while another program answers on it, and exits
+  2 on an address it cannot parse (`host:99999`, `host:abc`) before it
+  connects to any printer.
+- `/healthz` reports `version` and `capabilities` (`plan-sliced-nozzles`,
+  `slice-reason`) so web clients can tell what the daemon supports.
 - `GET /cloud/printers` no longer returns access codes or tokens. The web UI
   escapes every value it writes into the page and closes the `?next=` open
   redirect. `POST /slice-print` runs the real CLI (it spawned a module that
