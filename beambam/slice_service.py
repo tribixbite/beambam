@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import threading
 import time
@@ -127,6 +128,17 @@ def _run(cmd: list[str], out_dir: Path, env: dict[str, str], timeout: float) -> 
         log.close()
 
 
+def validate_reason(log: Path) -> str:
+    """The setting Bambu Studio refused, from its log: code -51 ("some incorrect slicing parameters") says only
+    that one failed, the log line `got error when validate: Too small line width` says which."""
+    try:
+        text = log.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+    found = re.findall(r"got error when validate: (.+)", text)
+    return found[-1].strip() if found else ""
+
+
 def slice_project(src: Path, out_dir: Path, *, timeout: float = SLICE_TIMEOUT_S,
                   root: Path | None = None, name: str | None = None) -> dict[str, Any]:
     """Slice every plate of `src` into `out_dir/<stem>.gcode.3mf`, `<stem>` from
@@ -168,8 +180,10 @@ def slice_project(src: Path, out_dir: Path, *, timeout: float = SLICE_TIMEOUT_S,
     warnings = [str(p["warning_message"]) for p in plates if p.get("warning_message")]
     out = out_dir / out_name
     if res.get("return_code") != 0 or not plates or not out.is_file():
+        why = validate_reason(out_dir / "slicer.log")
         return {"ok": False, "warnings": warnings,
-                "error": f"{res.get('error_string') or 'slicing failed'} (code {res.get('return_code')})"}
+                "error": f"{res.get('error_string') or 'slicing failed'} (code {res.get('return_code')})"
+                         + (f": {why}" if why else "")}
     per = [float(f.get("total_used_g", 0)) for p in plates for f in p.get("filaments", [])]
     return {"ok": True, "file": str(out), "seconds": sum(float(p.get("total_predication", 0)) for p in plates),
             "grams": sum(per), "grams_per_filament": per, "warnings": warnings,

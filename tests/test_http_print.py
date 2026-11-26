@@ -299,3 +299,15 @@ def test_private_network_preflight(daemon):
     code, _, hdrs = _req(port, "/slice", None, method="OPTIONS", headers={
         "Origin": "https://evil.example", "Access-Control-Request-Private-Network": "true"})
     assert code == 403 and "Access-Control-Allow-Private-Network" not in hdrs
+
+
+def test_a_refused_setting_is_named_from_the_slicer_log(tmp_path):
+    """Code -51 only says some setting is wrong; the log line names it (seen: a 0.2 mm outer wall at 0.2 mm layers)."""
+    from beambam.slice_service import validate_reason
+    log = tmp_path / "slicer.log"
+    log.write_text("[2026-11-25 22:45:30.28] [0x7a] [error]   got error when validate: Too small line width\n"
+                   "run found error, return -51, exit...\n")
+    assert validate_reason(log) == "Too small line width"
+    log.write_text("nothing to see\n")
+    assert validate_reason(log) == ""
+    assert validate_reason(tmp_path / "missing.log") == ""

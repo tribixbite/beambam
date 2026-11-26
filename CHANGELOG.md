@@ -89,6 +89,13 @@ Control, security and correctness work done alongside 1.6.x and merged on
   with a per-OS default font.
 - Cloud uploads accept OSS V4 presigned tokens; `download` into a
   directory, and `plate select/skip` onto the same file, work.
+- `/print/plan` and the print check name the nozzle each filament was
+  really sliced on (slice_info `group_id`). In "Auto For Flush" the
+  project's `filament_map` stays all `1` while Bambu splits filaments
+  across both nozzles, so every filament read as "left".
+- A slice Bambu Studio refuses with code -51 ("some incorrect slicing
+  parameters") now names the setting from its log, e.g. `Too small line
+  width`, in `POST /slice` jobs and `slice_project` results.
 
 ## v1.6.2 — slicing keeps the track switch, Home Assistant AMS race (2026-11-25)
 

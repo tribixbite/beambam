@@ -186,9 +186,16 @@ def read_project(path: Path | str, plate: int = 1) -> ProjectInfo:
     fmap = ps.get("filament_map") or []
     nozzle_count = max(1, len(ps.get("nozzle_diameter") or [0]))
 
+    # The nozzle each filament was really sliced on: slice_info's `group_id` (0-based, = filament_map - 1).
+    # project_settings' `filament_map` is only the grouping asked for: in "Auto For Flush" it stays all "1"
+    # while Bambu puts filaments on both nozzles (seen on the X2D: groups 0 1 1 1 with map 1 1 1 1).
+    groups: dict[int, int] = {}
+
     def nozzle_of(i: int) -> int:
         if nozzle_count < 2:
             return MAIN_EXTRUDER
+        if i in groups:
+            return MAIN_EXTRUDER if groups[i] == 1 else DEPUTY_EXTRUDER
         v = str(fmap[i]) if i < len(fmap) else "1"
         return MAIN_EXTRUDER if v == "2" else DEPUTY_EXTRUDER
 
@@ -207,6 +214,8 @@ def read_project(path: Path | str, plate: int = 1) -> ProjectInfo:
                 used_ids[int(attrs["id"]) - 1] = float(attrs.get("used_g") or 0)
             except (KeyError, ValueError):
                 continue
+            if attrs.get("group_id", "").isdigit():
+                groups[int(attrs["id"]) - 1] = int(attrs["group_id"])
     if not used_ids:
         # Older slices without slice_info: assume filament 1 only.
         used_ids = {0: 0.0}

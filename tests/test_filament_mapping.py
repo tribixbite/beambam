@@ -25,8 +25,9 @@ from beambam import mqtt_sign
 def make_3mf(tmp_path: Path, filaments: list[tuple[str, str, str, str]], *,
              used: dict[int, list[int]] | None = None, name: str = "job.gcode.3mf",
              switcher: bool = False, dynamic: bool = False,
-             plate_dynamic: bool | None = None) -> Path:
-    """filaments: [(type, colour, profile_id, nozzle '1'|'2')]; used: {plate: [1-based ids]}."""
+             plate_dynamic: bool | None = None, groups: dict[int, int] | None = None) -> Path:
+    """filaments: [(type, colour, profile_id, nozzle '1'|'2')]; used: {plate: [1-based ids]};
+    groups: {1-based id: slice_info group_id} (what the slicer really did)."""
     used = used or {1: [1]}
     ps = {
         "filament_type": [f[0] for f in filaments],
@@ -42,7 +43,8 @@ def make_3mf(tmp_path: Path, filaments: list[tuple[str, str, str, str]], *,
     plates = []
     for plate, ids in used.items():
         fil = "".join(f'<filament id="{i}" type="{filaments[i - 1][0]}" '
-                      f'color="{filaments[i - 1][1]}" used_g="1.5"/>' for i in ids)
+                      f'color="{filaments[i - 1][1]}" used_g="1.5"'
+                      + (f' group_id="{groups[i]}"' if groups and i in groups else "") + '/>' for i in ids)
         meta = ("" if plate_dynamic is None else
                 f'<metadata key="enable_filament_dynamic_map" '
                 f'value="{"true" if plate_dynamic else "false"}"/>')
@@ -505,3 +507,14 @@ def test_doctor_flags_expired_signing_cert(tmp_path):
     assert _signing_cert_check(good).severity == "pass"
     c = _signing_cert_check(bad)
     assert c.severity == "fail" and "84033545" in c.detail
+
+
+def test_the_nozzle_is_the_one_the_slicer_used_not_the_map_asked_for(tmp_path):
+    """Auto For Flush leaves filament_map all "1" yet slices filaments on both nozzles: slice_info's group_id
+    is what the G-code does (X2D, 2026-11-25: groups 0 1 1 1 with map 1 1 1 1)."""
+    fils = [("PETG", "#EEBF31FF", "GFG99", "1"), ("PLA", "#FFFFFFFF", "GFL99", "1")]
+    info = fm.read_project(make_3mf(tmp_path, fils, used={1: [1, 2]}, groups={1: 0, 2: 1}))
+    assert [fm.nozzle_name(f.nozzle, info.nozzle_count) for f in info.used] == ["left", "right"]
+    # Without group ids (older slices): the project's map, as before.
+    info = fm.read_project(make_3mf(tmp_path, fils, used={1: [1, 2]}, name="old.gcode.3mf"))
+    assert [fm.nozzle_name(f.nozzle, info.nozzle_count) for f in info.used] == ["left", "left"]

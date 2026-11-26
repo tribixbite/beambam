@@ -43,6 +43,12 @@ Running GUI apps (BambuStudio / wxWidgets 3.3) on termux-x11. These lessons were
   `--has-filament-switcher=1` (dashes; `--has_filament_switcher=1` exits 254). A project saved by a
   newer Bambu Studio may need `--load-settings <bundled machine.json>` (start G-code variables this
   build lacks). Both are in `beambam/slice_service.py`.
+- **Nozzle grouping in a sliced X2D file:** the truth is `slice_info.config` `<filament … group_id>` (0 = left,
+  = `filament_map` − 1); project_settings `filament_map` is only the request and stays all `1` in "Auto For Flush"
+  while Bambu splits filaments across both nozzles. The CLI takes the grouping mode from the **plate**
+  (model_settings `filament_map_mode` / `filament_maps`) before the project: "Manual" only in project_settings
+  slices as auto (same groups and time for every map). Bad settings fail with code -51; the reason is the
+  `got error when validate:` line in slicer.log (e.g. "Too small line width": a line no wider than the layer).
 - **No reverse-DNS on the daemon's start path:** `socket.getfqdn()` takes ~30 s on the macOS CI
   runners, and in `http_validate.allowed_host_names` (run before the bind) it made every HTTP
   test there fail with "connection refused" (2026-11-25).
