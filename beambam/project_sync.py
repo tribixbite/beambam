@@ -59,10 +59,10 @@ def _as_list(v: Any) -> list[Any]:
 
 
 @lru_cache(maxsize=4)
-def _filament_files(root: Path) -> dict[str, Path]:
+def _filament_files(profiles: Path) -> dict[str, Path]:
     """Bundled filament profile files by preset name (`inherits` / `include` refer to names, which are
     almost always the file stem; the file's own `name` wins where it is not)."""
-    folder = _profiles(root, "filament")
+    folder = _profiles(profiles, "filament")
     out: dict[str, Path] = {f.stem: f for f in folder.glob("*.json")}
     for f in folder.glob("*.json"):
         try:
@@ -81,13 +81,13 @@ def _read(path: Path) -> dict[str, Any]:
     return d
 
 
-def flatten_profile(root: Path, path: Path, depth: int = 0) -> dict[str, Any]:
+def flatten_profile(profiles: Path, path: Path, depth: int = 0) -> dict[str, Any]:
     """A bundled filament profile's full values: its `inherits` parent's, then each `include` template's,
     then its own (the order Bambu Studio loads them). ValueError for a missing parent or a loop."""
     if depth > _MAX_DEPTH:
         raise ValueError(f"filament profile chain too deep at {path.name}")
     own = _read(path)
-    files = _filament_files(root)
+    files = _filament_files(profiles)
 
     def named(name: str) -> Path:
         p = files.get(name)
@@ -96,13 +96,13 @@ def flatten_profile(root: Path, path: Path, depth: int = 0) -> dict[str, Any]:
         return p
 
     parent = str(own.get("inherits") or "")
-    values: dict[str, Any] = dict(flatten_profile(root, named(parent), depth + 1)) if parent else {}
+    values: dict[str, Any] = dict(flatten_profile(profiles, named(parent), depth + 1)) if parent else {}
     includes = own.get("include") or []
     for inc in _as_list(includes):
         if inc:
             # Bambu applies only the template keys that differ from the built-in defaults; a bundled template
             # sets nothing else, and the GUI-saved project matched this full overlay (module docstring).
-            values.update(flatten_profile(root, named(str(inc)), depth + 1))
+            values.update(flatten_profile(profiles, named(str(inc)), depth + 1))
     values.update(own)
     return values
 
@@ -209,7 +209,7 @@ def _filaments(nums: list[int]) -> str:
     return f"filaments {', '.join(map(str, nums[:-1]))} and {nums[-1]}"
 
 
-def adopt_filaments(settings: dict[str, Any], root: Path, spools: list[Spool],
+def adopt_filaments(settings: dict[str, Any], profiles: Path, spools: list[Spool],
                     warnings: list[str] | None = None) -> dict[str, Any]:
     """`settings` (a project's Metadata/project_settings.config) with project filament i set to `spools[i]`:
     the bundled system preset for the spool's filament id / material (`slice_options.filament_profile`), and
@@ -246,11 +246,11 @@ def adopt_filaments(settings: dict[str, Any], root: Path, spools: list[Spool],
         new_colours[i] = _colour(colour)
         if (not fid and not material) or other_nozzle:
             continue
-        name_path = find_filament_profile(root, fid, material)
+        name_path = find_filament_profile(profiles, fid, material)
         if name_path is None:
             kept.setdefault((str(material or fid), str(names[i])), []).append(i + 1)
             continue
-        values = flatten_profile(root, name_path)
+        values = flatten_profile(profiles, name_path)
         name = str(values.get("name") or name_path.stem)
         if fid and _resolved_id(values) != fid:
             # Matched by material only (the bundled build lacks this filament's X2D profile, e.g. PLA Pure):
@@ -290,7 +290,7 @@ def adopt_filaments(settings: dict[str, Any], root: Path, spools: list[Spool],
     return out
 
 
-def adopt_project(src: Path, dst: Path, root: Path, spools: list[Spool], bed_type: str | None = None) -> dict[str, Any]:
+def adopt_project(src: Path, dst: Path, profiles: Path, spools: list[Spool], bed_type: str | None = None) -> dict[str, Any]:
     """Copy the project `src` to `dst` with its filaments set to `spools` (`adopt_filaments`) and, with
     `bed_type` (one of BED_TYPES), its plate type. Every other zip member is copied unchanged. Returns the new
     settings. ValueError for a bad bed type or a file that is not a Bambu Studio project."""
@@ -305,7 +305,7 @@ def adopt_project(src: Path, dst: Path, root: Path, spools: list[Spool], bed_typ
         raise ValueError(f"{src.name} is not a 3MF (zip) file") from e
     if not isinstance(settings, dict):
         raise ValueError(f"{src.name}: {SETTINGS_MEMBER} is not a settings object")
-    new = adopt_filaments(settings, root, spools)
+    new = adopt_filaments(settings, profiles, spools)
     if bed_type is not None:
         new["curr_bed_type"] = bed_type
     tmp = dst.with_name(dst.name + ".part")

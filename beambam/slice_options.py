@@ -42,7 +42,7 @@ LAYER_RANGE = (0.08, 0.28)          # mm: Bambu's range for a 0.4 mm nozzle
 LINE_MARGIN = 0.02                  # mm a widened line stays wider than the layer
 MAX_HEADER = 4096                   # bytes of X-Slice-Options accepted
 MESH_SUFFIXES = (".stl", ".obj", ".step", ".stp")
-# The printer a bare mesh is sliced for (bs-bionic's bundled profiles).
+# The printer a bare mesh is sliced for (the slicer's own Bambu profiles).
 MESH_PRINTER = "Bambu Lab X2D 0.4 nozzle"
 DEFAULT_PROCESS = "0.20mm Standard @BBL X2D"
 DEFAULT_FILAMENT = "Bambu PLA Basic @BBL X2D 0.4 nozzle"
@@ -202,19 +202,19 @@ def nozzle_map(nozzles: tuple[int, ...], n_filaments: int) -> list[str]:
     return ([str(x) for x in nozzles] + ["1"] * n_filaments)[:n_filaments]
 
 
-def apply_to_project(src: Path, dst: Path, opts: SliceOptions, root: Path | None = None,
+def apply_to_project(src: Path, dst: Path, opts: SliceOptions, profiles: Path | None = None,
                      warnings: list[str] | None = None) -> dict[str, Any]:
     """Copy project `src` to `dst` with `opts` applied: the spools' filaments (`project_sync.adopt_filaments`,
-    which needs the profiles under `root`), project_settings, and a manual nozzle map on every plate as well.
+    which needs the slicer's Bambu profiles folder `profiles`), project_settings, and a manual nozzle map on every plate as well.
     Returns the new project settings; what the spools could not change is appended to `warnings`. What POST
     /slice slices and POST /project/update hands back."""
     with zipfile.ZipFile(src) as zin:
         settings = json.loads(zin.read("Metadata/project_settings.config"))
         if opts.spools:
-            if root is None:
-                raise ValueError("spools need the slicer's profiles (root)")
+            if profiles is None:
+                raise ValueError("spools need the slicer's Bambu profiles folder")
             from beambam.project_sync import adopt_filaments
-            settings = adopt_filaments(settings, root, list(opts.spools), warnings)
+            settings = adopt_filaments(settings, profiles, list(opts.spools), warnings)
         settings.update(opts.process_keys(settings))
         n = len(settings.get("filament_settings_id") or []) or (len(opts.nozzles) if opts.nozzles else 1)
         fmap = nozzle_map(opts.nozzles, n) if opts.nozzles else None
@@ -297,15 +297,17 @@ def has_print_settings(path: Path) -> bool:
         return False
 
 
-def _profiles(root: Path, kind: str) -> Path:
-    return root / "bs-bionic" / "resources" / "profiles" / "BBL" / kind
+def _profiles(profiles: Path, kind: str) -> Path:
+    """`kind` ("machine", "process", "filament") of the slicer's Bambu profiles: `profiles` is its
+    `resources/profiles/BBL` folder (`slice_service.find_slicer`)."""
+    return profiles / kind
 
 
 @lru_cache(maxsize=4)
-def _filament_index(root: Path) -> tuple[tuple[str, str, str], ...]:
+def _filament_index(profiles: Path) -> tuple[tuple[str, str, str], ...]:
     """(profile name, filament_id, filament_type) of each bundled filament profile for MESH_PRINTER, its id and
     type resolved through `inherits`."""
-    folder = _profiles(root, "filament")
+    folder = _profiles(profiles, "filament")
     by_name: dict[str, dict[str, Any]] = {}
     for f in folder.glob("*.json"):
         try:
@@ -330,18 +332,18 @@ def _filament_index(root: Path) -> tuple[tuple[str, str, str], ...]:
     return tuple(sorted(out))
 
 
-def filament_profile(root: Path, filament_id: str | None, filament_type: str | None) -> Path:
+def filament_profile(profiles: Path, filament_id: str | None, filament_type: str | None) -> Path:
     """The bundled profile a mesh filament slices with: the spool's own filament id, else Bambu's or a generic
     profile of its material, else Bambu PLA Basic."""
-    return find_filament_profile(root, filament_id, filament_type) or \
-        _profiles(root, "filament") / f"{DEFAULT_FILAMENT}.json"
+    return find_filament_profile(profiles, filament_id, filament_type) or \
+        _profiles(profiles, "filament") / f"{DEFAULT_FILAMENT}.json"
 
 
-def find_filament_profile(root: Path, filament_id: str | None, filament_type: str | None) -> Path | None:
+def find_filament_profile(profiles: Path, filament_id: str | None, filament_type: str | None) -> Path | None:
     """The bundled X2D 0.4 mm profile for a spool's filament id, else Bambu's or a generic profile of its
     material; None when neither matches (no silent fallback: a project keeps its own preset then)."""
-    index = _filament_index(root)
-    folder = _profiles(root, "filament")
+    index = _filament_index(profiles)
+    folder = _profiles(profiles, "filament")
     want_type = (filament_type or "").upper()
     for name, fid, _ in index:
         if filament_id and fid == filament_id:
@@ -357,9 +359,9 @@ def find_filament_profile(root: Path, filament_id: str | None, filament_type: st
     return None
 
 
-def process_profile(root: Path, layer_height: float | None) -> Path:
+def process_profile(profiles: Path, layer_height: float | None) -> Path:
     """The bundled X2D 0.4 mm process closest to `layer_height` (default 0.20 mm Standard)."""
-    folder = _profiles(root, "process")
+    folder = _profiles(profiles, "process")
     if layer_height is None:
         return folder / f"{DEFAULT_PROCESS}.json"
     best: tuple[float, int, Path] | None = None
@@ -381,10 +383,10 @@ PORTABLE_KEYS = ("wall_loops", "sparse_infill_density", "sparse_infill_pattern",
                  "brim_type", "seam_position", "ironing_type", "only_one_wall_top")
 
 
-def mesh_process(root: Path, opts: SliceOptions, out_dir: Path, keep: dict[str, Any] | None = None) -> Path:
+def mesh_process(profiles: Path, opts: SliceOptions, out_dir: Path, keep: dict[str, Any] | None = None) -> Path:
     """A user process profile: the bundled one nearest the layer height, with `keep` (a project's portable
     settings) and then the options on top."""
-    base = process_profile(root, opts.layer_height)
+    base = process_profile(profiles, opts.layer_height)
     sysd = json.loads(base.read_text(encoding="utf-8"))
     user = {"type": "process", "name": "beambam process", "from": "User", "inherits": sysd["name"],
             "print_settings_id": "beambam process",
@@ -396,16 +398,25 @@ def mesh_process(root: Path, opts: SliceOptions, out_dir: Path, keep: dict[str, 
     return path
 
 
-def mesh_args(root: Path, opts: SliceOptions, out_dir: Path, n_filaments: int = 1,
+def flattened(profile: Path) -> Path:
+    """The `*_full` copy of a system profile (profile_flatten), when there is one. `--load-filaments` reads the
+    file it is given as it is, without its `inherits` chain: the source profile of Bambu PLA Basic has no
+    density or filament id of its own (both live in `@base`), so a mesh sliced with it reported 0 g and
+    printed with the CLI's defaults for every inherited setting."""
+    full = profile.parent.parent / f"{profile.parent.name}_full" / profile.name
+    return full if full.is_file() else profile
+
+
+def mesh_args(profiles: Path, opts: SliceOptions, out_dir: Path, n_filaments: int = 1,
               keep: dict[str, Any] | None = None, arrange: bool = True) -> list[str]:
     """The CLI arguments that slice a bare mesh, or a project made for another printer (`keep`: its portable
     process settings; `arrange` False keeps its placement), for MESH_PRINTER with `opts` (process, filaments,
     nozzle map)."""
-    machine = _profiles(root, "machine") / f"{MESH_PRINTER}.json"
+    machine = _profiles(profiles, "machine") / f"{MESH_PRINTER}.json"
     n = max(n_filaments, len(opts.filament_ids), len(opts.filament_types), len(opts.spools), 1)
-    fils = [filament_profile(root, *opts.filament(i)) for i in range(n)]
+    fils = [flattened(filament_profile(profiles, *opts.filament(i))) for i in range(n)]
     args = (["--arrange", "1"] if arrange else []) + [
-            "--load-settings", f"{machine};{mesh_process(root, opts, out_dir, keep)}",
+            "--load-settings", f"{machine};{mesh_process(profiles, opts, out_dir, keep)}",
             "--load-filaments", ";".join(str(f) for f in fils)]
     if opts.nozzles:
         args += ["--filament-map-mode", "Manual", "--filament-map", ",".join(nozzle_map(opts.nozzles, n))]

@@ -126,6 +126,7 @@ _COMMAND_GROUPS: list[tuple[str, list[tuple[str, str]]]] = [
         ("pull",           "Pull file off printer SD — was: download"),
         ("ams",            "AMS-specific commands"),
         ("slice",          "Slicer-specific commands"),
+        ("slicer",         "Which Bambu Studio slices; subs: install, remove"),
         ("cloud-fetch",    "Cloud-side file fetch"),
     ]),
 ]
@@ -1238,6 +1239,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     from beambam.slice import add_subparser as _slice_subparser
     _slice_subparser(sub)
+
+    from beambam.slicer_install import add_subparser as _slicer_subparser
+    _slicer_subparser(sub)
 
     from beambam.find import add_subparser as _find_subparser
     _find_subparser(sub)

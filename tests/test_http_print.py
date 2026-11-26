@@ -211,6 +211,7 @@ def _fake_slicer(root: Path, *, ok: bool = True, log_line: str = "") -> Path:
     machine = root / "bs-bionic" / "resources" / "profiles" / "BBL" / "machine"
     machine.mkdir(parents=True)
     (machine / "Bambu Lab X2D 0.4 nozzle.json").write_text("{}")
+    (machine.parent / "machine_full").mkdir()           # the flattened copies the CLI loads presets from
     exe.write_text(f"#!{sys.executable}\n" + """import json, os, sys
 a = sys.argv[1:]
 out = a[a.index("--outputdir") + 1]; name = a[a.index("--export-3mf") + 1]

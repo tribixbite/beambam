@@ -71,6 +71,52 @@ jobs:
       - name: pytest (offline)
         run: pytest -m "not live"
 
+  slicer:
+    # The daemon's POST /slice off the phone: `beambam slicer install` downloads Bambu Lab's official
+    # Bambu Studio (slicer_install.DEFAULT_TAG) and tests/test_slice_real.py slices with it. The download
+    # (190-430 MB) is cached per tag. Raise DEFAULT_TAG and the cache key together.
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-latest, windows-latest]
+    env:
+      BEAMBAM_HOME: ${{ github.workspace }}/.beambam-home
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install --upgrade pip
+      - run: pip install -e .[dev]
+      - name: Libraries the Bambu Studio AppImage links (a bare runner lacks the GUI stack)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q --no-install-recommends libgtk-3-0t64 libwebkit2gtk-4.1-0 \
+            libgstreamer1.0-0 libgstreamer-plugins-base1.0-0 libglu1-mesa libegl1 libgl1 libosmesa6 \
+            libsecret-1-0 libfuse2t64
+      - uses: actions/cache@v4
+        with:
+          path: .beambam-home/slicer
+          key: bambu-studio-${{ runner.os }}-v02.09.02.62
+      - name: beambam slicer install
+        run: beambam slicer install
+      - name: beambam slicer
+        run: beambam slicer
+      - name: Slice with it (meshes, two nozzles, a project)
+        env:
+          BEAMBAM_REAL_SLICER: "1"
+        run: pytest -m slow tests/test_slice_real.py -v --basetemp="${{ runner.temp }}/pt"
+      - name: Keep the slicer logs of a failed run
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: slicer-logs-${{ runner.os }}
+          path: ${{ runner.temp }}/**/slicer.log
+          if-no-files-found: ignore
+
   build:
     runs-on: ubuntu-24.04
     needs: [lint, typecheck, test]

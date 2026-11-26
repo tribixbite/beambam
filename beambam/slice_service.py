@@ -2,17 +2,18 @@
 
 A web app that builds a ready-to-slice project `.3mf` but cannot slice it
 itself (pokefit.party runs its engine in the browser) sends the file to the
-daemon's `POST /slice`; this module slices it with the bundled headless
-Bambu Studio (`bs-bionic`) into a `.gcode.3mf` the daemon can then plan and
-print (`POST /print/plan`, `POST /print`):
+daemon's `POST /slice`; this module slices it with Bambu Studio's command line
+(`resolve_slicer`: the phone's source build `bs-bionic`, the official build
+`beambam slicer install` downloads, or an installed Bambu Studio) into a
+`.gcode.3mf` the daemon can then plan and print (`POST /print/plan`, `POST /print`):
 
     job = SliceJobs().start(project_3mf)        # background; poll job.to_dict()
     ...job.state == "done" → job.file is the .gcode.3mf
 
 The project's own process and filament settings are kept. The printer
-(machine) profile is reloaded from bs-bionic's bundled copy of the same name,
+(machine) profile is reloaded from the slicer's own copy of the same name,
 because a project saved by a newer Bambu Studio can carry start G-code that
-uses variables this build does not know (seen: pokefit's X2D export, "Not a
+uses variables an older build does not know (seen: pokefit's X2D export, "Not a
 variable name" at `initial_no_support_filament_id`); `--load-settings` with a
 machine profile overlays only the machine keys (tools/x2d_cli_slice.sh).
 """
@@ -30,8 +31,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from beambam.slice_options import (MESH_SUFFIXES, SliceOptions, apply_to_project, has_print_settings,
-                                   made_for_another_printer, mesh_args, retarget)
+from beambam.slice_options import (MESH_PRINTER, MESH_SUFFIXES, SliceOptions, apply_to_project,
+                                   has_print_settings, made_for_another_printer, mesh_args, retarget)
+from beambam.slicer_paths import bambu_studio_bin, bbl_profiles_dir, is_bionic_build, run_bambu_cli
 
 # Wall-clock limit for one slice. A figure on the phone takes ~10 s; a full
 # multi-colour plate a few minutes.
@@ -51,7 +53,86 @@ def _root() -> Path:
 
 
 def slicer_binary(root: Path | None = None) -> Path:
+    """The phone's source build of Bambu Studio (bs-bionic) under the checkout."""
     return (root or _root()) / "bs-bionic" / "build" / "src" / "bambu-studio"
+
+
+def phone_profiles(root: Path | None = None) -> Path:
+    """bs-bionic's Bambu profiles folder (`resources/profiles/BBL`)."""
+    return (root or _root()) / "bs-bionic" / "resources" / "profiles" / "BBL"
+
+
+NO_SLICER = ("no Bambu Studio to slice with: run `beambam slicer install` (downloads Bambu Lab's official "
+             "build), or install Bambu Studio, or set BAMBU_STUDIO to its executable, then slice again")
+
+
+@dataclass(frozen=True)
+class Slicer:
+    """The Bambu Studio the daemon slices with (`resolve_slicer`)."""
+    exe: Path
+    profiles: Path                 # its resources/profiles/BBL folder
+    phone: bool                    # the Termux source build: its own libraries and software GL (`slicer_env`)
+
+    def env(self, root: Path | None = None) -> dict[str, str]:
+        """The environment to run it in."""
+        if self.phone:
+            return slicer_env(root)
+        env = dict(os.environ)
+        if os.name != "nt":
+            env.update(LC_ALL="C", LANG="C")   # decimal points, not commas, in the numbers it writes
+        return env
+
+    def problem(self) -> str:
+        """Why it cannot slice ('' when it can): its profiles lack the flattened `*_full` folders the CLI loads
+        presets from (`profile_flatten`)."""
+        from beambam.profile_flatten import missing
+        gone = missing(self.profiles)
+        if not gone:
+            return ""
+        return (f"this Bambu Studio's profiles lack {', '.join(gone)} ({self.profiles}), which its command line "
+                "loads presets from: run `beambam slicer install`, or `python -m beambam.profile_flatten "
+                f"\"{self.profiles}\"` where you may write")
+
+
+def resolve_slicer(root: Path | None = None) -> Slicer | None:
+    """The slicer to use now, or None (`NO_SLICER`). Looked up per slice, so a `beambam slicer install` made
+    while the daemon runs is used without a restart. Order: $BAMBU_STUDIO, the phone build under `root`, the
+    downloaded official build, then an installed Bambu Studio (slicer_paths.bambu_studio_bin)."""
+    explicit = any(os.environ.get(v) for v in ("BAMBU_STUDIO", "X2D_BS_BIN"))
+    phone = slicer_binary(root)
+    if not explicit and phone.is_file():
+        return Slicer(phone, phone_profiles(root), True)
+    exe = bambu_studio_bin()
+    if exe is None:
+        return None
+    profiles = bbl_profiles_dir(exe)
+    if profiles is None:
+        return None
+    return Slicer(exe, profiles, is_bionic_build(exe))
+
+
+def slicer_status(root: Path | None = None) -> dict[str, Any]:
+    """What /healthz says about slicing: {"ready", "kind" ("phone" | "downloaded" | "installed" | None),
+    "version", "problem"} (`problem`: why POST /slice would fail, '' when ready)."""
+    from beambam.slicer_paths import downloaded_slicer
+    s = resolve_slicer(root)
+    if s is None:
+        return {"ready": False, "kind": None, "version": "", "problem": NO_SLICER}
+    got = downloaded_slicer()
+    downloaded = got is not None and Path(got["exe"]) == s.exe
+    problem = s.problem()
+    return {"ready": not problem, "kind": "phone" if s.phone else "downloaded" if downloaded else "installed",
+            "version": str(got.get("version", "")) if got is not None and downloaded else "", "problem": problem}
+
+
+def profiles_dir(root: Path | None = None) -> Path | None:
+    """The Bambu profiles to update a project with (POST /project/update needs no slicer, only these): the
+    slicer's, else the phone build's when only its profiles are present; None when there are none."""
+    s = resolve_slicer(root)
+    if s is not None:
+        return s.profiles
+    phone = phone_profiles(root)
+    return phone if phone.is_dir() else None
 
 
 def slicer_env(root: Path | None = None) -> dict[str, str]:
@@ -87,16 +168,13 @@ def project_settings(src: Path) -> dict[str, Any]:
     return data
 
 
-def machine_profile(settings: dict[str, Any], root: Path | None = None) -> Path | None:
-    """bs-bionic's bundled machine profile named like the project's printer, if any."""
+def machine_profile(settings: dict[str, Any], profiles: Path) -> Path | None:
+    """The slicer's own machine profile named like the project's printer, if any (`profiles`: its BBL folder)."""
     name = settings.get("printer_settings_id")
-    if not isinstance(name, str) or not name or "/" in name:
+    if not isinstance(name, str) or not name or "/" in name or "\\" in name:
         return None
-    for vendor in ("BBL",):
-        p = (root or _root()) / "bs-bionic" / "resources" / "profiles" / vendor / "machine" / f"{name}.json"
-        if p.is_file():
-            return p
-    return None
+    p = profiles / "machine" / f"{name}.json"
+    return p if p.is_file() else None
 
 
 def _result(out_dir: Path) -> dict[str, Any] | None:
@@ -108,27 +186,24 @@ def _result(out_dir: Path) -> dict[str, Any] | None:
 
 
 def _run(cmd: list[str], out_dir: Path, env: dict[str, str], timeout: float) -> int | None:
-    """Run the CLI; its exit code, or None if it had to be killed (see EXIT_GRACE_S)."""
-    log = (out_dir / "slicer.log").open("wb")
+    """Run the CLI with its output in `out_dir/slicer.log` (slicer_paths.run_bambu_cli); its exit code, or None
+    when it ran out of time."""
     try:
-        proc = subprocess.Popen(cmd, cwd=out_dir, env=env, stdout=log, stderr=subprocess.STDOUT,
-                                stdin=subprocess.DEVNULL)
-        deadline = time.time() + timeout
-        done_at: float | None = None
-        while True:
-            rc = proc.poll()
-            if rc is not None:
-                return rc
-            now = time.time()
-            if done_at is None and _result(out_dir) is not None:
-                done_at = now
-            if (done_at is not None and now - done_at > EXIT_GRACE_S) or now > deadline:
-                proc.kill()
-                proc.wait(10)
-                return None
-            time.sleep(0.25)
-    finally:
-        log.close()
+        return run_bambu_cli(cmd, out_dir, env=env, timeout=timeout, exit_grace=EXIT_GRACE_S,
+                             log=out_dir / "slicer.log")
+    except TimeoutError:
+        return None
+
+
+def load_problem(log: Path) -> str:
+    """Why the slicer could not start, from its log: a library the system lacks (an AppImage on a bare Linux),
+    which the CLI says before it writes any result."""
+    try:
+        text = log.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+    found = re.findall(r"error while loading shared libraries: ([^\n]+)", text)
+    return f"a library it needs is missing ({found[-1].strip()})" if found else ""
 
 
 def validate_reason(log: Path) -> str:
@@ -181,21 +256,26 @@ def slice_project(src: Path, out_dir: Path, *, timeout: float = SLICE_TIMEOUT_S,
     "error", "mesh"}; slicer failures come back as `error`, never raised.
     ValueError only for a file that is neither a project nor a mesh."""
     opts = options or SliceOptions()
-    r = root or _root()
-    exe = slicer_binary(r)
-    if not exe.is_file():
-        return {"ok": False, "error": f"the headless Bambu Studio is not installed ({exe})"}
+    slicer = resolve_slicer(root)
+    if slicer is None:
+        return {"ok": False, "error": NO_SLICER}
+    if slicer.phone and slicer.problem():
+        # The checkout's own build: its profiles are ours to complete (tools/x2d_cli_slice.sh did this too).
+        from beambam.profile_flatten import flatten
+        flatten(slicer.profiles)
+    if slicer.problem():
+        return {"ok": False, "error": slicer.problem()}
+    prof = slicer.profiles
     out_dir.mkdir(parents=True, exist_ok=True)
     base = Path(name or src.name).name
     stem = re.sub(r"\.(3mf|stl|obj|step|stp)$", "", base, flags=re.I)
     out_name = f"{stem}.gcode.3mf"
-    cmd = [str(exe), "--slice", "0", "--allow-newer-file=1"]
+    cmd = [str(slicer.exe), "--slice", "0", "--allow-newer-file=1"]
     mesh = is_mesh(src)
     machine: Path | None = None
     if mesh:
-        from beambam.slice_options import MESH_PRINTER
-        machine = r / "bs-bionic" / "resources" / "profiles" / "BBL" / "machine" / f"{MESH_PRINTER}.json"
-        cmd += mesh_args(r, opts, out_dir)
+        machine = prof / "machine" / f"{MESH_PRINTER}.json"
+        cmd += mesh_args(prof, opts, out_dir)
         if track_switch:
             cmd.append("--has-filament-switcher=1")
         model = src.resolve()
@@ -209,32 +289,33 @@ def slice_project(src: Path, out_dir: Path, *, timeout: float = SLICE_TIMEOUT_S,
         # profiles, keeping the model, paint and filament assignment and the project's portable settings;
         # its own printer profile would make a print file for the wrong printer.
         n = len(settings.get("filament_settings_id") or []) or 1
-        cmd += mesh_args(r, retarget(settings, opts), out_dir, n_filaments=n, keep=settings, arrange=False)
+        cmd += mesh_args(prof, retarget(settings, opts), out_dir, n_filaments=n, keep=settings, arrange=False)
         if track_switch:
             cmd.append("--has-filament-switcher=1")
         model = src.resolve()
-        from beambam.slice_options import MESH_PRINTER
-        machine = r / "bs-bionic" / "resources" / "profiles" / "BBL" / "machine" / f"{MESH_PRINTER}.json"
+        machine = prof / "machine" / f"{MESH_PRINTER}.json"
     elif not mesh:
         model = src.resolve()
         if opts != SliceOptions():
             model = out_dir / f"options_{src.name}"
-            settings = apply_to_project(src, model, opts, r, adopt_notes)
+            settings = apply_to_project(src, model, opts, prof, adopt_notes)
         cmd += forced_flags(settings, track_switch)
-        machine = machine_profile(settings, r)
+        machine = machine_profile(settings, prof)
         if machine is not None:
             cmd += ["--load-settings", str(machine)]
     cmd += ["--outputdir", str(out_dir), "--export-3mf", out_name, str(model)]
     (out_dir / "result.json").unlink(missing_ok=True)
     t0 = time.time()
     try:
-        rc = _run(cmd, out_dir, slicer_env(root), timeout)
+        rc = _run(cmd, out_dir, slicer.env(root), timeout)
     except OSError as e:
-        return {"ok": False, "error": f"cannot run the slicer: {e}"}
+        return {"ok": False, "error": f"cannot run the slicer ({slicer.exe}): {e}"}
     res = _result(out_dir)
     if res is None:
         why = "timed out" if rc is None else f"exited with code {rc}"
-        return {"ok": False, "error": f"the slicer {why} without a result ({out_dir / 'slicer.log'})"}
+        cause = load_problem(out_dir / "slicer.log")
+        return {"ok": False, "error": f"the slicer {why} without a result"
+                                      + (f": {cause}" if cause else "") + f" ({out_dir / 'slicer.log'})"}
     plates = res.get("sliced_plates") or []
     warnings = [str(p["warning_message"]) for p in plates if p.get("warning_message")]
     out = out_dir / out_name

@@ -95,7 +95,8 @@ def test_apply_to_project_writes_settings_and_the_plate(tmp_path):
 
 
 def _resources(root: Path) -> Path:
-    """A miniature bs-bionic profile tree: two process heights, a filament family with ids through inherits."""
+    """A miniature profile tree (the phone build's layout under `root`): two process heights, a filament family
+    with ids through inherits. Returns the BBL profiles folder."""
     base = root / "bs-bionic" / "resources" / "profiles" / "BBL"
     for kind in ("machine", "process", "filament"):
         (base / kind).mkdir(parents=True)
@@ -116,7 +117,7 @@ def _resources(root: Path) -> Path:
     for name, d in fil.items():
         (base / "filament" / f"{name}.json").write_text(json.dumps({"name": name, **d}))
     so._filament_index.cache_clear()
-    return root
+    return base
 
 
 def test_mesh_profiles_follow_the_spool_and_the_layer(tmp_path):
@@ -136,6 +137,20 @@ def test_mesh_profiles_follow_the_spool_and_the_layer(tmp_path):
     user = json.loads((out / "beambam_process.json").read_text())
     assert (user["inherits"], user["from"], user["wall_loops"], user["outer_wall_line_width"],
             user["compatible_printers"]) == ("0.20mm Standard @BBL X2D", "User", "3", "0.22", [so.MESH_PRINTER])
+
+
+def test_a_mesh_takes_the_flattened_filament_profiles(tmp_path):
+    """`--load-filaments` does not follow `inherits`: the source profile alone sliced PLA with density 0 (0 g)
+    and the CLI's default plate temperatures (seen on the phone: hot plate 45 instead of 55 °C)."""
+    root = _resources(tmp_path / "r")
+    from beambam.profile_flatten import flatten
+    flatten(root)
+    out = tmp_path / "o"
+    out.mkdir()
+    args = so.mesh_args(root, so.SliceOptions(filament_ids=("GFG02",)), out)
+    fil = Path(args[args.index("--load-filaments") + 1])
+    assert fil.parent.name == "filament_full" and json.loads(fil.read_text())["filament_id"] == "GFG02"
+    assert so.flattened(tmp_path / "nowhere" / "filament" / "x.json").parent.name == "filament"   # none: as is
 
 
 def test_a_project_for_another_printer_is_sliced_for_this_one(tmp_path):

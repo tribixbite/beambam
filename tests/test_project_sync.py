@@ -29,7 +29,8 @@ PLA = "Bambu PLA Basic @BBL X2D 0.4 nozzle"
 
 def _resources(root: Path) -> Path:
     """Bundled-style filament profiles: PETG HF and PLA Basic through @base parents and one include template
-    whose variants are not the project's (no E3D, a Bowden one, a different order than a same-length list)."""
+    whose variants are not the project's (no E3D, a Bowden one, a different order than a same-length list).
+    Laid out as the phone build keeps them under `root`; returns the BBL profiles folder."""
     folder = root / "bs-bionic" / "resources" / "profiles" / "BBL" / "filament"
     folder.mkdir(parents=True)
     fil: dict[str, dict[str, Any]] = {
@@ -50,7 +51,7 @@ def _resources(root: Path) -> Path:
         (folder / f"{name}.json").write_text(json.dumps({"type": "filament", "name": name, **d}))
     so._filament_index.cache_clear()
     ps._filament_files.cache_clear()
-    return root
+    return root / "bs-bionic" / "resources" / "profiles" / "BBL"
 
 
 def _settings(n: int = 3) -> dict[str, Any]:
@@ -85,7 +86,7 @@ def test_profiles_flatten_parent_then_include_then_own(tmp_path):
     assert v["name"] == PETG and v["filament_id"] == "GFG02" and v["filament_type"] == ["PETG"]
     assert v["filament_wipe"] == ["1", "1", "1"]                 # the include over the parent
     assert v["filament_retraction_length"] == ["0.4", "nil", "nil"]  # own keys over the include
-    (tmp_path / "r" / "bs-bionic" / "resources" / "profiles" / "BBL" / "filament" / "Loop.json").write_text(
+    (root / "filament" / "Loop.json").write_text(
         json.dumps({"name": "Loop", "inherits": "Gone"}))
     ps._filament_files.cache_clear()
     with pytest.raises(ValueError, match="missing 'Gone'"):
@@ -225,7 +226,8 @@ _BUNDLED = Path(__file__).resolve().parents[1]
 def test_bundled_profiles_flatten():
     so._filament_index.cache_clear()
     ps._filament_files.cache_clear()
-    v = ps.flatten_profile(_BUNDLED, so.filament_profile(_BUNDLED, "GFG02", "PETG"))
+    bbl = _BUNDLED / "bs-bionic" / "resources" / "profiles" / "BBL"
+    v = ps.flatten_profile(bbl, so.filament_profile(bbl, "GFG02", "PETG"))
     assert v["filament_type"] == ["PETG"] and ps._resolved_id(v) == "GFG02"
     assert len(v["filament_extruder_variant"]) == len(v["nozzle_temperature"])
 
@@ -258,7 +260,7 @@ def test_apply_to_project_takes_the_spools_and_the_plate(tmp_path):
     out = so.apply_to_project(src, tmp_path / "o.3mf", opts, root)
     assert out["filament_settings_id"][0] == PETG and out["filament_colour"][0] == "#FF0000"
     assert out["curr_bed_type"] == "Supertack Plate" and out["filament_map"] == ["2", "1", "1"]
-    with pytest.raises(ValueError, match="root"):
+    with pytest.raises(ValueError, match="profiles folder"):
         so.apply_to_project(src, tmp_path / "o2.3mf", opts)
 
 
@@ -268,8 +270,8 @@ def test_post_project_update_hands_the_project_back(tmp_path, monkeypatch):
 
     import beambam.slice_service as ss
     from tests.test_http_camera import _daemon
-    root = _resources(tmp_path / "r")
-    monkeypatch.setattr(ss, "_root", lambda: root)
+    _resources(tmp_path / "r")
+    monkeypatch.setattr(ss, "_root", lambda: tmp_path / "r")      # the phone build's tree, without its slicer
     port = _daemon("http://127.0.0.1:9")
     body = _zip(tmp_path / "p.3mf", _settings()).read_bytes()
     opts = json.dumps({"spools": [{"id": "GFA00", "type": "PLA", "colour": "#123456"}], "bed_type": "Supertack Plate"})

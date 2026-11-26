@@ -166,6 +166,11 @@ EXAMPLES: dict[str, list[tuple[str, str]]] = {
         ("beambam help print", "Show the full page for one command."),
         ("beambam help --all", "Read the manual for every command."),
     ],
+    "slicer": [
+        ("beambam slicer", "Show which Bambu Studio slices (POST /slice, slice-print) and whether it can."),
+        ("beambam slicer install", "Download Bambu Lab's official build (the version CI slices with)."),
+        ("beambam slicer install --version latest", "Take the newest release instead."),
+    ],
     "status": [
         ("beambam status", "Default printer from ~/.x2d/credentials."),
         ("beambam --printer garage status --timeout 15", "A named printer, with a longer wait."),

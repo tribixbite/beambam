@@ -8,13 +8,17 @@ reported "bambu-studio not found" even with Bambu Studio installed. Resolution o
 Bambu Studio executable (:func:`bambu_studio_bin`):
   1. ``$BAMBU_STUDIO`` (or legacy ``$X2D_BS_BIN``)
   2. the Termux/bionic build under the repo (``bs-bionic/build/src/bambu-studio``)
-  3. ``bambu-studio`` / ``BambuStudio`` on PATH
-  4. the standard install: ``%ProgramFiles%\\Bambu Studio\\bambu-studio.exe`` (Windows),
+  3. the official build ``beambam slicer install`` downloaded (``<config dir>/slicer/current.json``,
+     :func:`downloaded_slicer`): asked for, the version CI slices with, so it outranks the rest
+  4. ``bambu-studio`` / ``BambuStudio`` on PATH
+  5. the standard install: ``%ProgramFiles%\\Bambu Studio\\bambu-studio.exe`` (Windows),
      ``/Applications/BambuStudio.app/Contents/MacOS/BambuStudio`` (macOS),
      ``/usr/bin/bambu-studio`` / ``/opt/bambu-studio/bambu-studio`` (Linux)
 
-Profiles (:func:`bbl_profiles_dir`): ``resources/profiles/BBL`` next to whichever executable
-was found (the bionic tree keeps it in ``bs-bionic/resources``).
+Profiles (:func:`bbl_profiles_dir`): ``resources/profiles/BBL`` of whichever executable was found:
+recorded by ``slicer install``, else beside it (Windows), ``../resources`` (Linux AppImage, which
+keeps the binary in ``bin/``), ``../Resources`` (macOS bundle); the bionic tree keeps it in
+``bs-bionic/resources``.
 
 Template (:func:`default_template`): ``$X2D_TEMPLATE``, else
 ``<config dir>/templates/x2d_default.gcode.3mf``, else the repo's ``rumi_frame.gcode.3mf``.
@@ -61,6 +65,18 @@ def _standard_installs() -> list[Path]:
             Path("/opt/bambu-studio/bambu-studio"), Path("/opt/BambuStudio/bin/bambu-studio")]
 
 
+def downloaded_slicer() -> dict[str, str] | None:
+    """The Bambu Studio `beambam slicer install` put in the config dir (its manifest: "exe", "profiles",
+    "version", …), or None when there is none or its files are gone."""
+    try:
+        man = json.loads(config_path("slicer", "current.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(man, dict) or not all(isinstance(man.get(k), str) for k in ("exe", "profiles")):
+        return None
+    return man if Path(man["exe"]).is_file() and Path(man["profiles"]).is_dir() else None
+
+
 def bambu_studio_bin() -> Path | None:
     """The Bambu Studio executable to slice with, or None if none is installed."""
     for var in ("BAMBU_STUDIO", "X2D_BS_BIN"):
@@ -71,6 +87,9 @@ def bambu_studio_bin() -> Path | None:
     bionic = REPO_ROOT / _BIONIC_BIN
     if bionic.is_file():
         return bionic
+    got = downloaded_slicer()                           # asked for: before whatever else is installed
+    if got:
+        return Path(got["exe"])
     for name in ("bambu-studio", "BambuStudio", "bambu-studio.exe"):
         found = shutil.which(name)
         if found:
@@ -90,10 +109,14 @@ def bbl_profiles_dir(binary: Path | None = None) -> Path | None:
     """`resources/profiles/BBL` of the given (default: resolved) Bambu Studio."""
     binary = binary or bambu_studio_bin()
     candidates: list[Path] = []
+    got = downloaded_slicer()
+    if binary is not None and got and Path(got["exe"]) == binary:
+        candidates.append(Path(got["profiles"]))        # recorded at install: no layout guessing
     if binary is not None:
         if is_bionic_build(binary):
             candidates.append(REPO_ROOT / "bs-bionic" / "resources" / "profiles" / "BBL")
         candidates += [binary.parent / "resources" / "profiles" / "BBL",              # Windows, Linux
+                       binary.parent.parent / "resources" / "profiles" / "BBL",       # AppImage: bin/../resources
                        binary.parent.parent / "Resources" / "profiles" / "BBL",       # macOS bundle
                        binary.parent.parent / "share" / "BambuStudio" / "profiles" / "BBL"]
     candidates.append(REPO_ROOT / "bs-bionic" / "resources" / "profiles" / "BBL")
@@ -148,13 +171,14 @@ def _absolutize_args(cmd: list[str]) -> list[str]:
 
 
 def run_bambu_cli(cmd: list[str], out_dir: Path, *, env: dict[str, str] | None = None,
-                  timeout: float = 1800.0, exit_grace: float = 20.0) -> int:
+                  timeout: float = 1800.0, exit_grace: float = 20.0, log: Path | None = None) -> int:
     """Run a Bambu Studio CLI command; return its exit code.
 
-    Runs in `out_dir` (the CLI writes result.json into its CWD). If the process is still
-    alive `exit_grace` seconds after a complete result.json appeared, it is killed and the
-    code from result.json is returned (the hang-at-exit is after all output is written).
-    Raises TimeoutError after `timeout` seconds without a result.
+    Runs in `out_dir` (the CLI writes result.json into its CWD), with no stdin (and no console
+    window on Windows). If the process is still alive `exit_grace` seconds after a complete
+    result.json appeared, it is killed and the code from result.json is returned (the
+    hang-at-exit is after all output is written). `log`: its stdout and stderr go there
+    (default: inherited). Raises TimeoutError after `timeout` seconds without a result.
     """
     out_dir = out_dir.resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -165,7 +189,19 @@ def run_bambu_cli(cmd: list[str], out_dir: Path, *, env: dict[str, str] | None =
     except OSError:
         pass
     flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-    proc = subprocess.Popen(cmd, cwd=str(out_dir), env=env, creationflags=flags)
+    sink = log.open("wb") if log is not None else None
+    try:
+        return _wait_cli(subprocess.Popen(cmd, cwd=str(out_dir), env=env, creationflags=flags,
+                                          stdin=subprocess.DEVNULL, stdout=sink,
+                                          stderr=subprocess.STDOUT if sink else None),
+                         out_dir, timeout, exit_grace)
+    finally:
+        if sink is not None:
+            sink.close()
+
+
+def _wait_cli(proc: subprocess.Popen[bytes], out_dir: Path, timeout: float, exit_grace: float) -> int:
+    """`run_bambu_cli`'s wait: the exit code, or result.json's after a hang at exit."""
     started = time.monotonic()
     finished_at: float | None = None
     while True:

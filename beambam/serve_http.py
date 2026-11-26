@@ -1024,6 +1024,8 @@ def _serve_http(bind: str,
                 last = get_last_ts(printer) if get_last_ts else 0.0
                 age = time.time() - last if last else float("inf")
                 healthy = age <= max_staleness
+                from beambam.slice_service import slicer_status
+                slicer = slicer_status()
                 payload = {
                     "printer":           printer,
                     "healthy":           healthy,
@@ -1033,7 +1035,10 @@ def _serve_http(bind: str,
                     # What this daemon can do, for web clients that need a newer one
                     # (pokefit.party, beambam.boo) instead of guessing from versions.
                     "version":           _beambam_version(),
-                    "capabilities":      list(CAPABILITIES),
+                    # The protocol features of this version, plus "slice" while a slicer is there to use.
+                    "capabilities":      list(CAPABILITIES) + (["slice"] if slicer["ready"] else []),
+                    # Which Bambu Studio POST /slice uses, or why it cannot slice (slice_service.slicer_status).
+                    "slicer":            slicer,
                     # The camera proxy behind /camera.mjpeg is up (a TCP connect only).
                     "camera":            camera_listening(camera_url),
                 }
@@ -1120,7 +1125,7 @@ def _serve_http(bind: str,
             spools' filaments, the plate, the print settings, a nozzle map), as the .3mf to keep: what POST
             /slice would slice. Body: the .3mf; X-Filename names it. Answers the file (200), or 400."""
             from beambam.slice_options import SliceOptions, apply_to_project, has_print_settings
-            from beambam.slice_service import _root
+            from beambam.slice_service import NO_SLICER, profiles_dir
             got = self._read_upload(".3mf", "a Bambu Studio project")
             if got is None:
                 return
@@ -1141,8 +1146,13 @@ def _serve_http(bind: str,
                                     status=400)
                     return
                 notes: list[str] = []
+                profiles = profiles_dir()
+                if profiles is None and options.spools:
+                    # The spools' presets come from Bambu Studio's profiles: none here to take them from.
+                    self._send_json({"error": f"cannot update {fname}: {NO_SLICER}"}, status=503)
+                    return
                 try:
-                    apply_to_project(src, dst, options, _root(), notes)
+                    apply_to_project(src, dst, options, profiles, notes)
                 except (ValueError, KeyError, TypeError, AttributeError, zipfile.BadZipFile) as e:
                     self._send_json({"error": f"cannot update {fname}: {e}"}, status=400)
                     return
