@@ -58,6 +58,12 @@ Running GUI apps (BambuStudio / wxWidgets 3.3) on termux-x11. These lessons were
   `--load-filaments` with a project made **for the X2D** crashes the CLI (rc -6, `std::length_error`, right after
   "Initializing StaticPrintConfigs"), so a project takes the spools' presets by rewriting project_settings
   (`beambam/project_sync.py`: inherits, then `include` templates, then own keys; per-variant blocks by name).
+- **Official Bambu Studio CLI off the phone (2026-11-26, CI job `slicer`, v02.09.02.62):** the Linux AppImage
+  (`--appimage-extract`, run `squashfs-root/AppRun`; needs GTK/WebKit/GStreamer libs on a bare runner) and the
+  Windows zip ship NO `*_full` profile folders (macOS's .app does) — `beambam slicer install` flattens them.
+  `--load-filaments <file>` does NOT follow `inherits`: pass the `filament_full` copy, or PLA gets density 0 and
+  default plate temps. A mesh with no `bed_type` gets Cool Plate, which refuses PETG (code -61; Windows' log names
+  no plate). The phone build rejects a binary STL whose facet normals are all zero (code -6); ASCII is fine.
 - **The X2D's plate marker** `device.plate.cur_id` P0301 is the SuperTack plate (owner-confirmed 2026-11-26; `base`
   9, `mat` 1). No public table: only confirmed markers go in `filament_mapping.PLATE_MARKERS` (and pokefit's copy).
 - **Test browsers on this box are shared:** another session drives a headless Chromium on CDP port 9333 (it even
