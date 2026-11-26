@@ -1,0 +1,84 @@
+name: pypi-smoke
+
+# What a new user does on a computer (README "pokefit.party / beambam.boo from a computer"), with the
+# release from PyPI and nothing else: `uvx beambam slicer install`, then the daemon slices an STL over
+# HTTP. Run by hand after a release (Actions → pypi-smoke → Run workflow, the version to check).
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "beambam version on PyPI"
+        required: true
+        default: "1.9.0"
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-latest, windows-latest]
+    env:
+      BEAMBAM_HOME: ${{ github.workspace }}/home
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      BB: beambam==${{ inputs.version }}
+    steps:
+      - uses: astral-sh/setup-uv@v6
+      - name: Libraries the Bambu Studio AppImage links (a desktop Linux has them)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q --no-install-recommends libgtk-3-0t64 libwebkit2gtk-4.1-0 \
+            libgstreamer1.0-0 libgstreamer-plugins-base1.0-0 libglu1-mesa libegl1 libgl1 libosmesa6 \
+            libsecret-1-0 libfuse2t64
+      - run: uvx --from "${{ env.BB }}" beambam --version
+        shell: bash
+      - run: uvx --from "${{ env.BB }}" beambam slicer install
+        shell: bash
+      - run: uvx --from "${{ env.BB }}" beambam slicer
+        shell: bash
+      - name: The daemon slices an STL over HTTP (what pokefit.party does)
+        shell: bash
+        run: |
+          cat > smoke.py <<'EOF'
+          import json, socket, threading, time, urllib.request
+          from beambam.serve_http import _serve_http
+
+          s = socket.socket(); s.bind(("127.0.0.1", 0)); port = s.getsockname()[1]; s.close()
+          threading.Thread(target=_serve_http, daemon=True, kwargs=dict(
+              bind=f"127.0.0.1:{port}", get_state=lambda _p: {}, get_last_ts=lambda _p: time.time(),
+              printer_names=[""], clients={}, cors_origins=["https://pokefit.party"])).start()
+          for _ in range(300):
+              try:
+                  socket.create_connection(("127.0.0.1", port), 1).close(); break
+              except OSError:
+                  time.sleep(0.2)
+          base = f"http://127.0.0.1:{port}"
+          health = json.load(urllib.request.urlopen(base + "/healthz", timeout=30))
+          print("healthz slicer:", health["slicer"])
+          assert "slice" in health["capabilities"], health
+          # A 15 mm cube, ASCII STL.
+          v = [(0,0,0),(15,0,0),(15,15,0),(0,15,0),(0,0,15),(15,0,15),(15,15,15),(0,15,15)]
+          f = [(0,1,2),(0,2,3),(4,6,5),(4,7,6),(0,4,5),(0,5,1),(1,5,6),(1,6,2),(2,6,7),(2,7,3),(3,7,4),(3,4,0)]
+          rows = ["solid cube"]
+          for tri in f:
+              rows += ["facet normal 0 0 0", " outer loop", *(f"  vertex {x} {y} {z}" for x, y, z in (v[i] for i in tri)),
+                       " endloop", "endfacet"]
+          stl = ("\n".join(rows + ["endsolid cube"]) + "\n").encode()
+          req = urllib.request.Request(base + "/slice", data=stl, method="POST", headers={
+              "X-Filename": "cube.stl", "Origin": "https://pokefit.party", "Content-Type": "application/octet-stream",
+              "X-Slice-Options": json.dumps({"filament_types": ["PLA"]})})
+          poll = json.load(urllib.request.urlopen(req, timeout=30))["poll"]
+          for _ in range(600):
+              job = json.load(urllib.request.urlopen(base + poll, timeout=30))
+              if job.get("done"):
+                  break
+              time.sleep(0.5)
+          print(json.dumps({k: job.get(k) for k in ("state", "message", "seconds", "grams", "file")}, indent=1))
+          assert job["state"] == "done" and job["grams"] > 0, job
+          EOF
+          uvx --from "${{ env.BB }}" python smoke.py
