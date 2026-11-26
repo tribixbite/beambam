@@ -243,7 +243,7 @@
                 </div>
             {:else if plan.warnings.length}
                 <div class="pp-msg warn">
-                    Spool check: Start print accepts the ⚠ differences.
+                    Check before printing: Start print accepts the ⚠ warnings.
                     {#each plan.warnings as w}<div class="pp-small">⚠ {w}</div>{/each}
                 </div>
             {:else}

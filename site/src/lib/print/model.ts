@@ -71,6 +71,8 @@ export interface LoadedModel {
     bed: { minX: number; minY: number; maxX: number; maxY: number };
     triangles: number;
     sliced: SlicedInfo | null;
+    /** The build plate the project is set up for (`curr_bed_type`), null when it names none. */
+    plate: string | null;
 }
 
 export const DEFAULT_BED = { minX: 0, minY: 0, maxX: 256, maxY: 256 };
@@ -422,6 +424,7 @@ export function parseProjectSettings(json: string): {
     filaments: FileFilament[];
     bed: LoadedModel['bed'];
     hasPrintSettings: boolean;
+    plate: string | null;
 } {
     let s: Settings = {};
     try {
@@ -443,7 +446,8 @@ export function parseProjectSettings(json: string): {
             profileId: ids[i] ?? ''
         });
     }
-    return { filaments, bed: bedFromArea(s.printable_area), hasPrintSettings: n > 0 };
+    const plate = typeof s.curr_bed_type === 'string' && s.curr_bed_type ? s.curr_bed_type : null;
+    return { filaments, bed: bedFromArea(s.printable_area), hasPrintSettings: n > 0, plate };
 }
 
 /** printable_area ["0x0","256x0","256x256","0x256"] -> bounds (the default bed when absent). */
@@ -564,7 +568,8 @@ export function assemble3mf(name: string, files: Map<string, ModelFile>, meta: M
         filaments,
         bed: project.bed,
         triangles: countTriangles(parts),
-        sliced: sliced?.info ?? null
+        sliced: sliced?.info ?? null,
+        plate: project.plate
     };
 }
 
@@ -687,7 +692,8 @@ export function meshModel(name: string, positions: Float32Array, indices: Uint32
         filaments: [{ colour: NEUTRAL, type: '', grams: null, profileId: '' }],
         bed: { ...DEFAULT_BED },
         triangles: countTriangles(parts),
-        sliced: null
+        sliced: null,
+        plate: null
     };
 }
 

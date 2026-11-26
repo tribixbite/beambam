@@ -60,3 +60,32 @@ describe('plan helpers', () => {
         expect(spoolChoices(trays, '#EEBF31', null).map((x) => x.trayId)).toEqual([0, 1, 2]);
     });
 });
+
+describe('the plate setting', () => {
+    test('is sent as bed_type only when chosen, and read in the maker\'s words', async () => {
+        const { buildSliceOptions, PROJECT_SETTINGS, plateText } = await import('./plan');
+        expect(buildSliceOptions(PROJECT_SETTINGS)).toBeNull();
+        expect(buildSliceOptions({ ...PROJECT_SETTINGS, bed: 'Supertack Plate' })).toEqual({ bed_type: 'Supertack Plate' });
+        expect(plateText('Supertack Plate')).toBe('SuperTack plate');
+        expect(plateText('Textured PEI Plate')).toBe('Textured PEI plate');
+    });
+});
+
+describe('project and printer', () => {
+    test('rows compare what the file prints with against its spool; the spools option keeps unused filaments', async () => {
+        const { projectVsSpools, spoolsFromPlan } = await import('./plan');
+        const withId: PrintPlan = { ...plan, filaments: plan.filaments.map((f) => ({ ...f, tray: f.tray && { ...f.tray, profile_id: 'GFA00' } })) };
+        const s = projectVsSpools(withId);
+        expect(s.differs).toBe(true);
+        expect(s.rows.map((r) => [r.filament, r.same])).toEqual([[1, false], [3, true]]);
+        const spools = spoolsFromPlan([{ type: 'PLA', colour: '#EEBF31' }, { type: 'PETG', colour: '#123456' }, { type: 'PLA', colour: '#FFFFFF' }], withId);
+        expect(spools).toEqual([
+            { id: 'GFA00', type: 'PLA', colour: '#F98C36' },
+            { id: null, type: null, colour: '#123456' },          // filament 2: not on this plate, stays
+            { id: 'GFA00', type: 'PLA', colour: '#FFFFFF' }
+        ]);
+        expect(buildSliceOptions(PROJECT_SETTINGS, null, null, spools)?.spools).toEqual(spools);
+        const matched: PrintPlan = { ...plan, filaments: [plan.filaments[1]] };
+        expect(projectVsSpools(matched).differs).toBe(false);
+    });
+});

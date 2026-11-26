@@ -10,6 +10,15 @@ export type SupportMode = 'auto' | 'plate' | 'off';
 /** Brim: Bambu's automatic brim, an outer brim only, or none. */
 export type BrimMode = 'auto_brim' | 'outer_only' | 'no_brim';
 
+/** Bambu Studio's build plates (`curr_bed_type`), as beambam's `bed_type` slice option takes them. */
+export const BED_TYPES = ['Cool Plate', 'Engineering Plate', 'High Temp Plate', 'Textured PEI Plate', 'Supertack Plate'] as const;
+export type BedType = (typeof BED_TYPES)[number];
+
+/** A plate name in the words its maker uses ("SuperTack plate", "Textured PEI plate"). */
+export function plateText(name: string): string {
+    return name.replace(/^Supertack/, 'SuperTack').replace(/ Plate$/, ' plate');
+}
+
 /** What the user chose on the settings card; null = the project's own value (not sent). */
 export interface PrintSettings {
     supports: SupportMode | null;
@@ -17,6 +26,8 @@ export interface PrintSettings {
     walls: number | null;
     infill: number | null;
     brim: BrimMode | null;
+    /** The build plate to slice for. */
+    bed: BedType | null;
 }
 
 /** Every setting left to the project. */
@@ -25,7 +36,8 @@ export const PROJECT_SETTINGS: PrintSettings = {
     layerHeight: null,
     walls: null,
     infill: null,
-    brim: null
+    brim: null,
+    bed: null
 };
 
 /** Layer heights Bambu offers for a 0.4 mm nozzle (the daemon accepts 0.08..0.28). */
@@ -48,8 +60,18 @@ export interface SliceOptions {
     supports?: SupportMode;
     brim?: BrimMode;
     nozzles?: number[];
+    bed_type?: BedType;
+    /** Per filament: the spool it prints from; a project takes its preset and colour (beambam "project-sync"). */
+    spools?: SpoolOption[];
     filament_ids?: string[];
     filament_types?: string[];
+}
+
+/** One filament's spool as the `spools` slice option takes it (null id / type: keep the project's preset). */
+export interface SpoolOption {
+    id: string | null;
+    type: string | null;
+    colour: string;
 }
 
 /** True when any print setting differs from the project's. */
@@ -66,7 +88,8 @@ export function hasSettings(s: PrintSettings): boolean {
 export function buildSliceOptions(
     settings: PrintSettings,
     mesh: MeshFilament | null = null,
-    nozzles: number[] | null = null
+    nozzles: number[] | null = null,
+    spools: SpoolOption[] | null = null
 ): SliceOptions | null {
     const o: SliceOptions = {};
     if (settings.layerHeight !== null) o.layer_height = settings.layerHeight;
@@ -74,7 +97,9 @@ export function buildSliceOptions(
     if (settings.infill !== null) o.infill = settings.infill;
     if (settings.supports !== null) o.supports = settings.supports;
     if (settings.brim !== null) o.brim = settings.brim;
+    if (settings.bed !== null) o.bed_type = settings.bed;
     if (nozzles && nozzles.length) o.nozzles = [...nozzles];
+    if (spools && spools.length) o.spools = spools.map((s) => ({ ...s }));
     if (mesh) {
         // An empty preset id would be refused; the material alone picks Bambu's generic profile.
         if (mesh.profileId) o.filament_ids = [mesh.profileId];
@@ -96,7 +121,7 @@ export interface PlanFilament {
     colour: string;
     /** The nozzle it was sliced for: "left" | "right" | "both" | "-" (one nozzle). */
     nozzle: string;
-    tray: { tray_id: number; label: string; type: string; colour: string } | null;
+    tray: { tray_id: number; label: string; type: string; colour: string; profile_id?: string } | null;
     errors: string[];
     warnings: string[];
 }
@@ -107,6 +132,8 @@ export interface PrintPlan {
     errors: string[];
     warnings: string[];
     notes: string[];
+    /** The plate the file was sliced for and the plate on the printer (beambam with "plate-check"). */
+    bed?: { file: string | null; printer: string | null; printer_marker: string | null };
     ok?: boolean;
     needs_confirmation?: boolean;
 }
@@ -242,6 +269,51 @@ export function nozzleMismatches(plan: PrintPlan, requested: number[] | null): s
         const got = nozzleNumber(f.nozzle);
         const want = requested[f.filament - 1];
         if (got !== null && want && got !== want) out.push(`filament ${f.filament} (asked ${name(want)}, sliced ${name(got)})`);
+    }
+    return out;
+}
+
+/** ΔE under which a project colour and a spool's count as the same (spool readings vary; pokefit uses 6 too). */
+export const SAME_COLOUR = 6;
+
+/** One project filament against the spool beambam's plan prints it from. */
+export interface SyncRow {
+    filament: number;
+    project: { type: string; colour: string };
+    spool: { label: string; type: string; colour: string } | null;
+    same: boolean;
+}
+
+/**
+ * The print file's filaments (the project's filament list as sliced) against the spools the plan
+ * prints them from: a row per filament the plate uses; `same` = same material and colour within
+ * SAME_COLOUR. After a slice with the spools' filaments every row is the same.
+ */
+export function projectVsSpools(plan: PrintPlan): { rows: SyncRow[]; differs: boolean } {
+    const rows = plan.filaments.map((f): SyncRow => {
+        const p = { type: f.type, colour: f.colour };
+        const t = f.tray;
+        const same = !!t && !!t.type && t.type.toUpperCase() === p.type.toUpperCase() &&
+            !!t.colour && !!p.colour && deltaE(t.colour, p.colour) <= SAME_COLOUR;
+        return { filament: f.filament, project: { type: p.type, colour: p.colour }, spool: t ? { label: t.label, type: t.type, colour: t.colour } : null, same };
+    });
+    return { rows, differs: rows.some((r) => !r.same) };
+}
+
+/**
+ * The `spools` option that gives the project the plan's spools: filament i the preset, material
+ * and colour of the spool it prints from; a filament the plate does not use keeps its own
+ * (null id / type, its colour).
+ */
+export function spoolsFromPlan(filaments: { type: string; colour: string }[], plan: PrintPlan): SpoolOption[] {
+    const n = Math.max(filaments.length, ...plan.filaments.map((f) => f.filament));
+    const out: SpoolOption[] = [];
+    for (let i = 0; i < n; i++) {
+        const f = plan.filaments.find((x) => x.filament === i + 1);
+        const t = f?.tray;
+        out.push(t && t.colour
+            ? { id: t.profile_id || null, type: t.type || null, colour: t.colour.slice(0, 7).toUpperCase() }
+            : { id: null, type: null, colour: (filaments[i]?.colour || '#808080').slice(0, 7).toUpperCase() });
     }
     return out;
 }

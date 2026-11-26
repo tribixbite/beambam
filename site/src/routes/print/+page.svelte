@@ -11,21 +11,28 @@
     import CodeBlock from '$lib/CodeBlock.svelte';
     import '$lib/print/print.css';
     import { Daemon, DaemonError, DEFAULT_URL, SITE_ORIGIN, startCommand, type Health, type SliceResult } from '$lib/print/daemon';
+    import CameraView from '$lib/print/CameraView.svelte';
     import JobView from '$lib/print/JobView.svelte';
     import MappingPanel from '$lib/print/MappingPanel.svelte';
     import { fileType, type FileType } from '$lib/print/load';
     import { NEUTRAL, type LoadedModel } from '$lib/print/model';
     import {
+        BED_TYPES,
         BRIM_MODES_UI,
         buildSliceOptions,
         hasSettings,
         INFILL_STEPS,
         LAYER_HEIGHTS,
         optionsHeader,
+        plateText,
+        projectVsSpools,
         PROJECT_SETTINGS,
         spoolChoices,
+        spoolsFromPlan,
         SUPPORT_MODES_UI,
         WALL_COUNTS,
+        type SpoolOption,
+        type BedType,
         type PrintPlan,
         type PrintSettings
     } from '$lib/print/plan';
@@ -85,6 +92,16 @@
             localStorage.setItem(STORE_KEY, JSON.stringify({ url, auto }));
         } catch {
             /* storage blocked: remembered for this visit only */
+        }
+    }
+
+    /** Read /healthz again (e.g. the camera proxy was started since connecting). */
+    async function refreshHealth(): Promise<void> {
+        if (!daemon) return;
+        try {
+            health = await daemon.health();
+        } catch {
+            /* the next poll reports a lost daemon */
         }
     }
 
@@ -224,8 +241,10 @@
 
     // ---------------------------------------------------------------- settings
     let settings = $state<PrintSettings>({ ...PROJECT_SETTINGS });
+    /** The spools a project slices with ("Slice with the spools' filaments"); null = its own filaments. */
+    let adoptSpools = $state<SpoolOption[] | null>(null);
     const settingsKey = $derived(
-        JSON.stringify([hasOptions ? settings : null, meshSpool ? [meshSpool.profileId, meshSpool.type] : null])
+        JSON.stringify([hasOptions ? settings : null, meshSpool ? [meshSpool.profileId, meshSpool.type] : null, adoptSpools])
     );
 
     /** What "not sent" means for this file: the project's own value, or Bambu's default for a mesh. */
@@ -233,6 +252,18 @@
 
     function setSetting<K extends keyof PrintSettings>(key: K, value: PrintSettings[K]): void {
         settings = { ...settings, [key]: value };
+    }
+
+    // ---------------------------------------------------------------- plate
+    /** The plate on the printer by name (null: no report, or a marker beambam cannot name yet). */
+    const printerPlate = $derived((status?.plate?.name ?? null) as BedType | null);
+    /** The plate this slice is set up for: the choice on the card, else the project's. */
+    const slicePlate = $derived(settings.bed ?? model?.plate ?? null);
+    /** The printer has another plate on than the one the slice is for (only when both are known). */
+    const plateDiffers = $derived(!!printerPlate && !!slicePlate && printerPlate !== slicePlate && ftype !== 'gcode.3mf');
+
+    function usePrinterPlate(): void {
+        if (printerPlate) setSetting('bed', printerPlate);
     }
 
     function numOrNull(v: string): number | null {
@@ -263,6 +294,7 @@
         printFile = null;
         slicedKey = '';
         chosenNozzles = null;
+        adoptSpools = null;
         plan = null;
         startSlots = null;
         resliceNote = '';
@@ -281,7 +313,7 @@
         sliceTick = 'Sending the file to beambam…';
         const key = settingsKey;
         const mesh = isMeshKind && meshSpool ? { profileId: meshSpool.profileId, type: meshSpool.type, colour: meshSpool.colour } : null;
-        const opts = hasOptions ? buildSliceOptions(settings, mesh, nozzles) : null;
+        const opts = hasOptions ? buildSliceOptions(settings, mesh, nozzles, adoptSpools) : null;
         try {
             const res = await daemon.slice(file.name, file, opts ? optionsHeader(opts) : null, (sec, step) => {
                 sliceTick = `${again ? `Slicing again with ${what}` : 'Slicing'}: ${step || 'working'}… ${Math.round(sec)} s`;
@@ -328,6 +360,44 @@
 
     // ---------------------------------------------------------------- mapping + start
     let plan = $state<PrintPlan | null>(null);
+    // ---------------------------------------------------------------- project vs printer
+    const hasProjectSync = $derived(caps.includes('project-sync'));
+    /** The print file's filaments against the spools they print from (projects only). */
+    const spoolSync = $derived(plan && model?.kind === 'project' && ftype !== 'gcode.3mf' ? projectVsSpools(plan) : null);
+    let syncBusy = $state('');
+    let syncError = $state('');
+
+    /** Slice again with each filament set to its spool's preset, material and colour. */
+    async function sliceWithSpools(): Promise<void> {
+        if (!plan || !model) return;
+        adoptSpools = spoolsFromPlan(model.filaments, plan);
+        await slice(chosenNozzles, "the spools' filaments");
+    }
+
+    /** Download the project as it is sliced now (its settings, plate, nozzles and spools' filaments). */
+    async function downloadProject(): Promise<void> {
+        if (!daemon || !file || !model) return;
+        syncBusy = 'Asking beambam for the project…';
+        syncError = '';
+        try {
+            const opts = buildSliceOptions(settings, null, chosenNozzles, adoptSpools);
+            const blob = await daemon.updateProject(file.name, file, opts ? optionsHeader(opts) : null);
+            const a = document.createElement('a');
+            a.href = URL.createObjectURL(blob);
+            a.download = `${file.name.replace(/\.3mf$/i, '')}_printer.3mf`;
+            document.body.append(a);
+            a.click();
+            a.remove();
+            setTimeout(() => URL.revokeObjectURL(a.href), 60_000);
+        } catch (e) {
+            syncError = e instanceof Error ? e.message : String(e);
+        } finally {
+            syncBusy = '';
+        }
+    }
+
+    /** beambam's plan says the print file is for another plate than the one on the printer. */
+    const planPlateDiffers = $derived(!!plan?.bed?.file && !!plan?.bed?.printer && plan.bed.file !== plan.bed.printer);
     let startSlots = $state<number[] | null>(null);
     let confirmOpen = $state(false);
     let plateClean = $state(false);
@@ -470,9 +540,14 @@
                     <dl class="pp-kv">
                         <dt>Printer</dt>
                         <dd>{stateText(status.state)}{status.job && isBusy(status.state) ? ` · ${status.job} · ${status.percent}%` : ''}</dd>
+                        {#if status.plate}
+                            <dt>Plate</dt>
+                            <dd>{status.plate.name ? plateText(status.plate.name) : `marker ${status.plate.marker} (not known to beambam yet)`}</dd>
+                        {/if}
                     </dl>
                 {/if}
                 {#if stateError}<div class="pp-msg err">{stateError}</div>{/if}
+                <CameraView {daemon} available={health?.camera ?? null} recheck={refreshHealth} />
 
                 {#if trays.length}
                     <div class="spools" aria-label="Loaded spools">
@@ -618,6 +693,21 @@
                         </select>
                     </label>
                 </div>
+                <label class="pp-field">
+                    <span>Plate</span>
+                    <select class="pp-select" value={settings.bed ?? ''}
+                            onchange={(e) => setSetting('bed', (e.currentTarget.value || null) as BedType | null)}>
+                        <option value="">{model?.plate ? `${defaultLabel} (${plateText(model.plate)})` : defaultLabel}</option>
+                        {#each BED_TYPES as b (b)}<option value={b}>{plateText(b)}{b === printerPlate ? ' · on the printer' : ''}</option>{/each}
+                    </select>
+                </label>
+                {#if plateDiffers && printerPlate && slicePlate}
+                    <div class="pp-msg warn">
+                        The printer has the {plateText(printerPlate)} on; this slice is for the {plateText(slicePlate)}
+                        (its bed temperature and first layer are that plate's).
+                        <button type="button" class="pp-btn" onclick={usePrinterPlate}>Slice for the {plateText(printerPlate)}</button>
+                    </div>
+                {/if}
                 {#if hasSettings(settings)}
                     <button type="button" class="pp-btn" onclick={() => (settings = { ...PROJECT_SETTINGS })}>
                         Back to the {isMeshKind ? 'defaults' : "project's settings"}
@@ -680,6 +770,52 @@
                     onchange={(p, s) => { plan = p; startSlots = s; }}
                 />
             {/key}
+            {#if spoolSync && hasProjectSync && hasOptions}
+                <div class="pp-card sync" aria-live="polite">
+                    <div class="pp-legend">Project and printer</div>
+                    {#if spoolSync.differs}
+                        <p class="pp-small">
+                            {spoolSync.rows.filter((r) => !r.same).length} of {spoolSync.rows.length} filaments in the project are not
+                            what their spools hold. Printing still works (the check above lists the differences); slicing with the
+                            spools' filaments uses their temperatures and colours.
+                        </p>
+                        <ul class="sync-rows pp-small">
+                            {#each spoolSync.rows.filter((r) => !r.same) as r (r.filament)}
+                                <li>
+                                    <span class="pp-mono">{r.filament}</span>
+                                    <Swatch colour={r.project.colour} /> {r.project.type || '?'}
+                                    <span class="pp-muted">→</span>
+                                    {#if r.spool}<Swatch colour={r.spool.colour} /> {r.spool.label} {r.spool.type}{:else}<span class="pp-muted">no spool</span>{/if}
+                                </li>
+                            {/each}
+                        </ul>
+                        <div class="pp-row">
+                            <button type="button" class="pp-btn primary" disabled={slicing || reslicing} onclick={sliceWithSpools}>Slice with the spools' filaments</button>
+                        </div>
+                    {:else}
+                        <p class="pp-small pp-ok-text">{adoptSpools ? "Sliced with the spools' filaments." : 'The project already matches the spools it prints from.'}</p>
+                    {/if}
+                    <div class="pp-row">
+                        <button type="button" class="pp-btn" disabled={!!syncBusy} onclick={downloadProject}>
+                            {syncBusy ? 'Preparing…' : 'Download the updated project'}
+                        </button>
+                        {#if adoptSpools}
+                            <button type="button" class="pp-btn" disabled={slicing || reslicing}
+                                    onclick={() => { adoptSpools = null; void slice(chosenNozzles, "the project's own filaments"); }}>
+                                Back to the project's filaments
+                            </button>
+                        {/if}
+                    </div>
+                    <p class="pp-muted pp-small">The download is your project with the settings, plate{adoptSpools ? ', nozzles and spools' : ' and nozzles'} used here; everything else as it was.</p>
+                    {#if syncError}<div class="pp-msg err">{syncError}</div>{/if}
+                </div>
+            {/if}
+            {#if planPlateDiffers && plan?.bed?.printer && ftype !== 'gcode.3mf' && hasOptions}
+                <button type="button" class="pp-btn" disabled={slicing || reslicing}
+                        onclick={() => { usePrinterPlate(); void slice(); }}>
+                    Slice again for the {plateText(plan.bed.printer)}
+                </button>
+            {/if}
         {:else}
             <p class="pp-muted">After slicing, each filament is matched to a loaded spool here.</p>
         {/if}
@@ -758,6 +894,9 @@
     .fil-g { font-family: var(--font-mono); }
     .settings { border: 0; padding: 0; margin: 0; display: grid; gap: var(--space-lg); min-width: 0; }
     .settings:disabled { opacity: 0.5; }
+    .sync { display: grid; gap: var(--space-sm); margin-top: var(--space-md); }
+    .sync-rows { list-style: none; padding: 0; margin: 0; display: grid; gap: var(--space-xs); }
+    .sync-rows li { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-xs) var(--space-sm); }
     .settings-nums { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--space-sm); }
     .slice-sum { margin-top: var(--space-md); }
     .confirm { display: grid; gap: var(--space-md); border-color: var(--color-accent); }

@@ -58,6 +58,8 @@ export interface PrinterStatus {
     nozzles: NozzleTemp[];
     /** Two nozzles (H2D / X2D). */
     dual: boolean;
+    /** The build plate the printer reads (`device.plate.cur_id`): its marker, and its name when known. */
+    plate: { marker: string; name: string | null } | null;
 }
 
 type Obj = Record<string, unknown>;
@@ -230,8 +232,22 @@ export function readStatus(state: unknown): PrinterStatus {
         bed: num(p.bed_temper),
         bedTarget: num(p.bed_target_temper),
         nozzles,
-        dual
+        dual,
+        plate: readPlate(p)
     };
+}
+
+/**
+ * Plate markers confirmed against a known plate -> Bambu's plate name (`curr_bed_type`). The
+ * same table as beambam/filament_mapping.py `PLATE_MARKERS` (keep them equal): no public list
+ * exists, so an unknown marker is shown as a marker, never guessed.
+ */
+export const PLATE_MARKERS: Record<string, string> = { P0301: 'Supertack Plate' };
+
+/** The plate on the printer, from its report (null when it reports none). */
+export function readPlate(state: unknown): { marker: string; name: string | null } | null {
+    const marker = str(obj(obj(report(state).device).plate).cur_id);
+    return marker ? { marker, name: PLATE_MARKERS[marker] ?? null } : null;
 }
 
 /** A gcode_state in plain words. */

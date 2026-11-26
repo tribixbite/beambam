@@ -36,7 +36,37 @@ describe('Daemon', () => {
         const d = new Daemon('http://127.0.0.1:8765', { origin: ORIGIN, fetchImpl: fake({
             '/healthz': () => [503, { healthy: false, version: '1.7.0', capabilities: ['slice-options'], last_message_age_s: 99 }]
         }) });
-        expect(await d.health()).toEqual({ healthy: false, version: '1.7.0', capabilities: ['slice-options'], lastMessageAge: 99, printerSilent: true });
+        expect(await d.health()).toEqual({ healthy: false, version: '1.7.0', capabilities: ['slice-options'], lastMessageAge: 99, printerSilent: true, camera: null });
+    });
+
+    test('the camera: its stream URL, and why it does not show in beambam\'s words', async () => {
+        const d = new Daemon('http://127.0.0.1:8765', { origin: ORIGIN, fetchImpl: fake({
+            '/healthz': () => [200, { healthy: true, version: '1.9.0', capabilities: ['camera'], camera: true }],
+            '/snapshot.jpg': () => [503, 'camera proxy unreachable at http://127.0.0.1:8766/cam.jpg; start it with `beambam cam start`']
+        }) });
+        expect((await d.health()).camera).toBe(true);
+        expect(d.cameraUrl()).toBe('http://127.0.0.1:8765/camera.mjpeg');
+        expect(d.cameraUrl(3)).toBe('http://127.0.0.1:8765/camera.mjpeg?n=3');
+        expect(await d.cameraProblem()).toContain('beambam cam start');
+        const ok = new Daemon('http://127.0.0.1:8765', { origin: ORIGIN, fetchImpl: fake({ '/snapshot.jpg': () => [200, 'jpeg'] }) });
+        expect(await ok.cameraProblem()).toBeNull();
+    });
+
+    test('updateProject sends the options and hands back the file; a refusal says why', async () => {
+        const calls: [string, RequestInit][] = [];
+        const d = new Daemon('http://127.0.0.1:8765', { origin: ORIGIN, fetchImpl: (async (input: RequestInfo | URL, init: RequestInit = {}) => {
+            calls.push([new URL(String(input)).pathname, init]);
+            const h = init.headers as Record<string, string>;
+            if (h['X-Slice-Options'] === 'bad') return new Response('{"error":"spools must be a list"}', { status: 400 });
+            return new Response(new Uint8Array([0x50, 0x4b]), { status: 200 });
+        }) as FetchLike });
+        const blob = await d.updateProject('jolteon.3mf', new Uint8Array([1]), '{"bed_type":"Supertack Plate"}');
+        expect(new Uint8Array(await blob.arrayBuffer())).toEqual(new Uint8Array([0x50, 0x4b]));
+        expect(calls[0][0]).toBe('/project/update');
+        expect((calls[0][1].headers as Record<string, string>)['X-Filename']).toBe('jolteon.3mf');
+        const e = await d.updateProject('x.3mf', new Uint8Array([1]), 'bad').catch((x) => x);
+        expect(e).toBeInstanceOf(DaemonError);
+        expect(e.message).toContain('spools must be a list');
     });
 
     test('unreachable vs origin not allowed', async () => {

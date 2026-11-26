@@ -159,3 +159,11 @@ describe('loadModel', () => {
         await expect(loadModel('a.step', new Blob(['x']))).rejects.toThrow('.3mf, .gcode.3mf, .stl and .obj');
     });
 });
+
+describe('the project\'s plate', () => {
+    test('curr_bed_type is read, absent is null', async () => {
+        const { parseProjectSettings } = await import('./model');
+        expect(parseProjectSettings(JSON.stringify({ filament_colour: ['#FFFFFF'], curr_bed_type: 'Supertack Plate' })).plate).toBe('Supertack Plate');
+        expect(parseProjectSettings('{}').plate).toBeNull();
+    });
+});

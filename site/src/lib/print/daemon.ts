@@ -89,6 +89,8 @@ export interface Health {
     lastMessageAge: number | null;
     /** HTTP 503: the daemon runs but hears nothing from the printer. */
     printerSilent: boolean;
+    /** The camera proxy behind /camera.mjpeg is up; null from a beambam without a camera relay. */
+    camera: boolean | null;
 }
 
 /** A finished slice on the daemon's machine. */
@@ -247,8 +249,34 @@ export class Daemon {
             version: typeof body.version === 'string' ? body.version : '',
             capabilities: Array.isArray(body.capabilities) ? body.capabilities.map(String) : [],
             lastMessageAge: typeof body.last_message_age_s === 'number' ? body.last_message_age_s : null,
-            printerSilent: status === 503
+            printerSilent: status === 503,
+            camera: typeof body.camera === 'boolean' ? body.camera : null
         };
+    }
+
+    /**
+     * The chamber camera's live MJPEG, for an <img> (multipart/x-mixed-replace renders natively).
+     * `n` makes each (re)connect a new URL, so a dropped stream can be restarted.
+     */
+    cameraUrl(n = 0): string {
+        return `${this.url}/camera.mjpeg${n ? `?n=${n}` : ''}`;
+    }
+
+    /**
+     * Why the live view does not show, in beambam's words (its 503 text), or null when a frame
+     * comes through now (the stream dropped and a reconnect should work).
+     */
+    async cameraProblem(): Promise<string | null> {
+        try {
+            const ctl = new AbortController();
+            const t = setTimeout(() => ctl.abort(), 25_000);
+            const r = await this.fetchImpl(`${this.url}/snapshot.jpg`, { ...this.init({}), signal: ctl.signal });
+            clearTimeout(t);
+            if (r.ok) return null;
+            return (await r.text()).trim() || `beambam answered HTTP ${r.status}`;
+        } catch (e) {
+            return `beambam did not answer (${e instanceof Error ? e.message : String(e)})`;
+        }
     }
 
     /** The printer's report (the daemon's cached copy). */
@@ -298,6 +326,32 @@ export class Daemon {
                 warnings: Array.isArray(job.warnings) ? job.warnings.map(String) : []
             };
         }, 'Slicing is taking too long: check beambam');
+    }
+
+    /**
+     * The project with `options` applied (the spools' filaments, the plate, print settings), as the
+     * .3mf to keep: beambam's POST /project/update ("project-sync").
+     */
+    async updateProject(name: string, bytes: Uint8Array | Blob, options: string | null): Promise<Blob> {
+        const headers: Record<string, string> = { 'Content-Type': 'application/octet-stream', 'X-Filename': headerName(name) };
+        if (options) headers['X-Slice-Options'] = options;
+        let res: Response;
+        try {
+            res = await this.fetchImpl(`${this.url}/project/update`, this.init({ method: 'POST', headers, body: bytes as BodyInit }));
+        } catch {
+            throw await this.diagnoseNetworkFailure(false);
+        }
+        if (!res.ok) {
+            let said = '';
+            try {
+                said = replyError((await res.json()) as Json);
+            } catch {
+                /* not JSON */
+            }
+            throw new DaemonError(`beambam could not update the project: ${said || `HTTP ${res.status}`}`,
+                res.status === 400 ? 'bad-request' : 'http', res.status);
+        }
+        return res.blob();
     }
 
     /** Hand an already-sliced .gcode.3mf to the daemon; resolves with its path there. */

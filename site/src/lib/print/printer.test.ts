@@ -71,3 +71,14 @@ describe('readStatus', () => {
         expect(gramsText(42.46)).toBe('42.5 g');
     });
 });
+
+describe('the plate on the printer', () => {
+    test('a known marker is named, another stays a marker, none is null', async () => {
+        const { readPlate, readStatus } = await import('./printer');
+        const on = (cur_id: string) => ({ print: { device: { plate: { base: 9, cur_id, mat: 1, tar_id: '' } } } });
+        expect(readPlate(on('P0301'))).toEqual({ marker: 'P0301', name: 'Supertack Plate' });
+        expect(readPlate(on('P0999'))).toEqual({ marker: 'P0999', name: null });
+        expect(readPlate({ print: {} })).toBeNull();
+        expect(readStatus(on('P0301')).plate?.name).toBe('Supertack Plate');
+    });
+});
