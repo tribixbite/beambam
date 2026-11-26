@@ -9,11 +9,12 @@
         { num: '01', href: '/', label: 'Overview' },
         { num: '02', href: '/printers', label: 'Compatibility' },
         { num: '03', href: '/cli', label: 'Command index' },
-        { num: '04', href: '/docs', label: 'Reference' }
+        { num: '04', href: '/docs', label: 'Reference' },
+        { num: '05', href: '/print', label: 'Print' }
     ];
 
-    const VERSION = 'v1.2.0';
-    const REV = '21 May 2026';
+    const VERSION = 'v1.8.0';
+    const REV = '26 Nov 2026';
 
     function isActive(href: string, current: string): boolean {
         if (href === '/') return current === '/';

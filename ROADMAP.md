@@ -21,6 +21,12 @@ are tracked in their own deep-dive plan files.
 
 ## Shipped
 
+**v1.8.0** (2026-11-26) — [changelog](CHANGELOG.md)
+- beambam.boo/print: bring your own 3MF / STL / sliced file, 3D preview, live
+  spool and nozzle mapping, print and watch it, all through the local daemon.
+- `/slice` takes meshes and `X-Slice-Options`; projects for other printers
+  are re-targeted to the X2D.
+
 **v1.7.0** (2026-11-26) — [changelog](CHANGELOG.md)
 - pause / resume / stop / skip / G-code / tray settings signed on LAN with the
   per-install key, each reporting the printer's verdict; sequence ids above

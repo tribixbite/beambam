@@ -33,6 +33,8 @@ jobs:
         with:
           bun-version: latest
       - run: bun install --frozen-lockfile
+      # The /print page's logic (3MF/STL parsing, paint decoding, spool ranking, the daemon client).
+      - run: bun test src/lib
       - run: bun run build
       - uses: actions/upload-pages-artifact@v3
         with:

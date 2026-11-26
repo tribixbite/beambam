@@ -1,0 +1,210 @@
+/* ====================================================================
+   /print — shared styles for the print page and its components.
+   Same blueprint system as app.css: square corners, hairlines, mono
+   labels, amber accent. Every interactive target is >= 44 px tall.
+   ==================================================================== */
+
+.pp-step {
+    border-top: 1px solid var(--color-hair);
+    padding-block: var(--space-2xl);
+}
+.pp-step-head {
+    display: flex;
+    align-items: baseline;
+    gap: var(--space-md);
+    margin-bottom: var(--space-lg);
+}
+.pp-step-num {
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    color: var(--color-accent);
+    letter-spacing: 0.15em;
+}
+.pp-step-title {
+    font-family: var(--font-display);
+    font-weight: 700;
+    font-size: var(--text-xl);
+    text-transform: uppercase;
+    line-height: 1;
+}
+.pp-step.locked { opacity: 0.45; }
+.pp-step.locked .pp-step-num { color: var(--color-mute-2); }
+
+.pp-muted { color: var(--color-mute); font-size: var(--text-sm); }
+.pp-small { font-size: var(--text-xs); }
+.pp-mono { font-family: var(--font-mono); }
+
+/* Messages */
+.pp-msg {
+    border: 1px solid var(--color-hair);
+    border-left-width: 3px;
+    padding: var(--space-md) var(--space-lg);
+    font-size: var(--text-sm);
+    background: var(--color-surface-3);
+    margin-block: var(--space-md);
+    overflow-wrap: anywhere;
+}
+.pp-msg.err { border-left-color: oklch(65% 0.2 25); }
+.pp-msg.warn { border-left-color: var(--color-accent); }
+.pp-msg.ok { border-left-color: oklch(70% 0.15 150); }
+.pp-msg.info { border-left-color: var(--color-mute-2); }
+.pp-err-text { color: oklch(72% 0.17 25); }
+.pp-warn-text { color: var(--color-accent); }
+.pp-ok-text { color: oklch(76% 0.14 150); }
+
+/* Form controls */
+.pp-field { display: grid; gap: var(--space-xs); }
+.pp-field > span:first-child,
+.pp-legend {
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--color-mute);
+}
+.pp-input,
+.pp-select {
+    min-height: 44px;
+    width: 100%;
+    background: var(--color-surface-3);
+    border: 1px solid var(--color-hair);
+    color: var(--color-ink);
+    font-family: var(--font-mono);
+    font-size: 16px; /* 16px stops iOS zooming on focus */
+    padding: 0 var(--space-md);
+    border-radius: 0;
+}
+.pp-select { appearance: none; background-image: linear-gradient(45deg, transparent 50%, var(--color-mute) 50%), linear-gradient(135deg, var(--color-mute) 50%, transparent 50%); background-position: calc(100% - 18px) 50%, calc(100% - 13px) 50%; background-size: 5px 5px; background-repeat: no-repeat; padding-right: 2rem; }
+.pp-input:focus-visible,
+.pp-select:focus-visible,
+.pp-seg button:focus-visible,
+.pp-btn:focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 2px;
+}
+
+/* Buttons (complements .btn-primary / .btn-secondary in app.css) */
+.pp-btn {
+    min-height: 44px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: var(--space-sm);
+    padding: 0 var(--space-lg);
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    background: transparent;
+    color: var(--color-ink);
+    border: 1px solid var(--color-hair);
+    cursor: pointer;
+    transition: border-color 0.15s ease, color 0.15s ease, background 0.15s ease;
+}
+.pp-btn:hover:not(:disabled) { border-color: var(--color-accent); color: var(--color-accent); }
+.pp-btn.primary { background: var(--color-accent); border-color: var(--color-accent); color: var(--color-surface); }
+.pp-btn.primary:hover:not(:disabled) { background: oklch(78% 0.18 65); color: var(--color-surface); }
+.pp-btn.danger { border-color: oklch(55% 0.18 25); color: oklch(75% 0.15 25); }
+.pp-btn.danger.solid { background: oklch(55% 0.18 25); color: #fff; }
+.pp-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.pp-btn.wide { width: 100%; }
+.pp-row { display: flex; flex-wrap: wrap; gap: var(--space-sm); align-items: center; }
+
+/* Segmented control (radio group of buttons) */
+.pp-seg {
+    display: grid;
+    grid-template-columns: repeat(var(--cols, 2), minmax(0, 1fr));
+    border: 1px solid var(--color-hair);
+}
+.pp-seg button {
+    min-height: 44px;
+    padding: var(--space-xs) var(--space-sm);
+    background: transparent;
+    color: var(--color-mute);
+    border: 0;
+    border-right: 1px solid var(--color-hair);
+    border-bottom: 1px solid var(--color-hair);
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    cursor: pointer;
+    line-height: 1.2;
+}
+.pp-seg button[aria-checked='true'] {
+    background: color-mix(in oklab, var(--color-accent) 18%, transparent);
+    color: var(--color-ink);
+    box-shadow: inset 0 -2px 0 var(--color-accent);
+}
+.pp-seg button:disabled { opacity: 0.4; cursor: not-allowed; }
+
+/* Swatches */
+.pp-sw {
+    display: inline-grid;
+    place-items: center;
+    width: 28px;
+    height: 28px;
+    flex-shrink: 0;
+    border: 1px solid oklch(100% 0 0 / 0.25);
+    font-family: var(--font-mono);
+    font-size: 11px;
+}
+.pp-sw.lg { width: 36px; height: 36px; }
+.pp-sw.none {
+    background: repeating-linear-gradient(45deg, var(--color-surface-3) 0 4px, var(--color-surface-2) 4px 8px);
+    border-style: dashed;
+    color: var(--color-mute);
+}
+
+/* ΔE badges */
+.pp-de {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    padding: 2px 6px;
+    border: 1px solid currentColor;
+    white-space: nowrap;
+}
+.pp-de.good { color: oklch(76% 0.14 150); }
+.pp-de.close { color: var(--color-accent); }
+.pp-de.far { color: oklch(72% 0.17 25); }
+.pp-de.none { color: var(--color-mute); }
+
+/* Key/value grid */
+.pp-kv {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: var(--space-xs) var(--space-lg);
+    font-size: var(--text-sm);
+    align-items: baseline;
+}
+.pp-kv dt {
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--color-mute);
+}
+.pp-kv dd { font-family: var(--font-mono); overflow-wrap: anywhere; }
+
+/* Progress bar */
+.pp-bar {
+    height: 8px;
+    background: var(--color-surface-3);
+    border: 1px solid var(--color-hair);
+    overflow: hidden;
+}
+.pp-bar > div {
+    height: 100%;
+    background: var(--color-accent);
+    transition: width 0.4s ease;
+}
+@media (prefers-reduced-motion: reduce) {
+    .pp-bar > div { transition: none; }
+}
+
+/* Cards */
+.pp-card {
+    border: 1px solid var(--color-hair);
+    background: color-mix(in oklab, var(--color-surface-2) 70%, transparent);
+    padding: var(--space-lg);
+}

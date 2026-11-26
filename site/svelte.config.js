@@ -22,7 +22,7 @@ const config = {
         prerender: {
             // Crawl from / + give every route an explicit entry so the
             // SPA fallback isn't the only HTML in the output.
-            entries: ['/', '/docs', '/cli', '/printers'],
+            entries: ['/', '/docs', '/cli', '/printers', '/print'],
             handleHttpError: ({ path, message }) => {
                 console.warn(`prerender warn @ ${path}: ${message}`);
             }

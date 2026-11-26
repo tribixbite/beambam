@@ -104,7 +104,9 @@ body::before {
     position: fixed;
     inset: 0;
     pointer-events: none;
-    z-index: 0;
+    /* Behind everything: SvelteKit mounts the app in a `display: contents` div, which
+       the `body > *` rule below cannot lift, so z-index 0 drew the grid over content. */
+    z-index: -1;
     background-image:
         linear-gradient(to right, var(--color-grid) 1px, transparent 1px),
         linear-gradient(to bottom, var(--color-grid) 1px, transparent 1px);

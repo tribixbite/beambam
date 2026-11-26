@@ -4,13 +4,32 @@ All notable changes to this project.
 
 ## [Unreleased]
 
+## v1.8.0 — print any file from beambam.boo (2026-11-26)
+
 ### Added
+- **beambam.boo/print**: a start-to-finish print page for the daemon on your
+  device or LAN (`beambam daemon --http 127.0.0.1:8765 --cors-origin
+  https://beambam.boo`). Bring a Bambu / Orca 3MF, an STL / OBJ or a sliced
+  `.gcode.3mf`; a 3D preview with the painted colours; print settings;
+  slicing on the daemon; one row per filament with a spool picker (material
+  first, then ΔE), beambam's checks re-run when spools change, and a
+  Left / Right nozzle switch that re-slices; Start print behind a plate-clean
+  check; a live job view with pause / resume / stop.
+- A Bambu project made for another printer (a P2S project from MakerWorld) is
+  sliced for the X2D with its bundled profiles, keeping the model, paint,
+  filament assignment and the project's walls, infill, shells and supports;
+  the job says so (`retargeted_from`). It used to be sliced as a one-nozzle
+  P2S print file, which also ignored a nozzle choice.
 - `POST /slice` slices bare meshes (STL / OBJ / STEP, geometry-only 3MF) with
   the bundled X2D 0.4 mm profiles, for the printer's track switch, and takes
   `X-Slice-Options` (layer height, walls, infill, supports, brim, a manual
   nozzle per filament, the spools' filament ids) for projects and meshes
   (`beambam/slice_options.py`, docs/HTTP_API.md). `/healthz` advertises
   `slice-options` and `slice-mesh`.
+
+### Fixed
+- `/print/plan` refuses a print file sliced for a printer with another number
+  of nozzles than the connected one (a P2S file on the X2D).
 
 ## v1.7.0 — signed control on LAN, a guarded daemon, real nozzle reports (2026-11-26)
 
