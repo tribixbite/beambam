@@ -65,6 +65,10 @@ Running GUI apps (BambuStudio / wxWidgets 3.3) on termux-x11. These lessons were
   kill "chromium on port N" without checking whose it is. Edge on the phone: CDP via
   `adb forward tcp:9238 localabstract:chrome_devtools_remote` only answers while Edge is in the foreground; the first
   request after allowing its "reach apps on this device" prompt took ~7 s.
+- **Headless Chromium on this phone has no WebGL** (not even `--use-angle=swiftshader --enable-unsafe-swiftshader`):
+  the /print 3D preview shows its "unavailable" fallback there. Check the preview in Edge on the phone (screen
+  unlocked; `NotificationShade` focus means locked, and Edge then renders nothing). Everything else on /print
+  tests fine headless.
 - **No reverse-DNS on the daemon's start path:** `socket.getfqdn()` takes ~30 s on the macOS CI
   runners, and in `http_validate.allowed_host_names` (run before the bind) it made every HTTP
   test there fail with "connection refused" (2026-11-25).
