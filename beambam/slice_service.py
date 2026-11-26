@@ -187,6 +187,7 @@ def slice_project(src: Path, out_dir: Path, *, timeout: float = SLICE_TIMEOUT_S,
             cmd.append("--has-filament-switcher=1")
         model = src.resolve()
     retargeted = None
+    adopt_notes: list[str] = []          # what the spools could not change in a project (project_sync)
     if not mesh:
         settings = project_settings(src)
         retargeted = made_for_another_printer(settings)
@@ -205,7 +206,7 @@ def slice_project(src: Path, out_dir: Path, *, timeout: float = SLICE_TIMEOUT_S,
         model = src.resolve()
         if opts != SliceOptions():
             model = out_dir / f"options_{src.name}"
-            settings = apply_to_project(src, model, opts, r)
+            settings = apply_to_project(src, model, opts, r, adopt_notes)
         # The CLI sets these two to false unless they are on its command line
         # (BambuStudio.cpp, "In CLI mode, default enable_filament_dynamic_map to
         # false"), whatever the project says. The track switch changes how
@@ -234,13 +235,24 @@ def slice_project(src: Path, out_dir: Path, *, timeout: float = SLICE_TIMEOUT_S,
         return {"ok": False, "warnings": warnings,
                 "error": f"{res.get('error_string') or 'slicing failed'} (code {res.get('return_code')})"
                          + (f": {why}" if why else "")}
-    warnings += sliced_warnings(out)
+    warnings += adopt_notes + sliced_warnings(out)
     per = [float(f.get("total_used_g", 0)) for p in plates for f in p.get("filaments", [])]
+    # Grams by 1-based filament number, summed over plates (`grams_per_filament` lists only the used ones,
+    # in order, without their numbers).
+    by_number: dict[str, float] = {}
+    for pl in plates:
+        for f in pl.get("filaments", []):
+            if isinstance(f.get("id"), int):
+                by_number[str(f["id"])] = by_number.get(str(f["id"]), 0.0) + float(f.get("total_used_g", 0))
     if retargeted:
         warnings.insert(0, f"Made for {retargeted}: sliced for the X2D with its own profiles (the project's "
                            "walls, infill, shells and supports kept)")
     return {"ok": True, "mesh": mesh, "retargeted_from": retargeted, "file": str(out), "seconds": sum(float(p.get("total_predication", 0)) for p in plates),
-            "grams": sum(per), "grams_per_filament": per, "warnings": warnings,
+            "grams": sum(per), "grams_per_filament": per, "grams_by_filament": by_number,
+            "plates": len(plates),
+            # Per sliced plate, in order: a print starts one plate (/print `plate`, default 1).
+            "plate_seconds": [float(p.get("total_predication", 0)) for p in plates],
+            "plate_grams": [sum(float(f.get("total_used_g", 0)) for f in p.get("filaments", [])) for p in plates], "warnings": warnings,
             "machine_profile": machine.name if machine else None, "wall_seconds": time.time() - t0}
 
 
@@ -266,6 +278,9 @@ def sliced_warnings(gcode_3mf: Path) -> list[str]:
         if text not in out:
             out.append(text)
     return out
+
+
+KEEP_JOBS = 50                         # slice jobs remembered for GET /slice/jobs/<id>
 
 
 @dataclass
@@ -313,6 +328,9 @@ class SliceJobs:
             self._busy = True
             job = SliceJob(id=uuid.uuid4().hex[:12], source=str(src), name=name or "")
             self._jobs[job.id] = job
+            # Keep the last KEEP_JOBS jobs: a client polls its job for minutes, not days.
+            for old in list(self._jobs)[:-KEEP_JOBS]:
+                del self._jobs[old]
         threading.Thread(target=self._run, args=(job, src, options, track_switch), name=f"slice-{job.id}",
                          daemon=True).start()
         return job
@@ -327,7 +345,8 @@ class SliceJobs:
 
     def _run(self, job: SliceJob, src: Path, options: SliceOptions | None = None,
              track_switch: bool | None = None) -> None:
-        out_root = self._out_root or (Path.home() / ".x2d" / "uploads" / "sliced")
+        from beambam.paths import config_path
+        out_root = self._out_root or (config_path("uploads") / "sliced")
         try:
             self._set(job, "slicing", f"slicing {src.name}")
             res = slice_project(src, out_root / job.id, name=job.name or None, options=options,

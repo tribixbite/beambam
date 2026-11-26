@@ -78,6 +78,9 @@ export interface LoadedModel {
 export const DEFAULT_BED = { minX: 0, minY: 0, maxX: 256, maxY: 256 };
 /** The colour a mesh shows before a spool is chosen. */
 export const NEUTRAL = '#C8C8C8';
+/** Preview budget: placed parts and triangles a 3MF may expand to (a phone has ~2M triangles in hand). */
+export const MAX_PARTS = 5000;
+export const MAX_TRIANGLES = 12_000_000;
 
 // ------------------------------------------------------------------ XML attribute helpers
 
@@ -496,6 +499,11 @@ export interface Metadata {
     modelSettings: string;
     projectSettings: string;
     sliceInfo: string;
+    /**
+     * The archive holds G-code (`Metadata/plate_N.gcode`): a print file. A project saved after slicing keeps
+     * slice_info but no G-code, and is still a project. Undefined: not known (slice_info decides).
+     */
+    hasGcode?: boolean;
 }
 
 /**
@@ -511,6 +519,7 @@ export function assemble3mf(name: string, files: Map<string, ModelFile>, meta: M
     const sliced = meta.sliceInfo ? parseSliceInfo(meta.sliceInfo) : null;
 
     const parts: PreviewPart[] = [];
+    let triangles = 0;
     const visit = (path: string, oid: string, xf: Xf, top: ObjectSettings | undefined, depth: number): void => {
         const file = files.get(path);
         const obj = file?.objects.get(oid);
@@ -529,6 +538,11 @@ export function assemble3mf(name: string, files: Map<string, ModelFile>, meta: M
                     indices[i + 2] = t;
                 }
             }
+            // Nested components multiply (a 618-byte zip expanded to 46,656 parts): a budget, not a hang.
+            triangles += indices.length / 3;
+            if (parts.length >= MAX_PARTS || triangles > MAX_TRIANGLES) {
+                throw new Error(`this 3MF places more than ${MAX_PARTS.toLocaleString()} parts or ${MAX_TRIANGLES.toLocaleString()} triangles: too large to preview`);
+            }
             parts.push({
                 name: part?.name || top?.name || `object ${oid}`,
                 filament,
@@ -546,14 +560,15 @@ export function assemble3mf(name: string, files: Map<string, ModelFile>, meta: M
     if (!parts.length) throw new Error('this 3MF has no printable objects on its plate');
 
     let filaments = project.filaments;
-    if (sliced) {
+    const isSliced = /\.gcode\.3mf$/i.test(name) || (meta.hasGcode ?? !!sliced);
+    if (sliced && isSliced) {
         // A sliced file's own record of each filament (with grams) wins over the project list.
         const n = Math.max(filaments.length, ...sliced.filaments.keys());
         filaments = Array.from({ length: n }, (_, i) =>
             sliced.filaments.get(i + 1) ?? filaments[i] ?? { colour: NEUTRAL, type: '', grams: null, profileId: '' }
         );
     }
-    const kind: ModelKind = sliced || /\.gcode\.3mf$/i.test(name) ? 'sliced' : project.hasPrintSettings ? 'project' : 'geometry';
+    const kind: ModelKind = isSliced || /\.gcode\.3mf$/i.test(name) ? 'sliced' : project.hasPrintSettings ? 'project' : 'geometry';
     if (kind === 'geometry') {
         // No project: one filament the user picks; place it on the bed like a mesh when it is off the plate.
         for (const p of parts) p.filament = 1;
@@ -568,7 +583,7 @@ export function assemble3mf(name: string, files: Map<string, ModelFile>, meta: M
         filaments,
         bed: project.bed,
         triangles: countTriangles(parts),
-        sliced: sliced?.info ?? null,
+        sliced: isSliced ? (sliced?.info ?? null) : null,
         plate: project.plate
     };
 }

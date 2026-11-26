@@ -55,6 +55,8 @@
     const STORE_KEY = 'beambam.print.daemon';
     const POLL_MS = 4000;
     const POLL_JOB_MS = 2500;
+    const HEALTH_EVERY_MS = 30_000;
+    let healthAt = Date.now();
     const MAX_UPLOAD = 200 * 1024 * 1024;
 
     // ---------------------------------------------------------------- connection
@@ -141,14 +143,18 @@
         status = null;
         trays = [];
         traySig = '';
+        startedHere = false;
+        resetSlice();                   // the print file lives on that daemon
         remember(urlInput, false);
     }
 
     /** Read the printer's report: spools and status. */
     async function readPrinter(): Promise<void> {
         if (!daemon) return;
+        const d = daemon;
         try {
-            const st = await daemon.state();
+            const st = await d.state();
+            if (daemon !== d) return;               // disconnected meanwhile
             const t = readTrays(st);
             const sig = traySignature(t);
             trays = t;
@@ -157,7 +163,13 @@
             readAt = Date.now();
             stateError = '';
         } catch (e) {
+            if (daemon !== d) return;
             stateError = e instanceof Error ? e.message : String(e);
+        }
+        // /healthz again now and then: the printer going quiet, the camera proxy started, a daemon update.
+        if (Date.now() - healthAt > HEALTH_EVERY_MS) {
+            healthAt = Date.now();
+            void refreshHealth();
         }
     }
 
@@ -196,6 +208,10 @@
 
     async function takeFile(f: File | undefined | null): Promise<void> {
         if (!f) return;
+        if (starting) {
+            fileError = 'A print is being sent to the printer: wait for it before opening another file.';
+            return;
+        }
         const t = fileType(f.name);
         fileError = '';
         if (t === 'unknown') {
@@ -262,6 +278,13 @@
     /** The printer has another plate on than the one the slice is for (only when both are known). */
     const plateDiffers = $derived(!!printerPlate && !!slicePlate && printerPlate !== slicePlate && ftype !== 'gcode.3mf');
 
+    /** The plate beambam's plan names as the printer's (its table may know more markers than this page). */
+    function usePlanPlate(): void {
+        const b = plan?.bed?.printer;
+        if (b && (BED_TYPES as readonly string[]).includes(b)) setSetting('bed', b as BedType);
+        else usePrinterPlate();
+    }
+
     function usePrinterPlate(): void {
         if (printerPlate) setSetting('bed', printerPlate);
     }
@@ -301,11 +324,18 @@
         startDone = '';
         startError = '';
         confirmOpen = false;
+        sliceTick = '';
+        slicing = false;                // a slice still running for the previous file is dropped when it lands
+        reslicing = false;
     }
 
     /** Slice the file with the current settings (and `nozzles`, when the user moved filaments). */
     async function slice(nozzles: number[] | null = null, what = ''): Promise<void> {
-        if (!daemon || !file || !model) return;
+        if (!daemon || !file || !model || slicing || reslicing) return;     // one slice at a time
+        // The file and daemon this slice is for: a result that lands after either changed is dropped, or a
+        // second file would print the first one's G-code under its own name.
+        const forSerial = fileSerial;
+        const d = daemon;
         const again = !!what;
         if (again) reslicing = true;
         else slicing = true;
@@ -315,16 +345,20 @@
         const mesh = isMeshKind && meshSpool ? { profileId: meshSpool.profileId, type: meshSpool.type, colour: meshSpool.colour } : null;
         const opts = hasOptions ? buildSliceOptions(settings, mesh, nozzles, adoptSpools) : null;
         try {
-            const res = await daemon.slice(file.name, file, opts ? optionsHeader(opts) : null, (sec, step) => {
-                sliceTick = `${again ? `Slicing again with ${what}` : 'Slicing'}: ${step || 'working'}… ${Math.round(sec)} s`;
+            const res = await d.slice(file.name, file, opts ? optionsHeader(opts) : null, (sec, step) => {
+                if (forSerial === fileSerial) sliceTick = `${again ? `Slicing again with ${what}` : 'Slicing'}: ${step || 'working'}… ${Math.round(sec)} s`;
             });
+            if (forSerial !== fileSerial || daemon !== d) return;
             sliceResult = res;
+            plan = null;                    // the plan was for the previous print file
+            startSlots = null;
             printFile = res.file;
             slicedKey = key;
             chosenNozzles = nozzles;
             sliceTick = '';
             resliceNote = again ? `Sliced again with ${what}: the time above is for it.` : '';
         } catch (e) {
+            if (forSerial !== fileSerial || daemon !== d) return;
             sliceError = e instanceof Error ? e.message : String(e);
             sliceTick = '';
         } finally {
@@ -335,15 +369,22 @@
 
     /** An already-sliced file goes straight to the daemon. */
     async function upload(): Promise<void> {
-        if (!daemon || !file) return;
+        if (!daemon || !file || slicing) return;
+        const forSerial = fileSerial;
+        const d = daemon;
         slicing = true;
         sliceError = '';
         sliceTick = 'Sending the print file to beambam…';
         try {
-            printFile = await daemon.upload(file.name, file);
+            const sent = await d.upload(file.name, file);
+            if (forSerial !== fileSerial || daemon !== d) return;
+            printFile = sent;
+            plan = null;
+            startSlots = null;
             slicedKey = settingsKey;
             sliceTick = '';
         } catch (e) {
+            if (forSerial !== fileSerial || daemon !== d) return;
             sliceError = e instanceof Error ? e.message : String(e);
             sliceTick = '';
         } finally {
@@ -352,9 +393,21 @@
     }
 
     const summary = $derived.by(() => {
-        if (sliceResult) return { seconds: sliceResult.seconds, grams: sliceResult.grams, per: sliceResult.gramsPerFilament };
+        if (sliceResult) {
+            // Filament-indexed grams (beambam ≥ 1.9 names each filament; older ones list the used ones in order).
+            const by = sliceResult.gramsByFilament;
+            const n = Math.max(0, ...Object.keys(by).map(Number));
+            const per = n ? Array.from({ length: n }, (_, i) => by[String(i + 1)] ?? 0) : sliceResult.gramsPerFilament;
+            // A print starts plate 1: show its numbers when the project has several plates.
+            const many = sliceResult.plateSeconds.length > 1;
+            return {
+                seconds: many ? sliceResult.plateSeconds[0] : sliceResult.seconds,
+                grams: many ? sliceResult.plateGrams[0] : sliceResult.grams,
+                per, plates: sliceResult.plateSeconds.length
+            };
+        }
         if (ftype === 'gcode.3mf' && model?.sliced)
-            return { seconds: model.sliced.seconds, grams: model.sliced.grams, per: model.filaments.map((f) => f.grams ?? 0) };
+            return { seconds: model.sliced.seconds, grams: model.sliced.grams, per: model.filaments.map((f) => f.grams ?? 0), plates: 1 };
         return null;
     });
 
@@ -408,6 +461,18 @@
     let startedHere = $state(false);
 
     const printerBusy = $derived(!!status && isBusy(status.state));
+    // "Started here" lasts for that job only: once it ends, a later job (Handy, the touchscreen) is not ours.
+    let startedJobBusy = false;          // our job has been seen running
+    let startedJobEnded = false;         // ... and then ended
+    $effect(() => {
+        if (!startedHere || !status) return;
+        if (isBusy(status.state)) {
+            if (startedJobEnded) {
+                startedHere = false;
+                startedJobBusy = startedJobEnded = false;
+            } else startedJobBusy = true;
+        } else if (startedJobBusy) startedJobEnded = true;
+    });
     const startBlock = $derived.by(() => {
         if (!daemon) return 'Connect to beambam first.';
         if (!printFile || !plan) return 'Slice the file first.';
@@ -427,8 +492,9 @@
             // The warnings on screen when Start was pressed are the user's OK; beambam checks the spools again.
             const said = await daemon.print(printFile, startSlots, plan.warnings.length > 0, (sec, what) => {
                 startTick = `${what || 'Sending'}… ${Math.round(sec)} s`;
-            });
+            }, plan.digest);
             startedHere = true;
+            startedJobBusy = startedJobEnded = false;
             startDone = said ? `The printer accepted the print: ${said}` : 'The printer accepted the print.';
             confirmOpen = false;
             plateClean = false;
@@ -436,6 +502,12 @@
             schedulePoll();
         } catch (e) {
             startError = e instanceof Error ? e.message : String(e);
+            // beambam re-planned (spools, plate or file changed): show that plan before anyone accepts it.
+            const changed = e instanceof DaemonError ? (e.body as { plan?: PrintPlan } | undefined)?.plan : undefined;
+            if (changed && Array.isArray(changed.filaments)) {
+                plan = { ...changed, errors: changed.errors ?? [], warnings: changed.warnings ?? [], notes: changed.notes ?? [] };
+                confirmOpen = false;
+            }
         } finally {
             starting = false;
             startTick = '';
@@ -728,7 +800,7 @@
             {#if isMeshKind && daemon && !hasMesh}
                 <div class="pp-msg warn">This beambam slices Bambu Studio projects only. Update it (<code>pip install -U beambam</code>) to slice STL / OBJ files.</div>
             {/if}
-            <button type="button" class="pp-btn primary wide" disabled={!canSlice || reslicing} onclick={() => slice(null)}>
+            <button type="button" class="pp-btn primary wide" disabled={!canSlice || reslicing} onclick={() => slice(chosenNozzles)}>
                 {slicing ? 'Slicing…' : printFile && !stale ? 'Slice again' : 'Slice'}
             </button>
             {#if !daemon && model}<p class="pp-muted pp-small">Connect to beambam (step 01) to slice.</p>{/if}
@@ -744,6 +816,9 @@
             </dl>
             {#if summary.grams <= 0}
                 <div class="pp-msg warn">beambam reports no filament used: the model may be too small or too thin to print. Check its size and the layer height.</div>
+            {/if}
+            {#if summary.plates > 1}
+                <div class="pp-msg warn">This project has {summary.plates} plates. beambam prints plate 1: the time and filament above are plate 1's. Open the project in Bambu Studio to print another plate.</div>
             {/if}
             {#if resliceNote}<div class="pp-msg ok">{resliceNote}</div>{/if}
             {#each sliceResult?.warnings ?? [] as w}<div class="pp-msg warn">⚠ {w}</div>{/each}
@@ -762,12 +837,12 @@
                     {traySig}
                     canRenozzle={canRenozzle}
                     nozzles={chosenNozzles}
-                    {reslicing}
+                    reslicing={reslicing || slicing}
                     grams={summary?.per ?? []}
                     initialSlots={isMeshKind && meshTray !== null ? [meshTray] : null}
                     locked={starting}
                     onrenozzle={(n, what) => slice(n, what)}
-                    onchange={(p, s) => { plan = p; startSlots = s; }}
+                    onchange={(p, s, f) => { plan = f === printFile ? p : null; startSlots = f === printFile ? s : null; }}
                 />
             {/key}
             {#if spoolSync && hasProjectSync && hasOptions}
@@ -812,7 +887,7 @@
             {/if}
             {#if planPlateDiffers && plan?.bed?.printer && ftype !== 'gcode.3mf' && hasOptions}
                 <button type="button" class="pp-btn" disabled={slicing || reslicing}
-                        onclick={() => { usePrinterPlate(); void slice(); }}>
+                        onclick={() => { usePlanPlate(); void slice(chosenNozzles); }}>
                     Slice again for the {plateText(plan.bed.printer)}
                 </button>
             {/if}
@@ -833,7 +908,7 @@
             <div class="pp-card confirm" role="dialog" aria-labelledby="confirm-title">
                 <div class="pp-step-title" id="confirm-title" style="font-size: var(--text-lg);">Before it starts</div>
                 <ul class="confirm-list pp-small">
-                    <li>File: <span class="pp-mono">{file?.name}</span>{summary ? ` · ${secondsText(summary.seconds)} · ${gramsText(summary.grams)}` : ''}</li>
+                    <li>File: <span class="pp-mono">{printFile?.split(/[\\/]/).pop()}</span>{summary ? ` · ${secondsText(summary.seconds)} · ${gramsText(summary.grams)}` : ''}{summary && summary.plates > 1 ? ` (plate 1 of ${summary.plates})` : ''}</li>
                     <li>Spools: {plan?.filaments.map((f) => `${f.filament}→${f.tray ? f.tray.label.replace(/\s*\(slot \d+\)$/, '') : '?'}`).join(', ')}</li>
                     {#if plan?.warnings.length}<li class="pp-warn-text">Starting accepts {plan.warnings.length} ⚠ warning{plan.warnings.length > 1 ? 's' : ''}.</li>{/if}
                 </ul>
@@ -857,7 +932,10 @@
         {#if daemon && status && (isBusy(status.state) || startedHere || status.state === 'FINISH' || status.state === 'FAILED')}
             <div class="job-wrap">
                 <div class="pp-legend">On the printer now</div>
-                <JobView {status} {daemon} {startedHere} {readAt} />
+                {#key status.job}
+                    <!-- A new job starts with its controls locked and no Stop confirm left open. -->
+                    <JobView {status} {daemon} {startedHere} {readAt} />
+                {/key}
             </div>
         {/if}
     </section>

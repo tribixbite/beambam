@@ -63,7 +63,8 @@
         attempt += 1;
     }
 
-    async function failed(): Promise<void> {
+    async function failed(e: Event): Promise<void> {
+        if (e.currentTarget && torn.has(e.currentTarget)) return;
         showing = false;
         checking = true;
         const why = await daemon.cameraProblem();
@@ -75,6 +76,21 @@
             return;
         }
         problem = why ?? 'The live view stopped.';
+    }
+
+    /**
+     * Close the MJPEG connection when the image goes (hidden, toggled off, a retry): Chrome keeps a removed
+     * multipart <img> streaming unless its src is cleared first (seen: 14 s and counting, a second stream on
+     * the next show).
+     */
+    const torn = new WeakSet<EventTarget>();
+    function stream(node: HTMLImageElement): { destroy: () => void } {
+        return {
+            destroy: () => {
+                torn.add(node);             // its error event from the cleared src is not a camera failure
+                node.removeAttribute('src');
+            }
+        };
     }
 
     const streaming = $derived(on && !hidden && available !== false && available !== null && !problem);
@@ -104,7 +120,9 @@
         <div class="cam-frame" class:ready={showing}>
             {#if streaming}
                 {#key attempt}
-                    <img src={daemon.cameraUrl(attempt)} alt="Live view of the printer's chamber"
+                    <!-- crossorigin: the request carries this page's Origin, which beambam checks (another site's
+                         page cannot start the camera). -->
+                    <img use:stream src={daemon.cameraUrl(attempt)} alt="Live view of the printer's chamber" crossorigin="anonymous"
                          onload={() => (showing = true)} onerror={failed} />
                 {/key}
             {/if}
@@ -132,6 +150,6 @@
     .cam-wait { color: var(--color-mute); padding: var(--space-md); text-align: center; }
     .pp-link {
         background: none; border: 0; padding: 0; color: var(--color-accent); font: inherit;
-        text-decoration: underline; cursor: pointer; min-height: 0;
+        text-decoration: underline; cursor: pointer; min-height: 44px; padding-inline: var(--space-xs);
     }
 </style>

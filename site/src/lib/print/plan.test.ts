@@ -38,9 +38,12 @@ describe('plan helpers', () => {
         expect(nozzleMismatches(plan, null)).toEqual([]);
     });
     test('slots from a plan and moving one row', () => {
-        expect(slotsFromPlan(plan)).toEqual([3, 7]);
+        // Filament-indexed (filaments 1 and 3 used): beambam reads a list with -1 by filament number.
+        expect(slotsFromPlan(plan)).toEqual([3, -1, 7]);
         expect(slotsFromPlan({ ...plan, filaments: [{ ...plan.filaments[0], tray: null }] })).toBeNull();
-        expect(withSlot(plan, null, 1, 12)).toEqual([3, 12]);
+        expect(withSlot(plan, null, 1, 12)).toEqual([3, -1, 12]);         // row 1 is filament 3
+        expect(withSlot(plan, [3, -1, 7], 0, 5)).toEqual([5, -1, 7]);
+        expect(optionsHeader({ filament_types: ['PLA-Ü'] })).toBe('{"filament_types":["PLA-\\u00dc"]}');
     });
     test('spool choices: closest first, a vanished current tray kept last', () => {
         const trays = readTrays({ print: { ams: { ams: [{ id: '0', tray: [

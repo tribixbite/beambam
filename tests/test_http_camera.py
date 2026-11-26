@@ -32,8 +32,9 @@ def _wait_port(port: int) -> None:
     raise TimeoutError(port)
 
 
-def _fake_camera() -> int:
-    """A camera proxy serving /cam.mjpeg the way cmd_camera does: three frames, then it ends the stream."""
+def _fake_camera(forever: bool = False) -> int:
+    """A camera proxy serving /cam.mjpeg the way cmd_camera does: three frames, then it ends the stream (or, with
+    `forever`, a frame every 0.2 s until the viewer leaves)."""
     class H(http.server.BaseHTTPRequestHandler):
         def log_message(self, *_a):
             return
@@ -46,10 +47,16 @@ def _fake_camera() -> int:
             self.send_response(200)
             self.send_header("Content-Type", "multipart/x-mixed-replace; boundary=frame")
             self.end_headers()
-            for f in FRAMES:
-                self.wfile.write(b"--frame\r\nContent-Type: image/jpeg\r\n"
-                                 + f"Content-Length: {len(f)}\r\n\r\n".encode() + f + b"\r\n")
-                self.wfile.flush()
+            frames = FRAMES * (10_000 if forever else 1)
+            try:
+                for f in frames:
+                    self.wfile.write(b"--frame\r\nContent-Type: image/jpeg\r\n"
+                                     + f"Content-Length: {len(f)}\r\n\r\n".encode() + f + b"\r\n")
+                    self.wfile.flush()
+                    if forever:
+                        time.sleep(0.2)
+            except OSError:
+                return
 
     port = _free_port()
     srv = http.server.ThreadingHTTPServer(("127.0.0.1", port), H)
@@ -66,8 +73,11 @@ def _daemon(camera_url: str) -> int:
     return port
 
 
-def _get(port: int, path: str, origin: str = "https://beambam.boo"):
-    r = urllib.request.Request(f"http://127.0.0.1:{port}{path}", headers={"Origin": origin})
+def _get(port: int, path: str, origin: str | None = "https://beambam.boo", **headers: str):
+    h = {k.replace("_", "-"): v for k, v in headers.items()}
+    if origin:
+        h["Origin"] = origin
+    r = urllib.request.Request(f"http://127.0.0.1:{port}{path}", headers=h)
     try:
         with urllib.request.urlopen(r, timeout=10) as resp:
             return resp.status, resp.read(), dict(resp.headers)
@@ -96,3 +106,45 @@ def test_no_proxy_answers_503_with_what_to_run():
     assert headers.get("Access-Control-Allow-Origin") == "https://beambam.boo"   # the page can read why
     assert json.loads(_get(port, "/healthz")[1])["camera"] is False
     assert camera_listening(dead) is False
+
+
+def test_someone_elses_page_cannot_start_the_camera():
+    """An <img> on a page the daemon does not allow arrives cross-site with no allowed Origin: 403, for the stream
+    and the snapshot. The allowed pages use crossorigin images, which send their Origin."""
+    port = _daemon(f"http://127.0.0.1:{_fake_camera()}")
+    for path in ("/camera.mjpeg", "/snapshot.jpg"):
+        assert _get(port, path, None, Sec_Fetch_Site="cross-site")[0] == 403
+        assert _get(port, path, "https://evil.example", Sec_Fetch_Site="cross-site")[0] == 403
+    code, body, _ = _get(port, "/camera.mjpeg", "https://beambam.boo", Sec_Fetch_Site="cross-site")
+    assert code == 200 and FRAMES[0] in body
+    assert _get(port, "/camera.mjpeg", None)[0] == 200          # curl, Home Assistant: no browser headers
+
+
+def test_viewers_are_capped():
+    from beambam.serve_http import CAMERA_MAX_VIEWERS
+    port = _daemon(f"http://127.0.0.1:{_fake_camera(forever=True)}")
+    held = []
+    for _ in range(CAMERA_MAX_VIEWERS):
+        r = urllib.request.urlopen(f"http://127.0.0.1:{port}/camera.mjpeg", timeout=10)
+        r.read(10)
+        held.append(r)
+    assert _get(port, "/camera.mjpeg", None)[0] == 503
+    held.pop().close()
+    deadline = time.time() + 10
+    while time.time() < deadline and _get(port, "/healthz")[0] != 200:
+        time.sleep(0.1)
+    for _ in range(50):                                          # the freed slot is taken again
+        try:
+            r = urllib.request.urlopen(f"http://127.0.0.1:{port}/camera.mjpeg", timeout=10)
+            held.append(r)
+            break
+        except urllib.error.HTTPError:
+            time.sleep(0.2)
+    else:
+        raise AssertionError("the closed viewer's slot was never freed")
+    for r in held:
+        r.close()
+
+
+def test_a_bad_camera_url_is_not_listening():
+    assert camera_listening("http://127.0.0.1:99999") is False

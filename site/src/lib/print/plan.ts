@@ -108,9 +108,12 @@ export function buildSliceOptions(
     return Object.keys(o).length ? o : null;
 }
 
-/** Compact JSON for the header (the daemon caps it at 4096 bytes). */
+/**
+ * Compact JSON for the header (the daemon caps it at 4096 bytes). Non-ASCII (a spool type or preset name the
+ * printer reports) is escaped: a header value with other characters makes fetch throw.
+ */
 export function optionsHeader(o: SliceOptions): string {
-    return JSON.stringify(o);
+    return JSON.stringify(o).replace(/[\u007f-\uffff]/g, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`);
 }
 
 /** One filament row of beambam's plan. */
@@ -132,6 +135,8 @@ export interface PrintPlan {
     errors: string[];
     warnings: string[];
     notes: string[];
+    /** A hash of what this plan shows; POST /print with it starts only this plan (beambam ≥ 1.9). */
+    digest?: string;
     /** The plate the file was sliced for and the plate on the printer (beambam with "plate-check"). */
     bed?: { file: string | null; printer: string | null; printer_marker: string | null };
     ok?: boolean;
@@ -160,16 +165,30 @@ export function isTwoNozzlePlan(plan: PrintPlan): boolean {
     return plan.filaments.some((f) => nozzleNumber(f.nozzle) !== null);
 }
 
-/** The trays beambam assigned, file order; null when one has none (it cannot print yet). */
+/**
+ * The trays beambam assigned, filament-indexed (index 0 = filament 1, -1 = a filament the plate does not use):
+ * the form beambam's `index_slots` reads unambiguously (a list with -1 in it is always filament-indexed, and one
+ * without is the same in both of its readings). Null when a used filament has no tray (it cannot print yet).
+ */
 export function slotsFromPlan(plan: PrintPlan): number[] | null {
-    const ids = plan.filaments.map((f) => f.tray?.tray_id);
-    return ids.every((x): x is number => typeof x === 'number') ? ids : null;
+    if (!plan.filaments.length || plan.filaments.some((f) => typeof f.tray?.tray_id !== 'number')) return null;
+    return filamentIndexed(plan, null);
 }
 
-/** `slots` with filament row `index` moved to tray `trayId` (rows without a tray keep -1). */
+/** Filament-indexed trays from the plan (`slots` taking precedence where given), -1 for no tray. */
+function filamentIndexed(plan: PrintPlan, slots: number[] | null): number[] {
+    const n = Math.max(0, ...plan.filaments.map((f) => f.filament), slots?.length ?? 0);
+    const out = new Array<number>(n).fill(-1);
+    for (const f of plan.filaments) out[f.filament - 1] = f.tray?.tray_id ?? -1;
+    slots?.forEach((s, i) => { if (s >= 0) out[i] = s; });
+    return out;
+}
+
+/** `slots` (filament-indexed) with the filament of plan row `index` moved to tray `trayId`. */
 export function withSlot(plan: PrintPlan, slots: number[] | null, index: number, trayId: number): number[] {
-    const base = slots ?? plan.filaments.map((f) => f.tray?.tray_id ?? -1);
-    return base.map((s, k) => (k === index ? trayId : s));
+    const out = filamentIndexed(plan, slots);
+    out[plan.filaments[index].filament - 1] = trayId;
+    return out;
 }
 
 /** A spool choice in a picker, ranked against a filament colour. */

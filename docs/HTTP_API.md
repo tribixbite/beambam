@@ -45,7 +45,7 @@ beambam daemon --http 127.0.0.1:8765 --cors-origin https://pokefit.party
 | `GET /state.events` | Server-sent events: the report on every printer push |
 | `GET /ams` | The AMS block of the report |
 | `GET /healthz` | 200 while the printer reports, 503 when it went silent; `version`, `capabilities`, and `camera` (the camera proxy answers) |
-| `GET /camera.mjpeg` | The chamber camera, live (`multipart/x-mixed-replace`, renders in an `<img>`), relayed from the camera proxy (`beambam cam start`, or `daemon --camera`); 503 with the reason when the proxy is down |
+| `GET /camera.mjpeg` | The chamber camera, live (`multipart/x-mixed-replace`, renders in an `<img>`), relayed from the camera proxy (`beambam cam start`, or `daemon --camera`); 503 with the reason when the proxy is down or 4 viewers already watch. A browser page from another site needs an allowed Origin (`--cors-origin`; use `<img crossorigin="anonymous">`), else 403 |
 | `GET /snapshot.jpg` | One frame from the camera proxy |
 | `GET /doctor` | `beambam doctor`'s checks on the cached report |
 | `POST /analyze` | Raw `.gcode.3mf` body → `beambam analyze` report (time, weight, purge, nozzle swaps) |
@@ -91,6 +91,9 @@ Errors refuse the print however it is asked:
 - a tray that cannot reach the filament's nozzle.
 
 Warnings (brand, profile, colour) refuse unless `accept_warnings` is true. Only set it after the user has seen them.
+The plan also carries `digest`. Send it back as `plan_digest` with `/print`, and beambam starts only that plan: if
+the spools, the plate or the file changed since, `/print` answers 409 with `plan_changed: true` and the new
+`plan`. That way `accept_warnings` never covers a warning the user did not see.
 One print is sent to a printer at a time.
 
 ## Slicing a project
@@ -154,7 +157,10 @@ Optional header `X-Slice-Options` (compact JSON, up to 4 KB) applies to projects
 
 `POST /project/update` takes the same body, `X-Filename` and `X-Slice-Options` as `/slice` for a project and
 answers the project with the options applied, as the `.3mf` to keep (`Content-Disposition: <name>_printer.3mf`):
-what `/slice` would slice. 400 for a sliced file or a 3MF without print settings.
+what `/slice` would slice. 400 for a sliced file or a 3MF without print settings. `X-Beambam-Warnings` (a JSON list)
+says what the spools could not change: a spool with no bundled profile, or a project for another nozzle size, keeps
+the project's preset. A slice job's `warnings` say the same, and it reports `grams_by_filament` (by filament
+number), `plates`, `plate_seconds` and `plate_grams` (a print starts plate 1).
 
 `/print/plan` also compares the plate: when the printer reports a known plate marker (`device.plate.cur_id`;
 P0301 = SuperTack, `filament_mapping.PLATE_MARKERS`) and the file was sliced for another plate, `warnings` says so

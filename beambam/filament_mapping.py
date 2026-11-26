@@ -90,6 +90,21 @@ MAPPING_WIDTH = 10
 PLATE_MARKERS: dict[str, str] = {"P0301": "Supertack Plate"}
 
 
+def sliced_bed_type(z: zipfile.ZipFile, plate: int, ps: dict) -> str | None:
+    """The plate type (`curr_bed_type` name) plate `plate` of a .gcode.3mf was sliced for. A plate's own
+    `bed_type` overrides the project's (Bambu applies the plate config over the project, BambuStudio.cpp), and
+    the slicer records the result in `Metadata/plate_N.json` (`"bed_type": "supertack_plate"`); without it, the
+    project's `curr_bed_type`."""
+    from beambam.print_job import _BED_NAME_TO_MQTT
+    try:
+        meta = json.loads(z.read(f"Metadata/plate_{plate}.json").decode("utf-8", "replace"))
+    except (KeyError, ValueError):
+        meta = {}
+    by_mqtt = {v: k for k, v in _BED_NAME_TO_MQTT.items()}
+    got = by_mqtt.get(str(meta.get("bed_type") or "")) if isinstance(meta, dict) else None
+    return got or (str(ps.get("curr_bed_type") or "") or None)
+
+
 def installed_plate(state: dict) -> tuple[str | None, str | None]:
     """(marker, plate name) of the build plate the printer reports; the name is None for an unknown marker."""
     p = state.get("print", state) if isinstance(state, dict) else {}
@@ -186,6 +201,7 @@ def read_project(path: Path | str, plate: int = 1) -> ProjectInfo:
             ps = json.loads(z.read("Metadata/project_settings.config").decode("utf-8", "replace"))
             slice_info = (z.read("Metadata/slice_info.config").decode("utf-8", "replace")
                           if "Metadata/slice_info.config" in names else "")
+            bed_type = sliced_bed_type(z, plate, ps)
     except (zipfile.BadZipFile, KeyError, json.JSONDecodeError, OSError) as e:
         raise MappingError(f"cannot read {path.name} as a sliced .gcode.3mf: {e}") from e
     if f"Metadata/plate_{plate}.gcode" not in names:
@@ -256,7 +272,7 @@ def read_project(path: Path | str, plate: int = 1) -> ProjectInfo:
         used=used, nozzle_count=nozzle_count,
         has_switcher=_flag(ps.get("has_filament_switcher")),
         dynamic_nozzle_map=dynamic,
-        bed_type=str(ps.get("curr_bed_type") or "") or None,
+        bed_type=bed_type,
     )
 
 
@@ -304,6 +320,7 @@ class Topology:
     nozzle_rack: bool = False    # hotend rack (H2C): nozzle mapping is printer-computed
     plate_marker: str | None = None   # `device.plate.cur_id` (e.g. "P0301")
     plate: str | None = None          # its `curr_bed_type` name when the marker is known (PLATE_MARKERS)
+    nozzles_reported: bool = True     # the report listed the extruders (a partial report: count unknown)
 
     def tray(self, tray_id: int) -> Tray | None:
         return next((t for t in self.trays if t.tray_id == tray_id), None)
@@ -401,7 +418,7 @@ def read_topology(state: dict) -> Topology:
     marker, plate = installed_plate(p)
     return Topology(nozzle_count=nozzle_count, switch_installed=switch_installed,
                     switch_ready=switch_installed and ams_ready, trays=tuple(trays),
-                    nozzle_rack=nozzle_rack, plate_marker=marker, plate=plate)
+                    nozzle_rack=nozzle_rack, plate_marker=marker, plate=plate, nozzles_reported=bool(ext_info))
 
 
 # ---------------------------------------------------------------------------
@@ -736,7 +753,7 @@ def plan_print(project: ProjectInfo, state: dict, *, use_ams: bool = True,
     --map) overrides per filament; anything not chosen is auto-mapped."""
     topo = read_topology(state)
     notes: list[str] = []
-    if project.nozzle_count != topo.nozzle_count:
+    if project.nozzle_count != topo.nozzle_count and topo.nozzles_reported:
         # A print file made for another printer (a one-nozzle P2S project's G-code on the X2D): its moves,
         # bed size and tool changes are that printer's.
         raise MappingError(

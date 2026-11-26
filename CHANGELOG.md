@@ -20,6 +20,46 @@ All notable changes to this project.
 - A slice job's `warnings` include those the slicer writes into the print file only (slice_info), such as a
   plate too hot for a filament.
 
+### Fixed (Fable audit, 2026-11-26)
+- **Plate:** a plate's own bed type in a project no longer silently overrides `bed_type`. The plan check and the
+  print command read the plate the G-code was really sliced for (`Metadata/plate_N.json`).
+- **Print start:** `POST /print` takes `plan_digest` and answers 409 with the new plan when the spools, the plate or
+  the file changed since the plan the user confirmed. `accept_warnings` therefore covers only warnings that were
+  shown. Both web clients send it.
+- **Camera relay:**
+  - at most 4 viewers;
+  - a viewer that stops reading is dropped after 15 s;
+  - another site's page cannot start the camera (cross-site requests need an allowed Origin; the clients use
+    `crossorigin` images);
+  - a bad `--camera-url` is refused at start.
+- **`daemon --camera`:** starts the camera for the daemon's own printer, says so when the proxy dies at once, and
+  starts it only after the HTTP API is up.
+- **Spools:** a spool with no bundled profile, or a project for another nozzle size, keeps the project's preset
+  and says so (slice warnings, `X-Beambam-Warnings`). It used to become Bambu PLA Basic.
+- **Uploads:** read before any refusal, so clients get the 400 instead of a reset. Bad `Content-Length` answers
+  400, unexpected errors answer a JSON 500, and refused uploads are deleted.
+- **Housekeeping:**
+  - uploads and slices older than 3 days are pruned, under `config_path` (`BEAMBAM_HOME` honoured);
+  - slice jobs are capped at 50;
+  - a slice reports `grams_by_filament`, `plates`, `plate_seconds` and `plate_grams`.
+- **Smaller fixes:**
+  - a partial printer report no longer refuses a print for its nozzle count;
+  - the flush matrix ignores alpha;
+  - duplicate zip members are copied as they are;
+  - `BEAMBAM_CORS_ORIGINS` entries are trimmed.
+- **beambam.boo/print:**
+  - a file dropped mid-slice no longer gets the previous file's print file;
+  - Start waits for the spool check and uses the plan for the current print file;
+  - the nozzle choice survives Slice;
+  - slots are sent by filament number, and a re-slice whose trays no longer fit re-plans;
+  - the camera stream closes when hidden;
+  - a project saved after slicing stays a project;
+  - job controls are reset per job;
+  - a few failed polls are tolerated;
+  - a refused print says why;
+  - a multi-plate project shows plate 1's numbers;
+  - a preview part budget, non-ASCII option escaping, and a regular /healthz re-read.
+
 ## v1.8.0 — print any file from beambam.boo (2026-11-26)
 
 ### Added

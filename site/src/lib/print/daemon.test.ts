@@ -104,7 +104,8 @@ describe('Daemon', () => {
                 : [200, { state: 'done', done: true, file: '/x/a.gcode.3mf', seconds: 600, grams: 12.5, grams_per_filament: [10, 2.5], warnings: ['w'] }])
         }, calls) });
         const r = await d.slice('hoop.stl', new Uint8Array(84), '{"layer_height":0.16}');
-        expect(r).toEqual({ file: '/x/a.gcode.3mf', seconds: 600, grams: 12.5, gramsPerFilament: [10, 2.5], warnings: ['w'] });
+        expect(r).toEqual({ file: '/x/a.gcode.3mf', seconds: 600, grams: 12.5, gramsPerFilament: [10, 2.5], warnings: ['w'],
+            gramsByFilament: {}, plateSeconds: [], plateGrams: [] });
         const h = calls[0][1].headers as Record<string, string>;
         expect(h['X-Filename']).toBe('hoop.stl');
         expect(h['X-Slice-Options']).toBe('{"layer_height":0.16}');
@@ -141,4 +142,24 @@ describe('Daemon', () => {
         expect((calls[0][1] as { targetAddressSpace?: string }).targetAddressSpace).toBe('local');
         expect((calls[1][1] as { targetAddressSpace?: string }).targetAddressSpace).toBeUndefined();
     });
+});
+
+describe('jobs and starting', () => {
+    test('a few failed polls are tolerated; a print 409 says why, with the new plan', async () => {
+        let polls = 0;
+        const d = new Daemon('http://127.0.0.1:8765', { origin: ORIGIN, fetchImpl: fake({
+            '/slice': () => [202, { ok: true, poll: '/slice/jobs/s1' }],
+            '/slice/jobs/s1': () => (++polls < 3 ? 'refuse'
+                : [200, { state: 'done', done: true, file: '/x/a.gcode.3mf', seconds: 1, grams: 1, grams_by_filament: { '2': 1 },
+                    plate_seconds: [1], plate_grams: [1], warnings: [] }]),
+            '/healthz': () => [200, {}],
+            '/print': () => [409, { ok: false, plan_changed: true, plan: { filaments: [], digest: 'b' }, error: 'changed' }]
+        }) });
+        const r = await d.slice('a.3mf', new Uint8Array(4), null);
+        expect(r.gramsByFilament).toEqual({ '2': 1 });
+        const e = await d.print('/x/a.gcode.3mf', [0], true, undefined, 'a').catch((x) => x);
+        expect(e).toBeInstanceOf(DaemonError);
+        expect(e.message).toContain('changed since this plan');
+        expect(e.body.plan.digest).toBe('b');
+    }, 20000);
 });

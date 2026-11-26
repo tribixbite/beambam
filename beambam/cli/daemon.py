@@ -131,6 +131,16 @@ def cmd_daemon(args: argparse.Namespace) -> int:
             print(f"[x2d-bridge] --http {args.http!r}: expected HOST:PORT with a port 1-65535",
                   file=sys.stderr)
             return 2
+    if getattr(args, "camera", False) or getattr(args, "camera_url", None):
+        from urllib.parse import urlsplit as _split
+        cu = _split(str(getattr(args, "camera_url", "") or "http://127.0.0.1:8766"))
+        try:
+            ok = cu.scheme == "http" and bool(cu.hostname) and cu.port is not None
+        except ValueError:                       # port out of range
+            ok = False
+        if not ok:
+            print(f"[x2d-bridge] --camera-url {args.camera_url!r}: expected http://HOST:PORT", file=sys.stderr)
+            return 2
     # Canonical homes for everything we need:
     #   * `_serve_http`     — beambam.serve_http
     #   * `_WEB_DIR_DEFAULT`— beambam package root (sibling of beambam/)
@@ -339,12 +349,15 @@ def cmd_daemon(args: argparse.Namespace) -> int:
                        "allowed_hosts": list(
                            getattr(args, "allow_host", None) or []),
                        "cors_origins": list(getattr(args, "cors_origin", None) or [])
-                                       + [o for o in os.environ.get(
-                                           "BEAMBAM_CORS_ORIGINS", "").split(",") if o],
+                                       + [o.strip() for o in os.environ.get(
+                                           "BEAMBAM_CORS_ORIGINS", "").split(",") if o.strip()],
                        "camera_url": getattr(args, "camera_url", None)},
                daemon=True).start()
         if getattr(args, "camera", False):
-            _start_camera_proxy(args)
+            # Only once the API is up: a daemon that exits on a failed bind must not leave a proxy behind.
+            stop.wait(1.0)
+            if not http_failed:
+                _start_camera_proxy(args)
 
     period = max(1, int(args.interval))
     print(f"[x2d-bridge] daemon up; {len(clients)} printer(s); "
@@ -391,8 +404,10 @@ def _start_camera_proxy(args: argparse.Namespace) -> None:
     if u.hostname not in ("127.0.0.1", "localhost", "::1"):
         print(f"[x2d-bridge] --camera: {url} is not on this machine; start its proxy there", file=sys.stderr)
         return
+    # The daemon's own printer (`daemon --printer lab`), so the relay shows that printer's camera.
     ns = argparse.Namespace(bind=f"127.0.0.1:{u.port or 8766}", port=322, proto="rtsp", idle_timeout=30.0,
-                            skip_check=False, auth_token="", foreground=False)
+                            skip_check=False, auth_token="", foreground=False,
+                            printer=getattr(args, "printer", None))
     try:
         rc = _cmd_cam_start(ns)
     except OSError as e:

@@ -325,3 +325,29 @@ def test_cam_start_blocks_double_start(tmp_path, monkeypatch, capsys):
     rc = cmd_cam(args)
     assert rc == 1
     assert "already running" in capsys.readouterr().err
+
+
+def test_cam_start_passes_the_printer_and_reports_a_proxy_that_dies(tmp_path, monkeypatch, capsys):
+    """`daemon --printer lab --camera` must show lab's camera; a child that exits at once (no ffmpeg, liveview
+    off) is reported, and no PID file is left for `cam stop` to trip over."""
+    import subprocess
+    monkeypatch.setattr("beambam.cam._CAM_PID_FILE", tmp_path / "cam.pid")
+    monkeypatch.setattr("beambam.cam._CAM_LOG_FILE", tmp_path / "cam.log")
+    seen: list[list[str]] = []
+
+    class Dead:
+        returncode = 3
+
+        def __init__(self, argv, **_kw):
+            seen.append(argv)
+            self.pid = 4242
+
+        def poll(self):
+            return 3
+    monkeypatch.setattr(subprocess, "Popen", Dead)
+    args = argparse.Namespace(cam_cmd="start", bind="127.0.0.1:8766", port=322, proto="rtsp", idle_timeout=30.0,
+                              skip_check=False, auth_token="", foreground=False, printer="lab")
+    assert cmd_cam(args) == 1
+    assert seen[0][3:6] == ["--printer", "lab", "camera"]
+    assert "exited at once (code 3)" in capsys.readouterr().err
+    assert not (tmp_path / "cam.pid").exists()

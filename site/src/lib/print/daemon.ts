@@ -100,11 +100,19 @@ export interface SliceResult {
     seconds: number;
     grams: number;
     gramsPerFilament: number[];
+    /** Grams by filament number ("1", "2", …) over every plate; {} from an older beambam. */
+    gramsByFilament: Record<string, number>;
+    /** Per sliced plate: time and grams (a print starts plate 1); [] from an older beambam. */
+    plateSeconds: number[];
+    plateGrams: number[];
     warnings: string[];
 }
 
 /** Progress callback: seconds since the start and the daemon's own words. */
 export type Tick = (seconds: number, what: string) => void;
+
+/** Failed polls in a row before a slice / print job is given up on. */
+const POLL_RETRIES = 4;
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
@@ -288,12 +296,24 @@ export class Daemon {
         return body;
     }
 
-    /** Wait for a job until `done`; `finished(job)` returns the result or throws. */
+    /**
+     * Wait for a job until `done`; `finished(job)` returns the result or throws. A few failed polls in a row (a
+     * network blip, the phone waking up) are tolerated: the job keeps running on the daemon either way.
+     * `lost` words the failure when they do not stop.
+     */
     private async pollJob<T>(poll: string, t0: number, everyMs: number, limitMs: number, onTick: Tick | undefined,
-        finished: (job: Json) => T, tooLong: string): Promise<T> {
+        finished: (job: Json) => T, tooLong: string, lost: (e: unknown) => DaemonError): Promise<T> {
+        let failures = 0;
         for (;;) {
             await sleep(everyMs);
-            const { body: job } = await this.request(poll);
+            let job: Json;
+            try {
+                job = (await this.request(poll)).body;
+                failures = 0;
+            } catch (e) {
+                if (++failures < POLL_RETRIES && Date.now() - t0 <= limitMs) continue;
+                throw lost(e);
+            }
             onTick?.((Date.now() - t0) / 1000, String(job.message ?? job.state ?? ''));
             if (job.done === true) return finished(job);
             if (Date.now() - t0 > limitMs) throw new DaemonError(tooLong, 'timeout');
@@ -323,9 +343,16 @@ export class Daemon {
                 seconds: Number(job.seconds ?? 0) || 0,
                 grams: Number(job.grams ?? 0) || 0,
                 gramsPerFilament: Array.isArray(job.grams_per_filament) ? job.grams_per_filament.map(Number) : [],
+                gramsByFilament: job.grams_by_filament && typeof job.grams_by_filament === 'object'
+                    ? Object.fromEntries(Object.entries(job.grams_by_filament as Record<string, unknown>).map(([k, v]) => [k, Number(v) || 0]))
+                    : {},
+                plateSeconds: Array.isArray(job.plate_seconds) ? job.plate_seconds.map(Number) : [],
+                plateGrams: Array.isArray(job.plate_grams) ? job.plate_grams.map(Number) : [],
                 warnings: Array.isArray(job.warnings) ? job.warnings.map(String) : []
             };
-        }, 'Slicing is taking too long: check beambam');
+        }, 'Slicing is taking too long: check beambam', (e) => new DaemonError(
+            `Lost track of the slice (${e instanceof Error ? e.message : String(e)}); it may still finish on beambam. Slice again when it answers.`,
+            'http'));
     }
 
     /**
@@ -337,7 +364,14 @@ export class Daemon {
         if (options) headers['X-Slice-Options'] = options;
         let res: Response;
         try {
-            res = await this.fetchImpl(`${this.url}/project/update`, this.init({ method: 'POST', headers, body: bytes as BodyInit }));
+            const ctl = new AbortController();
+            const t = setTimeout(() => ctl.abort(), UPLOAD_TIMEOUT_MS);
+            try {
+                res = await this.fetchImpl(`${this.url}/project/update`,
+                    { ...this.init({ method: 'POST', headers, body: bytes as BodyInit }), signal: ctl.signal });
+            } finally {
+                clearTimeout(t);
+            }
         } catch {
             throw await this.diagnoseNetworkFailure(false);
         }
@@ -372,17 +406,31 @@ export class Daemon {
         return body;
     }
 
-    /** Start the print (the user confirmed). Resolves with the printer's last word once it accepted. */
-    async print(file: string, slots: number[], acceptWarnings: boolean, onTick?: Tick): Promise<string> {
+    /**
+     * Start the print (the user confirmed). Resolves with the printer's last word once it accepted. `digest`
+     * (the plan's): beambam starts only that plan, and answers 409 with the new one when spools, the plate or
+     * the file changed since (a DaemonError whose `body.plan` is the new plan).
+     */
+    async print(file: string, slots: number[], acceptWarnings: boolean, onTick?: Tick, digest?: string): Promise<string> {
         const t0 = Date.now();
-        const { body } = await this.postJson('/print', { file, slot: slots, confirm: true, accept_warnings: acceptWarnings });
-        if (body.ok === false) throw new DaemonError(replyError(body) || 'beambam refused the print', 'http', 0, body);
+        const req: Json = { file, slot: slots, confirm: true, accept_warnings: acceptWarnings };
+        if (digest) req.plan_digest = digest;
+        // A 409 here is beambam refusing this print (mapping, warnings, a changed plan), not "busy": say why.
+        const { status, body } = await this.postJson('/print', req, (s) => s === 409);
+        if (status === 409 || body.ok === false) {
+            const why = body.plan_changed === true ? 'The spools, the plate or the file changed since this plan: check the new plan, then Start again.'
+                : body.needs_confirmation === true ? `beambam wants the warnings confirmed again: ${replyError(body)}`
+                : `beambam refused the print: ${replyError(body) || 'unknown reason'}`;
+            throw new DaemonError(why, 'bad-request', 409, body);
+        }
         const poll = typeof body.poll === 'string' ? body.poll : '';
         if (!poll) throw new DaemonError('beambam did not start a print job', 'http');
         return this.pollJob(poll, t0, PRINT_POLL_MS, PRINT_TIMEOUT_MS, onTick, (job) => {
             if (job.state === 'accepted' || job.state === 'sent') return String(job.message ?? job.state);
             throw new DaemonError(`The print did not start (${String(job.state)}): ${String(job.message ?? '')}`, 'http', 0, job);
-        }, 'No answer from the printer yet: check it before trying again');
+        }, 'No answer from the printer yet: check it before trying again', () => new DaemonError(
+            'Lost contact with beambam after it took the print: it may have started. Check the printer before trying again.',
+            'http'));
     }
 
     /**

@@ -572,3 +572,30 @@ def test_same_or_unknown_plate_says_nothing(tmp_path, x2d_state):
     assert fm.plan_print(proj, x2d_state).print_warnings == []
     tack = fm.ProjectInfo(**{**proj.__dict__, "bed_type": "Supertack Plate"})
     assert fm.plan_print(tack, _on_plate(x2d_state, "P0301")).print_warnings == []
+
+
+def test_a_partial_report_does_not_refuse_for_the_nozzle_count(tmp_path):
+    """A cached report without `device.extruder` says nothing about the nozzles: no "this printer has 1"."""
+    proj = fm.read_project(make_3mf(tmp_path, [("PLA", "#FFFFFF", "GFA00", "1")]))
+    state = {"print": {"nozzle_temper": 25, "vir_slot": [{"id": "255", "tray_type": "PLA", "tray_color": "FFFFFFFF"}]}}
+    assert not fm.read_topology(state).nozzles_reported
+    fm.plan_print(proj, state, use_ams=False)          # no MappingError about nozzles
+
+
+def test_a_plates_own_bed_type_is_what_it_was_sliced_for(tmp_path):
+    """Bambu applies a plate's bed type over the project's and records it in plate_N.json."""
+    p = make_3mf(tmp_path, [("PLA", "#FFFFFF", "GFA00", "1")])
+    with zipfile.ZipFile(p, "a") as z:
+        z.writestr("Metadata/plate_1.json", json.dumps({"bed_type": "supertack_plate"}))
+    assert fm.read_project(p).bed_type == "Supertack Plate"
+    from beambam.print_job import _derive_print_params_from_3mf
+    with zipfile.ZipFile(p) as z:
+        ps = json.loads(z.read("Metadata/project_settings.config"))
+    ps["supertack_plate_temp_initial_layer"] = ["45"]
+    q = make_3mf(tmp_path, [("PLA", "#FFFFFF", "GFA00", "1")], name="q.gcode.3mf")
+    with zipfile.ZipFile(q) as zi, zipfile.ZipFile(tmp_path / "r.gcode.3mf", "w") as zo:
+        for it in zi.infolist():
+            zo.writestr(it, json.dumps(ps) if it.filename.endswith("project_settings.config") else zi.read(it))
+        zo.writestr("Metadata/plate_1.json", json.dumps({"bed_type": "supertack_plate"}))
+    got = _derive_print_params_from_3mf(tmp_path / "r.gcode.3mf")
+    assert (got["bed_type"], got["bed_temp"]) == ("supertack_plate", 45)

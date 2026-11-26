@@ -370,3 +370,64 @@ def test_bad_slice_options_are_400(daemon):
     assert code == 400 and "layer_height" in body["error"]
     code, body, _ = _req(port, "/slice", b"solid x\n", headers={"X-Filename": "x.exe"})
     assert code == 400 and ".stl" in body["error"]
+
+
+def test_upload_errors_answer_and_leave_nothing_behind(tmp_path, daemon, monkeypatch):
+    """A bad Content-Length, bad options sent with a big body, and a refused file all get their 400 (the body is
+    read first, so the client sees the answer instead of a reset), and a refused upload is not kept."""
+    import http.client
+    monkeypatch.setenv("X2D_HOME", str(tmp_path / "home"))
+    port, _ = daemon
+    c = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+    c.putrequest("POST", "/slice")
+    c.putheader("Content-Type", "application/octet-stream")
+    c.putheader("Content-Length", "abc")
+    c.endheaders()
+    r = c.getresponse()
+    assert r.status == 400 and b"Content-Length" in r.read()
+    big = b"PK" + b"\0" * (8 * 1024 * 1024)
+    code, body, _ = _req(port, "/slice", big, headers={"X-Filename": "x.3mf", "Content-Type": "application/octet-stream",
+                                                       "X-Slice-Options": '{"spools": "no"}'})
+    assert code == 400 and "spools" in body["error"]
+    code, body, _ = _req(port, "/slice", big, headers={"X-Filename": "x.3mf", "Content-Type": "application/octet-stream"})
+    assert code == 400
+    uploads = tmp_path / "home" / "uploads"
+    assert not [p for p in uploads.glob("*") if p.is_file()]
+
+
+def test_old_uploads_and_slices_are_pruned(tmp_path):
+    import os
+    from beambam.serve_http import UPLOAD_KEEP_S, prune_uploads
+    root = tmp_path / "uploads"
+    (root / "sliced" / "oldjob").mkdir(parents=True)
+    (root / "sliced" / "newjob").mkdir()
+    old, new = root / "1_old.3mf", root / "2_new.3mf"
+    old.write_bytes(b"x")
+    new.write_bytes(b"y")
+    past = time.time() - UPLOAD_KEEP_S - 60
+    for p in (old, root / "sliced" / "oldjob"):
+        os.utime(p, (past, past))
+    prune_uploads(root)
+    assert sorted(p.name for p in root.rglob("*")) == ["2_new.3mf", "newjob", "sliced"]
+
+
+def test_print_starts_only_the_plan_that_was_confirmed(tmp_path, daemon, monkeypatch):
+    """`plan_digest`: a spool swapped between the plan and Start makes /print answer 409 with the new plan, so
+    accept_warnings never covers warnings nobody saw; the unchanged plan starts."""
+    import copy
+    port, calls = daemon
+    f = _file(tmp_path, "#7C4B00")
+    code, plan, _ = _req(port, "/print/plan", {"file": f, "slot": [1]})
+    assert code == 200 and len(plan["digest"]) == 16
+    swapped = copy.deepcopy(STATE)
+    swapped["print"]["ams"]["ams"][0]["tray"][1]["tray_color"] = "00FF00FF"   # A2 is now green
+    monkeypatch.setitem(globals(), "STATE", swapped)
+    monkeypatch.setattr(_Client, "request_state", lambda self, timeout=15.0: swapped)
+    code, body, _ = _req(port, "/print", {"file": f, "slot": [1], "confirm": True, "accept_warnings": True,
+                                         "plan_digest": plan["digest"]})
+    assert code == 409 and body.get("plan_changed"), body
+    assert body["plan"]["digest"] != plan["digest"] and calls["start"] == []
+    code, now, _ = _req(port, "/print/plan", {"file": f, "slot": [1]})
+    code, body, _ = _req(port, "/print", {"file": f, "slot": [1], "confirm": True, "accept_warnings": True,
+                                         "plan_digest": now["digest"]})
+    assert code == 202, body

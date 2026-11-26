@@ -202,17 +202,19 @@ def nozzle_map(nozzles: tuple[int, ...], n_filaments: int) -> list[str]:
     return ([str(x) for x in nozzles] + ["1"] * n_filaments)[:n_filaments]
 
 
-def apply_to_project(src: Path, dst: Path, opts: SliceOptions, root: Path | None = None) -> dict[str, Any]:
+def apply_to_project(src: Path, dst: Path, opts: SliceOptions, root: Path | None = None,
+                     warnings: list[str] | None = None) -> dict[str, Any]:
     """Copy project `src` to `dst` with `opts` applied: the spools' filaments (`project_sync.adopt_filaments`,
     which needs the profiles under `root`), project_settings, and a manual nozzle map on every plate as well.
-    Returns the new project settings. What POST /slice slices and POST /project/update hands back."""
+    Returns the new project settings; what the spools could not change is appended to `warnings`. What POST
+    /slice slices and POST /project/update hands back."""
     with zipfile.ZipFile(src) as zin:
         settings = json.loads(zin.read("Metadata/project_settings.config"))
         if opts.spools:
             if root is None:
                 raise ValueError("spools need the slicer's profiles (root)")
             from beambam.project_sync import adopt_filaments
-            settings = adopt_filaments(settings, root, list(opts.spools))
+            settings = adopt_filaments(settings, root, list(opts.spools), warnings)
         settings.update(opts.process_keys(settings))
         n = len(settings.get("filament_settings_id") or []) or (len(opts.nozzles) if opts.nozzles else 1)
         fmap = nozzle_map(opts.nozzles, n) if opts.nozzles else None
@@ -221,11 +223,16 @@ def apply_to_project(src: Path, dst: Path, opts: SliceOptions, root: Path | None
             settings["filament_map"] = fmap
         with zipfile.ZipFile(dst, "w", zipfile.ZIP_DEFLATED) as zout:
             for item in zin.infolist():
-                data = zin.read(item.filename)
+                data = zin.read(item)
                 if item.filename == "Metadata/project_settings.config":
                     data = json.dumps(settings, indent=4).encode()
-                elif item.filename == "Metadata/model_settings.config" and fmap:
-                    data = plate_map(data.decode("utf-8", "replace"), fmap).encode()
+                elif item.filename == "Metadata/model_settings.config" and (fmap or opts.bed_type):
+                    text = data.decode("utf-8", "replace")
+                    if fmap:
+                        text = plate_map(text, fmap)
+                    if opts.bed_type:
+                        text = plate_bed_type(text, opts.bed_type)
+                    data = text.encode()
                 zout.writestr(item, data)
     return settings
 
@@ -245,6 +252,13 @@ def plate_map(model_settings: str, fmap: list[str]) -> str:
 
 
 # --------------------------------------------------------------------------- bare meshes
+
+def plate_bed_type(model_settings: str, bed_type: str) -> str:
+    """model_settings.config with every plate's own `bed_type` set to `bed_type`: Bambu applies a plate's
+    config over the project's, so the project's `curr_bed_type` alone does not change a plate that names one."""
+    return re.sub(r'(<metadata key="(?:bed_type|curr_bed_type)" value=")[^"]*("\s*/>)',
+                  lambda m: f"{m.group(1)}{bed_type}{m.group(2)}", model_settings)
+
 
 def made_for_another_printer(settings: dict[str, Any]) -> str | None:
     """The printer a project was made for when it is not MESH_PRINTER's model (an X2D project with another
@@ -319,6 +333,13 @@ def _filament_index(root: Path) -> tuple[tuple[str, str, str], ...]:
 def filament_profile(root: Path, filament_id: str | None, filament_type: str | None) -> Path:
     """The bundled profile a mesh filament slices with: the spool's own filament id, else Bambu's or a generic
     profile of its material, else Bambu PLA Basic."""
+    return find_filament_profile(root, filament_id, filament_type) or \
+        _profiles(root, "filament") / f"{DEFAULT_FILAMENT}.json"
+
+
+def find_filament_profile(root: Path, filament_id: str | None, filament_type: str | None) -> Path | None:
+    """The bundled X2D 0.4 mm profile for a spool's filament id, else Bambu's or a generic profile of its
+    material; None when neither matches (no silent fallback: a project keeps its own preset then)."""
     index = _filament_index(root)
     folder = _profiles(root, "filament")
     want_type = (filament_type or "").upper()
@@ -333,7 +354,7 @@ def filament_profile(root: Path, filament_id: str | None, filament_type: str | N
         for name, _, ftype in index:
             if ftype == want_type:
                 return folder / f"{name}.json"
-    return folder / f"{DEFAULT_FILAMENT}.json"
+    return None
 
 
 def process_profile(root: Path, layer_height: float | None) -> Path:

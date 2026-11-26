@@ -175,3 +175,32 @@ def test_the_print_files_own_warnings_are_passed_on(tmp_path):
     assert got[0].startswith("Bambu Studio: the plate's bed temperature is above")
     assert got[1] == "Bambu Studio: some new thing"
     assert sliced_warnings(tmp_path / "missing.3mf") == []
+
+
+def test_the_plate_choice_replaces_each_plates_own_bed_type(tmp_path):
+    src = tmp_path / "p.3mf"
+    with zipfile.ZipFile(src, "w") as z:
+        z.writestr("Metadata/project_settings.config", json.dumps({"filament_settings_id": ["F0"],
+                                                                   "curr_bed_type": "Textured PEI Plate"}))
+        z.writestr("Metadata/model_settings.config", '<config>\n  <plate>\n    <metadata key="plater_id" value="1"/>\n'
+                   '    <metadata key="bed_type" value="Textured PEI Plate"/>\n  </plate>\n</config>\n')
+    so.apply_to_project(src, tmp_path / "o.3mf", so.SliceOptions(bed_type="Supertack Plate"))
+    with zipfile.ZipFile(tmp_path / "o.3mf") as z:
+        ms = z.read("Metadata/model_settings.config").decode()
+    assert 'key="bed_type" value="Supertack Plate"' in ms and "Textured" not in ms
+
+
+def test_a_spool_without_a_bundled_profile_keeps_the_project_preset_and_says_so(tmp_path):
+    from beambam import project_sync as ps
+    root = _resources(tmp_path / "r")
+    ps._filament_files.cache_clear()
+    st = {"filament_settings_id": ["Generic PLA @BBL X2D 0.4 nozzle"], "filament_type": ["PLA"],
+          "filament_colour": ["#000000"], "printer_settings_id": "Bambu Lab X2D 0.4 nozzle"}
+    notes: list[str] = []
+    out = ps.adopt_filaments(st, root, [("GFZZ9", "PPS-CF", "#FF0000")], notes)
+    assert out["filament_settings_id"] == st["filament_settings_id"] and out["filament_colour"] == ["#FF0000"]
+    assert "no bundled Bambu profile for PPS-CF" in notes[0]
+    notes = []
+    out = ps.adopt_filaments({**st, "printer_settings_id": "Bambu Lab X2D 0.2 nozzle"}, root,
+                             [("GFG02", "PETG", "#00FF00")], notes)
+    assert out["filament_settings_id"] == st["filament_settings_id"] and "0.4 mm nozzle" in notes[0]

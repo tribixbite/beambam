@@ -50,8 +50,11 @@
         /** A print is being started or runs: no more changes. */
         locked: boolean;
         onrenozzle: (nozzles: number[] | null, what: string) => void;
-        /** The current plan and the trays Start would send (null: cannot start). */
-        onchange: (plan: PrintPlan | null, slots: number[] | null) => void;
+        /**
+         * The current plan, the trays Start would send and the print file the plan is for (null plan: cannot
+         * start — also while a check is pending, so Start never sends a plan the screen has moved past).
+         */
+        onchange: (plan: PrintPlan | null, slots: number[] | null, file: string) => void;
     }
     let { daemon, file, trays, traySig, canRenozzle, nozzles, reslicing, grams, initialSlots, locked, onrenozzle, onchange }: Props =
         $props();
@@ -74,11 +77,23 @@
     function replan(reason: string): Promise<void> {
         const gen = ++generation;
         const forFile = file;
+        // Until this check answers, nothing may be started from the previous plan.
+        onchange(null, null, forFile);
         const run = async (): Promise<void> => {
             if (gen !== generation) return; // a newer request supersedes this one
             planning = true;
             try {
-                const raw = await daemon.plan(forFile, slots);
+                let raw;
+                try {
+                    raw = await daemon.plan(forFile, slots);
+                } catch (e) {
+                    // The kept trays may not fit a re-sliced file (another set of filaments in use): let beambam
+                    // choose instead of resending the same refused trays forever.
+                    if (!slots) throw e;
+                    slots = null;
+                    raw = await daemon.plan(forFile, null);
+                    reason = reason || 'The trays picked before did not fit this slice: beambam chose again.';
+                }
                 if (gen !== generation || forFile !== file) return;
                 const p = raw as unknown as PrintPlan;
                 p.filaments = Array.isArray(p.filaments) ? p.filaments : [];
@@ -92,12 +107,12 @@
                 slots = slotsFromPlan(p) ?? slots;
                 error = '';
                 if (reason) sync = reason;
-                onchange(p, slotsFromPlan(p));
+                onchange(p, slotsFromPlan(p), forFile);
             } catch (e) {
                 if (gen !== generation) return;
                 plan = null;
                 error = e instanceof Error ? e.message : String(e);
-                onchange(null, null);
+                onchange(null, null, forFile);
             } finally {
                 if (gen === generation) planning = false;
             }
@@ -153,7 +168,7 @@
     }
 
     const twoNozzles = $derived(plan ? isTwoNozzlePlan(plan) : false);
-    const frozen = $derived(reslicing || locked);
+    const frozen = $derived(reslicing || locked || planning);
 </script>
 
 <div class="mp">

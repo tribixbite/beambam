@@ -208,9 +208,49 @@ class SliceJobRegistry:
 # printer is not the one the file was sliced for, and /slice takes `bed_type`.
 # "project-sync": X-Slice-Options takes `spools` (a project prints with the
 # spools' presets and colours) and POST /project/update hands the project back.
+# The camera relay: at most this many live viewers (each holds a thread and an upstream connection), and a
+# viewer that stops reading (a frozen background tab) is dropped after this many seconds.
+CAMERA_MAX_VIEWERS = 4
+CAMERA_SEND_TIMEOUT_S = 15.0
 CAPABILITIES = ("plan-sliced-nozzles", "slice-reason", "slice-options", "slice-mesh", "camera", "plate-check",
                 "project-sync")
 DEFAULT_CAMERA_URL = "http://127.0.0.1:8766"
+
+
+MAX_UPLOAD = 200 * 1024 * 1024        # bytes of a project / mesh / print file upload
+UPLOAD_KEEP_S = 3 * 24 * 3600          # uploads and slices older than this are removed when a new one comes
+
+
+def prune_uploads(root: Path, keep_s: float = UPLOAD_KEEP_S) -> None:
+    """Remove uploads and slice directories under `root` older than `keep_s` (they are kept a while so a print
+    can still be started from a recent slice; nothing else ever removed them: ~1 GB a day of use)."""
+    import shutil
+    cutoff = time.time() - keep_s
+    for d in (root, root / "sliced"):
+        try:
+            entries = list(d.iterdir())
+        except OSError:
+            continue
+        for e in entries:
+            try:
+                if e.name == "sliced" or e.stat().st_mtime >= cutoff:
+                    continue
+                if e.is_dir():
+                    shutil.rmtree(e, ignore_errors=True)
+                else:
+                    e.unlink(missing_ok=True)
+            except OSError:
+                continue
+
+
+def store_upload(fname: str, body: bytes) -> Path:
+    """Keep an upload under the config dir's `uploads/` (time-prefixed), pruning old ones first."""
+    root = config_path("uploads")
+    root.mkdir(parents=True, exist_ok=True)
+    prune_uploads(root)
+    dest = root / f"{int(time.time())}_{fname}"
+    dest.write_bytes(body)
+    return dest
 
 
 def camera_base(camera_url: str | None = None) -> str:
@@ -224,7 +264,11 @@ def camera_listening(camera_url: str | None = None, timeout: float = 0.3) -> boo
     import socket
     u = urllib.parse.urlsplit(camera_base(camera_url))
     try:
-        with socket.create_connection((u.hostname or "127.0.0.1", u.port or 80), timeout=timeout):
+        port = u.port or 80
+    except ValueError:                  # a port out of range: nothing can answer there
+        return False
+    try:
+        with socket.create_connection((u.hostname or "127.0.0.1", port), timeout=timeout):
             return True
     except OSError:
         return False
@@ -310,6 +354,8 @@ def _serve_http(bind: str,
     import urllib.parse
     import urllib.request
     import urllib.error
+    camera_lock = threading.Lock()
+    camera_viewers = [0]                # live /camera.mjpeg viewers (CAMERA_MAX_VIEWERS)
     import re
 
     host_part, _, port_part = bind.rpartition(":")
@@ -360,6 +406,7 @@ def _serve_http(bind: str,
             origin = self._request_origin()
             if origin and (origin in allowed_origins or "*" in allowed_origins):
                 self.send_header("Access-Control-Allow-Origin", origin)
+                self.send_header("Access-Control-Expose-Headers", "Content-Disposition, X-Beambam-Warnings")
                 self.send_header("Vary", "Origin")
             super().end_headers()
 
@@ -456,6 +503,8 @@ def _serve_http(bind: str,
             if the camera daemon is unreachable; HA's image platform
             handles the failure gracefully (renders the previous
             frame). The upstream is `camera_base()`."""
+            if self._camera_page_refused():
+                return
             url = camera_base(camera_url) + "/cam.jpg"
             try:
                 req = urllib.request.Request(url)
@@ -463,7 +512,7 @@ def _serve_http(bind: str,
                     body = r.read()
                     ctype = r.headers.get("Content-Type", "image/jpeg")
             except (urllib.error.URLError, ConnectionError,
-                    TimeoutError, OSError) as e:
+                    TimeoutError, ValueError, OSError) as e:
                 self._camera_unreachable(url, e)
                 return
             self.send_response(200)
@@ -472,6 +521,20 @@ def _serve_http(bind: str,
             self.send_header("Cache-Control", "no-store")
             self.end_headers()
             self.wfile.write(body)
+
+        def _camera_page_refused(self) -> bool:
+            """Answer 403 (True) for a cross-site browser page the daemon does not let in: the camera is read by
+            an <img>, which sends no Origin unless it is `crossorigin` (both web clients set it), so a page's
+            `Sec-Fetch-Site: cross-site` with no allowed Origin is someone else's page starting the camera."""
+            cross = (self.headers.get("Sec-Fetch-Site") or "").lower() == "cross-site"
+            origin = self._request_origin()
+            if not cross and (not origin or self._origin_ok()):
+                return False
+            if origin and (origin in allowed_origins or "*" in allowed_origins):
+                return False
+            self._send_json({"error": "the camera is shown only to the pages this daemon allows (--cors-origin)"},
+                            status=403)
+            return True
 
         def _camera_unreachable(self, url: str, e: Exception) -> None:
             body = (f"camera proxy unreachable at {url} ({e}); start it with `beambam cam start`, "
@@ -488,13 +551,33 @@ def _serve_http(bind: str,
             web page that may call this daemon (CORS / Local Network Access already granted) shows the chamber
             in an <img> without a second address. 503 + the reason when the proxy is down. Runs until either
             side closes; the proxy keeps its video pump running while a viewer is connected."""
+            if self._camera_page_refused():
+                return
+            with camera_lock:
+                if camera_viewers[0] >= CAMERA_MAX_VIEWERS:
+                    busy = True
+                else:
+                    camera_viewers[0] += 1
+                    busy = False
+            if busy:
+                self._send_json({"error": f"the camera already has {CAMERA_MAX_VIEWERS} viewers"}, status=503)
+                return
+            try:
+                self._relay_camera()
+            finally:
+                with camera_lock:
+                    camera_viewers[0] -= 1
+
+        def _relay_camera(self) -> None:
             url = camera_base(camera_url) + "/cam.mjpeg"
             try:
                 # The proxy waits for its first frame before answering (pump cold start).
                 upstream = urllib.request.urlopen(urllib.request.Request(url), timeout=20)
-            except (urllib.error.URLError, ConnectionError, TimeoutError, OSError) as e:
+            except (urllib.error.URLError, ConnectionError, TimeoutError, ValueError, OSError) as e:
                 self._camera_unreachable(url, e)
                 return
+            # A viewer that stops reading would block the write below forever (and keep the proxy's pump up).
+            self.connection.settimeout(CAMERA_SEND_TIMEOUT_S)
             with upstream:
                 self.send_response(200)
                 self.send_header("Content-Type", upstream.headers.get(
@@ -609,6 +692,14 @@ def _serve_http(bind: str,
                 # e.g. the queue's cross-process lock is held: answer a
                 # retryable 503 instead of dropping the connection unanswered.
                 self._send_json({"error": f"temporarily unavailable: {e}"}, status=503)
+            except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+                return                          # the client left
+            except Exception as e:              # noqa: BLE001 — answer instead of dropping the connection
+                logging.getLogger("beambam.http").exception("%s %s failed", self.command, self.path)
+                try:
+                    self._send_json({"error": f"internal error: {type(e).__name__}: {e}"}, status=500)
+                except OSError:
+                    pass
 
         def do_GET(self):
             self._dispatch(self._handle_get)
@@ -1004,17 +1095,19 @@ def _serve_http(bind: str,
             suffixes = (suffix,) if isinstance(suffix, str) else suffix
             fname = re.sub(r"[^a-zA-Z0-9._-]", "_",
                            self.headers.get("X-Filename") or f"upload{suffixes[0]}")[:120]
-            if not fname.lower().endswith(suffixes):
-                self._send_json({"error": f"X-Filename must end in {' / '.join(suffixes)} ({hint})"},
-                                status=400)
-                return None
-            cl = int(self.headers.get("Content-Length", 0) or 0)
-            if cl <= 0 or cl > 200 * 1024 * 1024:
+            # Read the whole body before any refusal: answering while the client is still sending makes
+            # some stacks (Windows, Python's urllib) reset the connection and lose the reply.
+            cl = content_length(self.headers, MAX_UPLOAD)
+            if cl <= 0:
                 self._send_json({"error": "Content-Length must be 1..200 MiB"}, status=400)
                 return None
             body = self.rfile.read(cl)
             if len(body) != cl:
                 self._send_json({"error": "the body is shorter than its Content-Length"}, status=400)
+                return None
+            if not fname.lower().endswith(suffixes):
+                self._send_json({"error": f"X-Filename must end in {' / '.join(suffixes)} ({hint})"},
+                                status=400)
                 return None
             if fname.lower().endswith(".3mf") and body[:2] != b"PK":
                 self._send_json({"error": f"body is not a complete {fname.rsplit('.', 1)[-1]} (zip)"},
@@ -1028,15 +1121,15 @@ def _serve_http(bind: str,
             /slice would slice. Body: the .3mf; X-Filename names it. Answers the file (200), or 400."""
             from beambam.slice_options import SliceOptions, apply_to_project, has_print_settings
             from beambam.slice_service import _root
+            got = self._read_upload(".3mf", "a Bambu Studio project")
+            if got is None:
+                return
+            fname, body = got
             try:
                 options = SliceOptions.from_header(self.headers.get("X-Slice-Options"))
             except ValueError as e:
                 self._send_json({"error": str(e)}, status=400)
                 return
-            got = self._read_upload(".3mf", "a Bambu Studio project")
-            if got is None:
-                return
-            fname, body = got
             if fname.lower().endswith(".gcode.3mf"):
                 self._send_json({"error": "this file is already sliced: there is no project to update"}, status=400)
                 return
@@ -1047,10 +1140,14 @@ def _serve_http(bind: str,
                     self._send_json({"error": f"{fname} has no print settings: not a Bambu Studio project"},
                                     status=400)
                     return
+                notes: list[str] = []
                 try:
-                    apply_to_project(src, dst, options, _root())
-                except (ValueError, KeyError, zipfile.BadZipFile) as e:
+                    apply_to_project(src, dst, options, _root(), notes)
+                except (ValueError, KeyError, TypeError, AttributeError, zipfile.BadZipFile) as e:
                     self._send_json({"error": f"cannot update {fname}: {e}"}, status=400)
+                    return
+                except OSError as e:          # the slicer's bundled profiles are missing / unreadable
+                    self._send_json({"error": f"cannot update {fname}: {e}"}, status=500)
                     return
                 data = dst.read_bytes()
             stem = re.sub(r"\.3mf$", "", fname, flags=re.I)
@@ -1058,6 +1155,8 @@ def _serve_http(bind: str,
             self.send_header("Content-Type", "model/3mf")
             self.send_header("Content-Length", str(len(data)))
             self.send_header("Content-Disposition", f'attachment; filename="{stem}_printer.3mf"')
+            # What the spools could not change (JSON list, ASCII-escaped: a header carries no other characters).
+            self.send_header("X-Beambam-Warnings", json.dumps(notes, ensure_ascii=True))
             self.send_header("Cache-Control", "no-store")
             self.end_headers()
             self.wfile.write(data)
@@ -1065,23 +1164,20 @@ def _serve_http(bind: str,
         def _handle_slice(self) -> None:
             """POST /slice — see the docstring above."""
             from beambam.slice_options import MESH_SUFFIXES, SliceOptions
+            got = self._read_upload((".3mf",) + MESH_SUFFIXES, "a Bambu Studio project, or a mesh")
+            if got is None:
+                return
+            fname, body = got
             try:
                 options = SliceOptions.from_header(self.headers.get("X-Slice-Options"))
             except ValueError as e:
                 self._send_json({"error": str(e)}, status=400)
                 return
-            got = self._read_upload((".3mf",) + MESH_SUFFIXES, "a Bambu Studio project, or a mesh")
-            if got is None:
-                return
-            fname, body = got
             if fname.lower().endswith(".gcode.3mf"):
                 self._send_json({"error": "this file is already sliced: plan it with "
                                           "POST /print/upload + /print/plan"}, status=400)
                 return
-            upload_dir = Path.home() / ".x2d" / "uploads"
-            upload_dir.mkdir(parents=True, exist_ok=True)
-            dest = upload_dir / f"{int(time.time())}_{fname}"
-            dest.write_bytes(body)
+            dest = store_upload(fname, body)
             # A mesh is sliced for the printer it will print on: with its track switch, if it has one.
             switch = None
             cached = get_state(self._parse_printer())
@@ -1094,9 +1190,11 @@ def _serve_http(bind: str,
             try:
                 sjob = inproc_slicer.start(dest, name=fname, options=options, track_switch=switch)
             except ValueError as e:
+                dest.unlink(missing_ok=True)            # refused: nothing will use it
                 self._send_json({"error": str(e)}, status=400)
                 return
             except RuntimeError as e:
+                dest.unlink(missing_ok=True)
                 self._send_json({"error": str(e)}, status=409)
                 return
             self._send_json({"ok": True, "job": sjob.to_dict(),
@@ -1110,10 +1208,7 @@ def _serve_http(bind: str,
                     return
                 fname, body = got
                 cl = len(body)
-                upload_dir = Path.home() / ".x2d" / "uploads"
-                upload_dir.mkdir(parents=True, exist_ok=True)
-                dest = upload_dir / f"{int(time.time())}_{fname}"
-                dest.write_bytes(body)
+                dest = store_upload(fname, body)
                 self._send_json({"ok": True, "file": str(dest), "bytes": cl})
                 return
             printer = self._parse_printer()
@@ -1156,6 +1251,20 @@ def _serve_http(bind: str,
                 self._send_json({"error": "no live MQTT client for this printer"},
                                 status=503)
                 return
+            seen = body_json.get("plan_digest")
+            if seen is not None:
+                # The client confirmed a plan: start only that one (spools, plate or file changed since → 409
+                # with the new plan, so its warnings are shown before anyone accepts them).
+                try:
+                    now = plan_summary(plan_request(req, state))
+                except MappingError as e:
+                    self._send_json({"ok": False, "error": f"refused: {e}"}, status=409)
+                    return
+                if not isinstance(seen, str) or seen != now["digest"]:
+                    self._send_json({"ok": False, "plan_changed": True, "plan": now,
+                                     "error": "the spools, the plate or the file changed since the plan "
+                                              "you confirmed: check the new plan"}, status=409)
+                    return
             try:
                 job = print_jobs.start(printer, req, cli, state,
                                        accept_warnings=body_json.get("accept_warnings") is True)

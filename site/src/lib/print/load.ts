@@ -33,13 +33,19 @@ export function fileType(name: string): FileType {
 /** Progress: a 0..1 fraction and what is happening. */
 export type Progress = (fraction: number, what: string) => void;
 
+/** A plate's G-code inside a .gcode.3mf. */
+const GCODE_ENTRY = /^Metadata\/plate_\d+\.gcode$/i;
+
 /** Collects the wanted entries of a 3MF as they are inflated. */
 class Collector {
+    /** The archive has a plate's G-code (a print file, not a project saved after slicing). */
+    hasGcode = false;
     readonly scanners = new Map<string, { scan: ModelScanner; dec: TextDecoder }>();
     readonly texts = new Map<string, { parts: string[]; dec: TextDecoder }>();
 
     /** A new entry: returns a chunk sink, or null to skip it. */
     open(name: string): ((chunk: Uint8Array, final: boolean) => void) | null {
+        if (GCODE_ENTRY.test(name)) this.hasGcode = true;
         if (!wantedEntry(name)) return null;
         if (/\.model$/i.test(name)) {
             const entry = { scan: new ModelScanner(name), dec: new TextDecoder() };
@@ -65,7 +71,8 @@ class Collector {
         const meta: Metadata = {
             modelSettings: text(/model_settings\.config$/i),
             projectSettings: text(/project_settings\.config$/i),
-            sliceInfo: text(/slice_info\.config$/i)
+            sliceInfo: text(/slice_info\.config$/i),
+            hasGcode: this.hasGcode
         };
         return assemble3mf(name, files, meta);
     }
@@ -81,7 +88,12 @@ function feed(sink: (c: Uint8Array, f: boolean) => void, data: Uint8Array): void
 /** Unzip a whole buffer at once: the fallback for archives the stream reader cannot follow. */
 function read3mfBuffer(name: string, bytes: Uint8Array): LoadedModel {
     const c = new Collector();
-    const entries = unzipSync(bytes, { filter: (f) => wantedEntry(f.name) });
+    const entries = unzipSync(bytes, {
+        filter: (f) => {
+            if (GCODE_ENTRY.test(f.name)) c.hasGcode = true;
+            return wantedEntry(f.name);
+        }
+    });
     for (const [entry, data] of Object.entries(entries)) {
         const sink = c.open(entry);
         if (sink) feed(sink, data);
@@ -92,7 +104,9 @@ function read3mfBuffer(name: string, bytes: Uint8Array): LoadedModel {
 /** Read the wanted entries with random access + native inflate. */
 async function read3mfNative(name: string, blob: Blob, progress?: Progress): Promise<LoadedModel> {
     const c = new Collector();
-    const entries = (await listEntries(blob)).filter((e) => wantedEntry(e.name));
+    const all = await listEntries(blob);
+    c.hasGcode = all.some((e) => GCODE_ENTRY.test(e.name));
+    const entries = all.filter((e) => wantedEntry(e.name));
     if (!entries.some((e) => /\.model$/i.test(e.name))) throw new Error('this 3MF has no 3D model in it');
     const total = entries.reduce((n, e) => n + e.size, 0) || 1;
     let done = 0;

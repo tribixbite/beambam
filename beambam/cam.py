@@ -361,7 +361,9 @@ def _cmd_cam_start(args: argparse.Namespace) -> int:
         except (OSError, ValueError):
             pass    # stale pidfile — ignore + overwrite
 
-    argv = ["camera",
+    # The global --printer goes before the verb (`beambam --printer lab camera …`).
+    printer = getattr(args, "printer", None)
+    argv = (["--printer", printer] if printer else []) + ["camera",
             "--bind",  args.bind,
             "--port",  str(args.port),
             "--proto", args.proto,
@@ -401,6 +403,14 @@ def _cmd_cam_start(args: argparse.Namespace) -> int:
         )
     finally:
         log_fh.close()
+    # A proxy that cannot run (no ffmpeg, the printer's liveview off, an ambiguous printer) exits at once:
+    # say so instead of reporting a start and leaving a stale PID file.
+    deadline = time.time() + 3.0
+    while time.time() < deadline and proc.poll() is None:
+        time.sleep(0.1)
+    if proc.poll() is not None:
+        print(f"cam proxy exited at once (code {proc.returncode}); see {_CAM_LOG_FILE}", file=sys.stderr)
+        return 1
     _CAM_PID_FILE.write_text(str(proc.pid) + "\n")
     print(f"cam proxy started (pid {proc.pid}), bind {args.bind}; "
           f"logs → {_CAM_LOG_FILE}")

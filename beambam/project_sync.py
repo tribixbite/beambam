@@ -35,7 +35,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
-from beambam.slice_options import BED_TYPES, _profiles, filament_profile
+from beambam.slice_options import BED_TYPES, _profiles, find_filament_profile
 
 SETTINGS_MEMBER = "Metadata/project_settings.config"
 # Identity/bookkeeping keys of a preset file: never copied into project settings.
@@ -182,7 +182,8 @@ def _flush_matrix(mat: list[Any], old_colours: list[str], new_colours: list[str]
     if not mat or n == 0 or len(mat) % (n * n):
         return list(mat)
     # A slot whose colour did not change keeps its own row (two slots of one colour stay distinct).
-    near = [a if c.upper() == old_colours[a].upper() else _nearest(old_colours, c) for a, c in enumerate(new_colours)]
+    near = [a if c.upper()[:7] == old_colours[a].upper()[:7] else _nearest(old_colours, c)  # alpha is not colour
+            for a, c in enumerate(new_colours)]
     m = [float(x) for x in mat]
     out: list[str] = []
     for e in range(len(m) // (n * n)):
@@ -201,13 +202,22 @@ def _flush_matrix(mat: list[Any], old_colours: list[str], new_colours: list[str]
     return out
 
 
-def adopt_filaments(settings: dict[str, Any], root: Path, spools: list[Spool]) -> dict[str, Any]:
+def adopt_filaments(settings: dict[str, Any], root: Path, spools: list[Spool],
+                    warnings: list[str] | None = None) -> dict[str, Any]:
     """`settings` (a project's Metadata/project_settings.config) with project filament i set to `spools[i]`:
     the bundled system preset for the spool's filament id / material (`slice_options.filament_profile`), and
     the spool's colour. A spool with neither id nor material keeps the slot's preset and takes only the
     colour. Filaments past len(spools) stay as they are; spools past the project's filaments are ignored (a
     filament no object uses would only add purge volumes). Returns new settings; `settings` is not changed.
+    A spool no bundled X2D 0.4 mm profile matches, or any spool of a project for another nozzle size (the
+    bundled presets are the 0.4 mm ones), changes only the colour, and `warnings` says so.
     ValueError for a bad colour or a project with no filament list."""
+    notes = warnings if warnings is not None else []
+    printer = str(settings.get("printer_settings_id") or "")
+    other_nozzle = bool(printer) and not printer.endswith("0.4 nozzle")
+    if other_nozzle and any(fid or material for fid, material, _ in spools):
+        notes.append(f"the project is for the {printer}: beambam has the 0.4 mm nozzle's filament presets only, "
+                     "so its filaments keep their presets (the spools' colours are used)")
     names = settings.get("filament_settings_id")
     if not isinstance(names, list) or not names:
         raise ValueError("the project has no filament list (filament_settings_id)")
@@ -223,9 +233,13 @@ def adopt_filaments(settings: dict[str, Any], root: Path, spools: list[Spool]) -
 
     for i, (fid, material, colour) in enumerate(spools[:n]):
         new_colours[i] = _colour(colour)
-        if not fid and not material:
+        if (not fid and not material) or other_nozzle:
             continue
-        name_path = filament_profile(root, fid, material)
+        name_path = find_filament_profile(root, fid, material)
+        if name_path is None:
+            notes.append(f"filament {i + 1}: no bundled Bambu profile for {material or fid}: it keeps the "
+                         f"project's preset ({names[i]}); only its colour changed")
+            continue
         values = flatten_profile(root, name_path)
         name = str(values.get("name") or name_path.stem)
         old_variants = [str(v) for v in variants_all[i * vk:(i + 1) * vk]] if vk else None
@@ -276,7 +290,7 @@ def adopt_project(src: Path, dst: Path, root: Path, spools: list[Spool], bed_typ
     try:
         with zipfile.ZipFile(src) as zin, zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as zout:
             for item in zin.infolist():
-                data = zin.read(item.filename)
+                data = zin.read(item)
                 if item.filename == SETTINGS_MEMBER:
                     data = json.dumps(new, indent=4).encode("utf-8")
                 zout.writestr(item, data)       # the member's own ZipInfo keeps its name, date and compression

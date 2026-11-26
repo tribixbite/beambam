@@ -314,8 +314,11 @@ def _derive_print_params_from_3mf(local_path: Path,
         raise PrintRefusal(
             f"3MF project_settings.config malformed: {e}")
 
-    bed_name = ps.get("curr_bed_type")
-    bed_type = _BED_NAME_TO_MQTT.get(bed_name)
+    # The plate's own bed type wins over the project's (what the G-code was sliced for).
+    from beambam.filament_mapping import sliced_bed_type
+    with _zf.ZipFile(local_path) as z:
+        bed_name = sliced_bed_type(z, plate, ps)
+    bed_type = _BED_NAME_TO_MQTT.get(bed_name or "")
     if not bed_type:
         raise PrintRefusal(
             f"3MF curr_bed_type {bed_name!r} not in supported plates "

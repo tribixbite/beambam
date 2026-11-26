@@ -97,11 +97,33 @@ def plan_request(req: PrintRequest, state: dict, *,
                       slot=req.slot, explicit=explicit or None)
 
 
+def plan_digest(summary: dict[str, Any]) -> str:
+    """A short hash of what a user confirms in a plan: the print file (path, size, mtime), each filament's tray
+    and nozzle, the mapping arrays and every warning / error. POST /print with `plan_digest` refuses (409) when
+    the plan made at start differs, so "accept the warnings" covers only the warnings that were shown."""
+    import hashlib
+    import json as _json
+    import os
+    f = str(summary.get("file") or "")
+    try:
+        st = os.stat(f)
+        stamp = [st.st_size, int(st.st_mtime_ns)]
+    except OSError:
+        stamp = []
+    key = {"file": f, "stamp": stamp, "plate": summary.get("plate"),
+           "filaments": [[x.get("filament"), x.get("nozzle"), (x.get("tray") or {}).get("tray_id")]
+                         for x in summary.get("filaments") or []],
+           "ams_mapping": summary.get("ams_mapping"), "ams_mapping2": summary.get("ams_mapping2"),
+           "warnings": summary.get("warnings"), "errors": summary.get("errors")}
+    return hashlib.sha256(_json.dumps(key, sort_keys=True).encode()).hexdigest()[:16]
+
+
 def plan_summary(plan: PrintPlan) -> dict[str, Any]:
-    """plan_to_json plus the verdict a client acts on."""
+    """plan_to_json plus the verdict a client acts on, and its `digest` (plan_digest)."""
     out = plan_to_json(plan)
     out["ok"] = not plan.errors
     out["needs_confirmation"] = bool(plan.warnings)
+    out["digest"] = plan_digest(out)
     return out
 
 

@@ -167,3 +167,20 @@ describe('the project\'s plate', () => {
         expect(parseProjectSettings('{}').plate).toBeNull();
     });
 });
+
+describe('a project saved after slicing', () => {
+    test('is a project when it holds no G-code, a print file when it does', async () => {
+        const { read3mf } = await import('./load');
+        const mk = (gcode: boolean) => zipSync({
+            '3D/3dmodel.model': strToU8('<model><resources><object id="1"><mesh><vertices><vertex x="0" y="0" z="0"/><vertex x="1" y="0" z="0"/><vertex x="0" y="1" z="0"/></vertices><triangles><triangle v1="0" v2="1" v3="2"/></triangles></mesh></object></resources><build><item objectid="1"/></build></model>'),
+            'Metadata/project_settings.config': strToU8(JSON.stringify({ filament_colour: ['#FF0000'], filament_type: ['PLA'] })),
+            'Metadata/slice_info.config': strToU8('<config><plate><metadata key="index" value="1"/><metadata key="prediction" value="60"/><filament id="1" type="PLA" color="#00FF00" used_g="1"/></plate></config>'),
+            ...(gcode ? { 'Metadata/plate_1.gcode': strToU8('G28') } : {})
+        });
+        const saved = await read3mf('benchy.3mf', new Blob([mk(false)]));
+        expect(saved.kind).toBe('project');
+        expect(saved.filaments[0].colour).toBe('#FF0000');
+        expect(saved.sliced).toBeNull();
+        expect((await read3mf('benchy.3mf', new Blob([mk(true)]))).kind).toBe('sliced');
+    });
+});
