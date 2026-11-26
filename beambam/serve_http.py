@@ -31,6 +31,7 @@ import tempfile
 import threading
 import time
 import zipfile
+import urllib.parse
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from threading import Event, Thread
@@ -200,8 +201,33 @@ class SliceJobRegistry:
 # each filament was really sliced on (slice_info group_id), so a client may
 # build a manual nozzle map from it; "slice-reason": a refused slice names the
 # setting; "slice-options": /slice takes X-Slice-Options (slice_options.py);
-# "slice-mesh": /slice takes STL / OBJ / STEP and geometry-only 3MF.
-CAPABILITIES = ("plan-sliced-nozzles", "slice-reason", "slice-options", "slice-mesh")
+# "slice-mesh": /slice takes STL / OBJ / STEP and geometry-only 3MF;
+# "camera": GET /camera.mjpeg streams the chamber camera (through the camera
+# proxy, `beambam cam start` or `daemon --camera`) and /healthz says whether
+# that proxy is up; "plate-check": /print/plan warns when the plate on the
+# printer is not the one the file was sliced for, and /slice takes `bed_type`.
+# "project-sync": X-Slice-Options takes `spools` (a project prints with the
+# spools' presets and colours) and POST /project/update hands the project back.
+CAPABILITIES = ("plan-sliced-nozzles", "slice-reason", "slice-options", "slice-mesh", "camera", "plate-check",
+                "project-sync")
+DEFAULT_CAMERA_URL = "http://127.0.0.1:8766"
+
+
+def camera_base(camera_url: str | None = None) -> str:
+    """The camera proxy's base URL: the daemon's --camera-url, else $X2D_CAMERA_URL, else DEFAULT_CAMERA_URL."""
+    return (camera_url or os.environ.get("X2D_CAMERA_URL") or DEFAULT_CAMERA_URL).rstrip("/")
+
+
+def camera_listening(camera_url: str | None = None, timeout: float = 0.3) -> bool:
+    """Whether something accepts connections at the camera proxy's address (a TCP connect, no request: cheap
+    enough for every /healthz, and it does not wake the proxy's video pump)."""
+    import socket
+    u = urllib.parse.urlsplit(camera_base(camera_url))
+    try:
+        with socket.create_connection((u.hostname or "127.0.0.1", u.port or 80), timeout=timeout):
+            return True
+    except OSError:
+        return False
 
 
 def _beambam_version() -> str:
@@ -221,7 +247,8 @@ def _serve_http(bind: str,
                 timelapse_rec=None,
                 get_hub: Callable[[str], "StateHub | None"] | None = None,
                 allowed_hosts: list[str] | None = None,
-                cors_origins: list[str] | None = None) -> None:
+                cors_origins: list[str] | None = None,
+                camera_url: str | None = None) -> None:
     """Multi-printer HTTP server (item #36).
 
     `get_state` and `get_last_ts` now take a printer name (empty string
@@ -428,11 +455,8 @@ def _serve_http(bind: str,
             it back to the caller. Returns 503 with a plain-text reason
             if the camera daemon is unreachable; HA's image platform
             handles the failure gracefully (renders the previous
-            frame). The upstream URL is `$X2D_CAMERA_URL` or
-            `http://127.0.0.1:8766` by default."""
-            cam_base = os.environ.get(
-                "X2D_CAMERA_URL", "http://127.0.0.1:8766").rstrip("/")
-            url = cam_base + "/cam.jpg"
+            frame). The upstream is `camera_base()`."""
+            url = camera_base(camera_url) + "/cam.jpg"
             try:
                 req = urllib.request.Request(url)
                 with urllib.request.urlopen(req, timeout=5) as r:
@@ -440,14 +464,7 @@ def _serve_http(bind: str,
                     ctype = r.headers.get("Content-Type", "image/jpeg")
             except (urllib.error.URLError, ConnectionError,
                     TimeoutError, OSError) as e:
-                msg = (f"camera daemon unreachable at {url} ({e}); "
-                       "start `x2d_bridge.py camera --bind 127.0.0.1:8766`")
-                body = msg.encode()
-                self.send_response(503)
-                self.send_header("Content-Type", "text/plain; charset=utf-8")
-                self.send_header("Content-Length", str(len(body)))
-                self.end_headers()
-                self.wfile.write(body)
+                self._camera_unreachable(url, e)
                 return
             self.send_response(200)
             self.send_header("Content-Type", ctype)
@@ -455,6 +472,46 @@ def _serve_http(bind: str,
             self.send_header("Cache-Control", "no-store")
             self.end_headers()
             self.wfile.write(body)
+
+        def _camera_unreachable(self, url: str, e: Exception) -> None:
+            body = (f"camera proxy unreachable at {url} ({e}); start it with `beambam cam start`, "
+                    "or run the daemon with --camera").encode()
+            self.send_response(503)
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(body)
+
+        def _proxy_camera_stream(self) -> None:
+            """Relay the camera proxy's live MJPEG (`/cam.mjpeg`, multipart/x-mixed-replace) to the caller, so a
+            web page that may call this daemon (CORS / Local Network Access already granted) shows the chamber
+            in an <img> without a second address. 503 + the reason when the proxy is down. Runs until either
+            side closes; the proxy keeps its video pump running while a viewer is connected."""
+            url = camera_base(camera_url) + "/cam.mjpeg"
+            try:
+                # The proxy waits for its first frame before answering (pump cold start).
+                upstream = urllib.request.urlopen(urllib.request.Request(url), timeout=20)
+            except (urllib.error.URLError, ConnectionError, TimeoutError, OSError) as e:
+                self._camera_unreachable(url, e)
+                return
+            with upstream:
+                self.send_response(200)
+                self.send_header("Content-Type", upstream.headers.get(
+                    "Content-Type", "multipart/x-mixed-replace; boundary=frame"))
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("Connection", "close")
+                self.end_headers()
+                self.close_connection = True
+                try:
+                    while True:
+                        chunk = upstream.read1(65536) if hasattr(upstream, "read1") else upstream.read(65536)
+                        if not chunk:
+                            return
+                        self.wfile.write(chunk)
+                        self.wfile.flush()
+                except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError, TimeoutError, OSError):
+                    return                      # the viewer left, or the proxy stopped
 
         def _serve_state_events(self, printer: str) -> None:
             """Server-Sent Events stream of printer state pushes.
@@ -612,6 +669,9 @@ def _serve_http(bind: str,
                     self.end_headers()
                     return
                 self._serve_state_events(printer)
+                return
+            if path == "/camera.mjpeg":
+                self._proxy_camera_stream()
                 return
             if path == "/snapshot.jpg":
                 # Item #53: proxy the latest /cam.jpg from the camera
@@ -883,6 +943,8 @@ def _serve_http(bind: str,
                     # (pokefit.party, beambam.boo) instead of guessing from versions.
                     "version":           _beambam_version(),
                     "capabilities":      list(CAPABILITIES),
+                    # The camera proxy behind /camera.mjpeg is up (a TCP connect only).
+                    "camera":            camera_listening(camera_url),
                 }
                 body = json.dumps(payload, indent=2).encode()
                 self.send_response(200 if healthy else 503)
@@ -959,6 +1021,46 @@ def _serve_http(bind: str,
                                 status=400)
                 return None
             return fname, body
+
+        def _handle_project_update(self) -> None:
+            """POST /project/update — the uploaded Bambu Studio project with the X-Slice-Options applied (the
+            spools' filaments, the plate, the print settings, a nozzle map), as the .3mf to keep: what POST
+            /slice would slice. Body: the .3mf; X-Filename names it. Answers the file (200), or 400."""
+            from beambam.slice_options import SliceOptions, apply_to_project, has_print_settings
+            from beambam.slice_service import _root
+            try:
+                options = SliceOptions.from_header(self.headers.get("X-Slice-Options"))
+            except ValueError as e:
+                self._send_json({"error": str(e)}, status=400)
+                return
+            got = self._read_upload(".3mf", "a Bambu Studio project")
+            if got is None:
+                return
+            fname, body = got
+            if fname.lower().endswith(".gcode.3mf"):
+                self._send_json({"error": "this file is already sliced: there is no project to update"}, status=400)
+                return
+            with tempfile.TemporaryDirectory(prefix="beambam-project-") as tmp:
+                src, dst = Path(tmp) / "in.3mf", Path(tmp) / "out.3mf"
+                src.write_bytes(body)
+                if not has_print_settings(src):
+                    self._send_json({"error": f"{fname} has no print settings: not a Bambu Studio project"},
+                                    status=400)
+                    return
+                try:
+                    apply_to_project(src, dst, options, _root())
+                except (ValueError, KeyError, zipfile.BadZipFile) as e:
+                    self._send_json({"error": f"cannot update {fname}: {e}"}, status=400)
+                    return
+                data = dst.read_bytes()
+            stem = re.sub(r"\.3mf$", "", fname, flags=re.I)
+            self.send_response(200)
+            self.send_header("Content-Type", "model/3mf")
+            self.send_header("Content-Length", str(len(data)))
+            self.send_header("Content-Disposition", f'attachment; filename="{stem}_printer.3mf"')
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(data)
 
         def _handle_slice(self) -> None:
             """POST /slice — see the docstring above."""
@@ -1143,6 +1245,9 @@ def _serve_http(bind: str,
                 return
             if path == "/slice":
                 self._handle_slice()
+                return
+            if path == "/project/update":
+                self._handle_project_update()
                 return
             # Item #57: AI assistant — POST chat.
             if path == "/assistant/chat":

@@ -44,7 +44,9 @@ beambam daemon --http 127.0.0.1:8765 --cors-origin https://pokefit.party
 | `GET /state` | The printer's merged report (`print`, plus `info` with firmware versions); the cached copy, so it answers in milliseconds |
 | `GET /state.events` | Server-sent events: the report on every printer push |
 | `GET /ams` | The AMS block of the report |
-| `GET /healthz` | 200 while the printer reports, 503 when it went silent |
+| `GET /healthz` | 200 while the printer reports, 503 when it went silent; `version`, `capabilities`, and `camera` (the camera proxy answers) |
+| `GET /camera.mjpeg` | The chamber camera, live (`multipart/x-mixed-replace`, renders in an `<img>`), relayed from the camera proxy (`beambam cam start`, or `daemon --camera`); 503 with the reason when the proxy is down |
+| `GET /snapshot.jpg` | One frame from the camera proxy |
 | `GET /doctor` | `beambam doctor`'s checks on the cached report |
 | `POST /analyze` | Raw `.gcode.3mf` body → `beambam analyze` report (time, weight, purge, nozzle swaps) |
 
@@ -128,6 +130,8 @@ Optional header `X-Slice-Options` (compact JSON, up to 4 KB) applies to projects
 {"layer_height": 0.2, "wall_loops": 3, "infill": 20,
  "supports": "auto", "brim": "no_brim",
  "nozzles": [1, 2, 2, 1],
+ "bed_type": "Supertack Plate",
+ "spools": [{"id": "GFG02", "type": "PETG", "colour": "#F4EE2A"}, {"id": null, "type": null, "colour": "#FFFFFF"}],
  "filament_ids": ["GFA00"], "filament_types": ["PLA"]}
 ```
 
@@ -140,9 +144,25 @@ Optional header `X-Slice-Options` (compact JSON, up to 4 KB) applies to projects
   project's. Read back the result from `/print/plan`: it names the nozzle each filament was really sliced on.
 - `filament_ids` / `filament_types` (meshes): the bundled filament profile per filament, by the spool's
   `tray_info_idx` (e.g. `GFA00`), else by material, else Bambu PLA Basic.
+- `bed_type`: the build plate, one of `Cool Plate`, `Engineering Plate`, `High Temp Plate`, `Textured PEI Plate`,
+  `Supertack Plate` (Bambu's `curr_bed_type`; its bed temperatures and first layer follow).
+- `spools`: per filament, the spool it prints from. A project's filament i takes the spool's bundled system preset
+  (by `id`, else `type`) and its colour, written into the project settings (`beambam/project_sync.py`; the CLI's
+  `--load-filaments` crashes on X2D projects); `id` and `type` null keeps the slot's preset and sets only the colour.
+  A mesh takes the presets.
 - Unknown keys or values out of range answer 400.
 
-`GET /healthz` lists `capabilities`; web clients check `slice-options` and `slice-mesh` before using these.
+`POST /project/update` takes the same body, `X-Filename` and `X-Slice-Options` as `/slice` for a project and
+answers the project with the options applied, as the `.3mf` to keep (`Content-Disposition: <name>_printer.3mf`):
+what `/slice` would slice. 400 for a sliced file or a 3MF without print settings.
+
+`/print/plan` also compares the plate: when the printer reports a known plate marker (`device.plate.cur_id`;
+P0301 = SuperTack, `filament_mapping.PLATE_MARKERS`) and the file was sliced for another plate, `warnings` says so
+(confirmed like a spool warning) and `bed` gives `{file, printer, printer_marker}`. Warnings the slicer writes into
+the print file (e.g. a plate too hot for a filament) are added to the slice job's `warnings`.
+
+`GET /healthz` lists `capabilities`; web clients check `slice-options`, `slice-mesh`, `camera`, `plate-check` and
+`project-sync` before using these.
 
 ## Controls
 

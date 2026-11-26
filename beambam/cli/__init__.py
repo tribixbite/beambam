@@ -324,6 +324,14 @@ def build_parser() -> argparse.ArgumentParser:
                         "refused. Repeatable; also $BEAMBAM_CORS_ORIGINS "
                         "(comma-separated). Programs that send no Origin header "
                         "(curl, Home Assistant, a server-side app) are unaffected.")
+    d.add_argument("--camera", action="store_true",
+                   help="Also start the chamber-camera proxy (`beambam cam start`, on --camera-url's "
+                        "address) unless one already answers there, so GET /camera.mjpeg and "
+                        "/snapshot.jpg work: the live view beambam.boo and pokefit.party show. "
+                        "The proxy runs its video pump only while someone watches.")
+    d.add_argument("--camera-url", default=os.environ.get("X2D_CAMERA_URL", "http://127.0.0.1:8766"),
+                   help="Base URL of the camera proxy the HTTP API relays (default "
+                        "$X2D_CAMERA_URL or http://127.0.0.1:8766).")
     d.add_argument("--queue", action="store_true",
                    help="Enable the multi-printer print queue (item #55). "
                         "Auto-dispatches the next pending job to a printer "

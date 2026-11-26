@@ -4,6 +4,22 @@ All notable changes to this project.
 
 ## [Unreleased]
 
+### Added
+- **Live camera in the browser**: `GET /camera.mjpeg` relays the camera proxy's MJPEG to the web pages the
+  daemon lets in; `beambam daemon --camera` starts the proxy (`beambam cam start`) when none answers, and
+  `/healthz` says whether it is up. beambam.boo/print and pokefit.party show it.
+- **The plate**: the X2D's plate marker P0301 is the SuperTack plate. `/print/plan` warns when the printer has
+  another plate on than the file was sliced for (`bed` in the answer; `beambam print` shows it too), and
+  `X-Slice-Options` takes `bed_type`. beambam.boo/print shows the plate on the printer, a Plate setting, and
+  slices for the printer's plate in one tap.
+- **The project and the printer** (`project-sync`): `X-Slice-Options` takes `spools`, so a project prints with
+  each spool's system preset (temperatures, flow) and colour (`beambam/project_sync.py`, a port of pokefit's
+  "Use the printer's filaments"), and `POST /project/update` hands the project back to keep. beambam.boo/print
+  lists the filaments that are not what their spools hold, slices with the spools' filaments, and downloads
+  the updated project.
+- A slice job's `warnings` include those the slicer writes into the print file only (slice_info), such as a
+  plate too hot for a filament.
+
 ## v1.8.0 — print any file from beambam.boo (2026-11-26)
 
 ### Added

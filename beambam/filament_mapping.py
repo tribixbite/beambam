@@ -84,6 +84,19 @@ COLOUR_DIFFERS_DE = 2.3
 # (~/.x2d/captured_project_file.json): 10 entries padded with -1 / 255.
 MAPPING_WIDTH = 10
 
+# The build plate marker the X2D reads (`device.plate.cur_id`) -> Bambu Studio's `curr_bed_type`. Only markers
+# confirmed against a known plate are listed (no public table exists): P0301 is the SuperTack plate (the owner's
+# X2D, 2026-11-26; `base` 9, `mat` 1 alongside it). An unknown marker is reported as such, never guessed.
+PLATE_MARKERS: dict[str, str] = {"P0301": "Supertack Plate"}
+
+
+def installed_plate(state: dict) -> tuple[str | None, str | None]:
+    """(marker, plate name) of the build plate the printer reports; the name is None for an unknown marker."""
+    p = state.get("print", state) if isinstance(state, dict) else {}
+    cur = ((p.get("device") or {}).get("plate") or {}).get("cur_id")
+    marker = str(cur) if cur else None
+    return marker, PLATE_MARKERS.get(marker or "")
+
 
 class MappingError(Exception):
     """The plate cannot be mapped (hard error; never bypassable)."""
@@ -157,6 +170,7 @@ class ProjectInfo:
     nozzle_count: int
     has_switcher: bool        # sliced with the Filament Track Switch profile
     dynamic_nozzle_map: bool  # sliced for the switch's automatic nozzle mode
+    bed_type: str | None = None   # `curr_bed_type` it was sliced for ("Supertack Plate", ...)
 
 
 def _flag(value: Any) -> bool:
@@ -242,6 +256,7 @@ def read_project(path: Path | str, plate: int = 1) -> ProjectInfo:
         used=used, nozzle_count=nozzle_count,
         has_switcher=_flag(ps.get("has_filament_switcher")),
         dynamic_nozzle_map=dynamic,
+        bed_type=str(ps.get("curr_bed_type") or "") or None,
     )
 
 
@@ -287,6 +302,8 @@ class Topology:
     switch_ready: bool
     trays: tuple[Tray, ...]
     nozzle_rack: bool = False    # hotend rack (H2C): nozzle mapping is printer-computed
+    plate_marker: str | None = None   # `device.plate.cur_id` (e.g. "P0301")
+    plate: str | None = None          # its `curr_bed_type` name when the marker is known (PLATE_MARKERS)
 
     def tray(self, tray_id: int) -> Tray | None:
         return next((t for t in self.trays if t.tray_id == tray_id), None)
@@ -381,9 +398,10 @@ def read_topology(state: dict) -> Topology:
                                  else DEPUTY_EXTRUDER}),
             switch_input=None, unit_type="External", remain=-1,
         ))
+    marker, plate = installed_plate(p)
     return Topology(nozzle_count=nozzle_count, switch_installed=switch_installed,
                     switch_ready=switch_installed and ams_ready, trays=tuple(trays),
-                    nozzle_rack=nozzle_rack)
+                    nozzle_rack=nozzle_rack, plate_marker=marker, plate=plate)
 
 
 # ---------------------------------------------------------------------------
@@ -430,6 +448,8 @@ class PrintPlan:
     use_ams: bool
     assignments: list[Assignment]
     notes: list[str] = field(default_factory=list)     # informational
+    # Soft problems of the print as a whole (the plate); confirmed like a filament's warnings.
+    print_warnings: list[str] = field(default_factory=list)
 
     @property
     def errors(self) -> list[str]:
@@ -437,7 +457,8 @@ class PrintPlan:
 
     @property
     def warnings(self) -> list[str]:
-        return [f"filament {a.filament.number}: {w}" for a in self.assignments for w in a.warnings]
+        return self.print_warnings + [f"filament {a.filament.number}: {w}"
+                                      for a in self.assignments for w in a.warnings]
 
     def mapping_arrays(self) -> tuple[list[int], list[dict[str, int]]]:
         """`ams_mapping` (BS v0) and `ams_mapping2` (v1), filament-indexed."""
@@ -778,7 +799,16 @@ def plan_print(project: ProjectInfo, state: dict, *, use_ams: bool = True,
         assignments.append(a)
     ams_used = any(a.tray is not None and not a.tray.external for a in assignments)
     return PrintPlan(project=project, topology=topo, use_ams=use_ams and ams_used,
-                     assignments=assignments, notes=notes)
+                     assignments=assignments, notes=notes, print_warnings=plate_warnings(project, topo))
+
+
+def plate_warnings(project: ProjectInfo, topo: Topology) -> list[str]:
+    """A file sliced for another plate than the one on the printer: its bed temperature and first layer are
+    that plate's (the firmware does not check). Nothing when either side is unknown."""
+    if not project.bed_type or not topo.plate or project.bed_type == topo.plate:
+        return []
+    return [f"this file was sliced for the {project.bed_type}, but the printer has the {topo.plate} on: "
+            "swap the plate, or slice again for the plate that is on"]
 
 
 # ---------------------------------------------------------------------------
@@ -799,8 +829,10 @@ def format_plan(plan: PrintPlan, *, color: bool = False) -> str:
     topo, proj = plan.topology, plan.project
     sw = ("not installed" if not topo.switch_installed
           else "installed, set up" if topo.switch_ready else "installed, NOT set up")
+    bed = topo.plate or (f"plate marker {topo.plate_marker}" if topo.plate_marker else "plate not reported")
     lines = [sgr("1", f"Filament mapping — {proj.path.name}, plate {proj.plate}"),
-             f"  printer: {topo.nozzle_count} nozzle(s), Filament Track Switch {sw}", ""]
+             f"  printer: {topo.nozzle_count} nozzle(s), Filament Track Switch {sw}, {bed}"
+             + (f"; sliced for the {proj.bed_type}" if proj.bed_type else ""), ""]
     for a in plan.assignments:
         f, t = a.filament, a.tray
         left = (f"{f.number:>2}. {swatch(f.colour)}{f.type:<6} {f.colour:<8} "
@@ -818,6 +850,8 @@ def format_plan(plan: PrintPlan, *, color: bool = False) -> str:
             lines.append("      " + sgr("31", "error: " + e))
         for w in a.warnings:
             lines.append("      " + sgr("33", "warning: " + w))
+    for w in plan.print_warnings:
+        lines.append("  " + sgr("33", "warning: " + w))
     for n in plan.notes:
         lines.append("  " + sgr("33", "note: " + n))
     return "\n".join(lines) + "\n"
@@ -841,6 +875,8 @@ def plan_to_json(plan: PrintPlan) -> dict[str, Any]:
             "errors": a.errors, "warnings": a.warnings,
         } for a in plan.assignments],
         "notes": plan.notes,
+        "bed": {"file": plan.project.bed_type, "printer": plan.topology.plate,
+                "printer_marker": plan.topology.plate_marker},
         # Flat lists ("filament N: …") so a caller can show / gate on them
         # without walking the filaments.
         "errors": plan.errors, "warnings": plan.warnings,

@@ -205,7 +205,7 @@ def slice_project(src: Path, out_dir: Path, *, timeout: float = SLICE_TIMEOUT_S,
         model = src.resolve()
         if opts != SliceOptions():
             model = out_dir / f"options_{src.name}"
-            settings = apply_to_project(src, model, opts)
+            settings = apply_to_project(src, model, opts, r)
         # The CLI sets these two to false unless they are on its command line
         # (BambuStudio.cpp, "In CLI mode, default enable_filament_dynamic_map to
         # false"), whatever the project says. The track switch changes how
@@ -234,6 +234,7 @@ def slice_project(src: Path, out_dir: Path, *, timeout: float = SLICE_TIMEOUT_S,
         return {"ok": False, "warnings": warnings,
                 "error": f"{res.get('error_string') or 'slicing failed'} (code {res.get('return_code')})"
                          + (f": {why}" if why else "")}
+    warnings += sliced_warnings(out)
     per = [float(f.get("total_used_g", 0)) for p in plates for f in p.get("filaments", [])]
     if retargeted:
         warnings.insert(0, f"Made for {retargeted}: sliced for the X2D with its own profiles (the project's "
@@ -241,6 +242,30 @@ def slice_project(src: Path, out_dir: Path, *, timeout: float = SLICE_TIMEOUT_S,
     return {"ok": True, "mesh": mesh, "retargeted_from": retargeted, "file": str(out), "seconds": sum(float(p.get("total_predication", 0)) for p in plates),
             "grams": sum(per), "grams_per_filament": per, "warnings": warnings,
             "machine_profile": machine.name if machine else None, "wall_seconds": time.time() - t0}
+
+
+# Bambu Studio's slice_info warning codes in plain words (GUI: PartPlate / GCodeViewer notifications).
+SLICE_WARNINGS = {
+    "bed_temperature_too_high_than_filament":
+        "Bambu Studio: the plate's bed temperature is above a filament's softening temperature, so that "
+        "filament may soften and clog. Pick another plate, or check the filament",
+}
+
+
+def sliced_warnings(gcode_3mf: Path) -> list[str]:
+    """The warnings the slicer wrote into the print file's slice_info (`<warning msg=… level=…/>`), which
+    result.json leaves out, in plain words where known."""
+    try:
+        with zipfile.ZipFile(gcode_3mf) as z:
+            info = z.read("Metadata/slice_info.config").decode("utf-8", "replace")
+    except (OSError, KeyError, zipfile.BadZipFile):
+        return []
+    out: list[str] = []
+    for m in re.finditer(r'<warning\s+msg="([^"]*)"', info):
+        text = SLICE_WARNINGS.get(m.group(1), f"Bambu Studio: {m.group(1).replace('_', ' ')}")
+        if text not in out:
+            out.append(text)
+    return out
 
 
 @dataclass

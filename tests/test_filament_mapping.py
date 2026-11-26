@@ -535,3 +535,40 @@ def test_a_file_sliced_for_a_printer_with_other_nozzles_is_refused(tmp_path):
     state = make_state([("10001", [tray(0, "PLA", "#FFFFFF", "GFA00")])])
     with pytest.raises(fm.MappingError, match="1 nozzle"):
         fm.plan_print(fm.read_project(one), state)
+
+
+# --------------------------------------------------------------------------
+# the build plate on the printer against the plate the file was sliced for
+# --------------------------------------------------------------------------
+
+def _on_plate(state: dict, marker: str | None) -> dict:
+    if marker:
+        state["print"]["device"]["plate"] = {"base": 9, "cur_id": marker, "mat": 1, "tar_id": ""}
+    return state
+
+
+def test_plate_marker_decodes_only_known_plates(x2d_state):
+    assert fm.installed_plate(_on_plate(x2d_state, "P0301")) == ("P0301", "Supertack Plate")
+    assert fm.installed_plate(_on_plate(x2d_state, "P0999")) == ("P0999", None)
+    assert fm.installed_plate({"print": {}}) == (None, None)
+
+
+def test_another_plate_on_the_printer_is_a_warning_to_confirm(tmp_path, x2d_state):
+    """The fixture file is sliced for the Textured PEI Plate; the live X2D has the SuperTack plate on."""
+    proj = fm.read_project(make_3mf(tmp_path, [("PLA", "#FFFFFF", "GFA00", "1")]))
+    assert proj.bed_type == "Textured PEI Plate"
+    plan = fm.plan_print(proj, _on_plate(x2d_state, "P0301"))
+    assert plan.print_warnings == plan.warnings[:1]
+    assert "sliced for the Textured PEI Plate, but the printer has the Supertack Plate" in plan.warnings[0]
+    out = fm.plan_to_json(plan)
+    assert out["bed"] == {"file": "Textured PEI Plate", "printer": "Supertack Plate", "printer_marker": "P0301"}
+    assert out["warnings"] == plan.warnings and not out["errors"]
+    assert "Supertack Plate; sliced for the Textured PEI Plate" in fm.format_plan(plan)
+
+
+def test_same_or_unknown_plate_says_nothing(tmp_path, x2d_state):
+    proj = fm.read_project(make_3mf(tmp_path, [("PLA", "#FFFFFF", "GFA00", "1")]))
+    assert fm.plan_print(proj, _on_plate(x2d_state, "P0999")).print_warnings == []
+    assert fm.plan_print(proj, x2d_state).print_warnings == []
+    tack = fm.ProjectInfo(**{**proj.__dict__, "bed_type": "Supertack Plate"})
+    assert fm.plan_print(tack, _on_plate(x2d_state, "P0301")).print_warnings == []

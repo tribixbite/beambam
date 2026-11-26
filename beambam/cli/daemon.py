@@ -340,8 +340,11 @@ def cmd_daemon(args: argparse.Namespace) -> int:
                            getattr(args, "allow_host", None) or []),
                        "cors_origins": list(getattr(args, "cors_origin", None) or [])
                                        + [o for o in os.environ.get(
-                                           "BEAMBAM_CORS_ORIGINS", "").split(",") if o]},
+                                           "BEAMBAM_CORS_ORIGINS", "").split(",") if o],
+                       "camera_url": getattr(args, "camera_url", None)},
                daemon=True).start()
+        if getattr(args, "camera", False):
+            _start_camera_proxy(args)
 
     period = max(1, int(args.interval))
     print(f"[x2d-bridge] daemon up; {len(clients)} printer(s); "
@@ -371,6 +374,33 @@ def cmd_daemon(args: argparse.Namespace) -> int:
         except Exception:
             pass
     return 1 if http_failed else 0
+
+
+def _start_camera_proxy(args: argparse.Namespace) -> None:
+    """`daemon --camera`: start the camera proxy (`beambam cam start`, detached, ~/.x2d/cam.pid) on the
+    --camera-url address, unless something already answers there. Failures are reported, not fatal: the rest
+    of the API works without a camera."""
+    from urllib.parse import urlsplit
+    from beambam.cam import _cmd_cam_start
+    from beambam.serve_http import camera_base, camera_listening
+    url = camera_base(getattr(args, "camera_url", None))
+    if camera_listening(url):
+        print(f"[x2d-bridge] camera proxy already answering at {url}", file=sys.stderr)
+        return
+    u = urlsplit(url)
+    if u.hostname not in ("127.0.0.1", "localhost", "::1"):
+        print(f"[x2d-bridge] --camera: {url} is not on this machine; start its proxy there", file=sys.stderr)
+        return
+    ns = argparse.Namespace(bind=f"127.0.0.1:{u.port or 8766}", port=322, proto="rtsp", idle_timeout=30.0,
+                            skip_check=False, auth_token="", foreground=False)
+    try:
+        rc = _cmd_cam_start(ns)
+    except OSError as e:
+        rc = 1
+        print(f"[x2d-bridge] --camera: could not start the camera proxy: {e}", file=sys.stderr)
+    if rc:
+        print("[x2d-bridge] --camera: the camera proxy did not start (see ~/.x2d/cam.log); "
+              "the live view stays off", file=sys.stderr)
 
 
 def cmd_serve(args: argparse.Namespace) -> int:

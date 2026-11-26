@@ -59,7 +59,7 @@ JSON_MAX_BYTES = 64 * 1024
 
 # POST routes whose body is raw bytes (a model / .gcode.3mf), not JSON.
 RAW_BODY_ROUTES: frozenset[str] = frozenset(
-    {"/analyze", "/slice-print", "/print/upload", "/slice"})
+    {"/analyze", "/slice-print", "/print/upload", "/slice", "/project/update"})
 
 # Content types a cross-origin page may send WITHOUT a CORS preflight
 # (the Fetch standard's "CORS-safelisted" request content types).

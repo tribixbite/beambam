@@ -7,6 +7,10 @@ settings):
     {"layer_height": 0.2, "wall_loops": 3, "infill": 20,
      "supports": "auto" | "plate" | "off", "brim": "auto_brim" | "outer_only" | "no_brim",
      "nozzles": [1, 2, ...],                       # per filament: 1 = left, 2 = right
+     "bed_type": "Supertack Plate",                # the build plate (BED_TYPES)
+     "spools": [{"id": "GFG02", "type": "PETG", "colour": "#FF0000"}, ...],  # per filament: the spool it
+                                                   # prints from; a project takes its preset and colour
+                                                   # (project_sync.adopt_filaments), a mesh its preset
      "filament_ids": ["GFA00"], "filament_types": ["PLA"]}   # mesh files: the spools' presets
 
 Facts these rest on (checked on the X2D's bundled CLI, 2026-11-25/26):
@@ -32,6 +36,8 @@ from typing import Any
 
 SUPPORT_MODES = ("auto", "plate", "off")
 BRIM_TYPES = ("auto_brim", "outer_only", "no_brim")
+# Bambu Studio's `curr_bed_type` values (PrintConfig.cpp), in its own order.
+BED_TYPES = ("Cool Plate", "Engineering Plate", "High Temp Plate", "Textured PEI Plate", "Supertack Plate")
 LAYER_RANGE = (0.08, 0.28)          # mm: Bambu's range for a 0.4 mm nozzle
 LINE_MARGIN = 0.02                  # mm a widened line stays wider than the layer
 MAX_HEADER = 4096                   # bytes of X-Slice-Options accepted
@@ -54,6 +60,27 @@ def _strings(v: Any, name: str) -> tuple[str, ...]:
     return tuple(v)
 
 
+_HEX = re.compile(r"#[0-9A-Fa-f]{6}([0-9A-Fa-f]{2})?")
+
+
+def _spools(v: Any) -> tuple[tuple[str | None, str | None, str], ...]:
+    """`spools`: a list (1..64) of {"id": "GFG02" | null, "type": "PETG" | null, "colour": "#RRGGBB"}."""
+    if not isinstance(v, list) or not 0 < len(v) <= 64:
+        raise ValueError("spools must be a list of {id, type, colour}, one per filament")
+    out = []
+    for x in v:
+        if not isinstance(x, dict) or set(x) - {"id", "type", "colour"}:
+            raise ValueError("each spool must be {id, type, colour}")
+        fid, ftype, colour = x.get("id"), x.get("type"), x.get("colour")
+        for name, val in (("id", fid), ("type", ftype)):
+            if val is not None and not (isinstance(val, str) and re.fullmatch(r"[A-Za-z0-9 +._-]{1,40}", val)):
+                raise ValueError(f"spool {name} must be a short name like GFG02 / PETG")
+        if not (isinstance(colour, str) and _HEX.fullmatch(colour)):
+            raise ValueError("spool colour must be #RRGGBB")
+        out.append((fid or None, ftype or None, colour[:7].upper()))
+    return tuple(out)
+
+
 @dataclass(frozen=True)
 class SliceOptions:
     """Validated slice options; every field None/empty = the file's own setting."""
@@ -63,6 +90,9 @@ class SliceOptions:
     supports: str | None = None
     brim: str | None = None
     nozzles: tuple[int, ...] | None = None
+    bed_type: str | None = None
+    # Per filament: (Bambu filament id | None, material | None, colour "#RRGGBB") of the spool it prints from.
+    spools: tuple[tuple[str | None, str | None, str], ...] = field(default_factory=tuple)
     filament_ids: tuple[str, ...] = field(default_factory=tuple)
     filament_types: tuple[str, ...] = field(default_factory=tuple)
 
@@ -83,8 +113,8 @@ class SliceOptions:
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> "SliceOptions":
-        known = {"layer_height", "wall_loops", "infill", "supports", "brim", "nozzles", "filament_ids",
-                 "filament_types", "filament_colours"}
+        known = {"layer_height", "wall_loops", "infill", "supports", "brim", "nozzles", "bed_type", "spools",
+                 "filament_ids", "filament_types"}
         unknown = sorted(set(d) - known)
         if unknown:
             raise ValueError(f"unknown slice option(s): {', '.join(unknown)}")
@@ -99,6 +129,9 @@ class SliceOptions:
         brim = d.get("brim")
         if brim is not None and brim not in BRIM_TYPES:
             raise ValueError(f"brim must be one of {', '.join(BRIM_TYPES)}")
+        bed = d.get("bed_type")
+        if bed is not None and bed not in BED_TYPES:
+            raise ValueError(f"bed_type must be one of {', '.join(BED_TYPES)}")
         noz = d.get("nozzles")
         if noz is not None:
             if (not isinstance(noz, list) or not 0 < len(noz) <= 64
@@ -109,10 +142,18 @@ class SliceOptions:
             layer_height=lh,
             wall_loops=_whole(d["wall_loops"], "wall_loops", 1, 10) if d.get("wall_loops") is not None else None,
             infill=_whole(d["infill"], "infill", 0, 100) if d.get("infill") is not None else None,
-            supports=sup, brim=brim, nozzles=noz,
+            supports=sup, brim=brim, nozzles=noz, bed_type=bed,
+            spools=_spools(d["spools"]) if d.get("spools") is not None else (),
             filament_ids=_strings(d["filament_ids"], "filament_ids") if d.get("filament_ids") else (),
             filament_types=_strings(d["filament_types"], "filament_types") if d.get("filament_types") else (),
         )
+
+    def filament(self, i: int) -> tuple[str | None, str | None]:
+        """(filament id, material) filament `i` slices with: the explicit lists first, then its spool."""
+        spool = self.spools[i] if i < len(self.spools) else (None, None, "")
+        fid = self.filament_ids[i] if i < len(self.filament_ids) else spool[0]
+        ftype = self.filament_types[i] if i < len(self.filament_types) else spool[1]
+        return fid or None, ftype or None
 
     def process_keys(self, current: dict[str, Any] | None = None) -> dict[str, str]:
         """The process settings these options set (Bambu keys, string values). `current`: the settings they apply
@@ -136,6 +177,8 @@ class SliceOptions:
                 out["support_type"] = "tree(auto)"
         if self.brim is not None:
             out["brim_type"] = self.brim
+        if self.bed_type is not None:
+            out["curr_bed_type"] = self.bed_type
         return out
 
 
@@ -159,11 +202,17 @@ def nozzle_map(nozzles: tuple[int, ...], n_filaments: int) -> list[str]:
     return ([str(x) for x in nozzles] + ["1"] * n_filaments)[:n_filaments]
 
 
-def apply_to_project(src: Path, dst: Path, opts: SliceOptions) -> dict[str, Any]:
-    """Copy project `src` to `dst` with `opts` applied: project_settings, and a manual nozzle map on every plate
-    as well. Returns the new project settings."""
+def apply_to_project(src: Path, dst: Path, opts: SliceOptions, root: Path | None = None) -> dict[str, Any]:
+    """Copy project `src` to `dst` with `opts` applied: the spools' filaments (`project_sync.adopt_filaments`,
+    which needs the profiles under `root`), project_settings, and a manual nozzle map on every plate as well.
+    Returns the new project settings. What POST /slice slices and POST /project/update hands back."""
     with zipfile.ZipFile(src) as zin:
         settings = json.loads(zin.read("Metadata/project_settings.config"))
+        if opts.spools:
+            if root is None:
+                raise ValueError("spools need the slicer's profiles (root)")
+            from beambam.project_sync import adopt_filaments
+            settings = adopt_filaments(settings, root, list(opts.spools))
         settings.update(opts.process_keys(settings))
         n = len(settings.get("filament_settings_id") or []) or (len(opts.nozzles) if opts.nozzles else 1)
         fmap = nozzle_map(opts.nozzles, n) if opts.nozzles else None
@@ -218,6 +267,8 @@ def retarget(settings: dict[str, Any], opts: SliceOptions) -> SliceOptions:
     lh = opts.layer_height if opts.layer_height is not None else floats(settings.get("layer_height"))
     if lh is not None and not LAYER_RANGE[0] <= lh <= LAYER_RANGE[1]:
         lh = None
+    if opts.spools:                     # the printer's spools stand in for the project's filaments
+        return replace(opts, layer_height=lh)
     return replace(opts, layer_height=lh,
                    filament_ids=opts.filament_ids or tuple(str(x) for x in settings.get("filament_ids") or ()),
                    filament_types=opts.filament_types or tuple(str(x) for x in settings.get("filament_type") or ()))
@@ -330,9 +381,8 @@ def mesh_args(root: Path, opts: SliceOptions, out_dir: Path, n_filaments: int = 
     process settings; `arrange` False keeps its placement), for MESH_PRINTER with `opts` (process, filaments,
     nozzle map)."""
     machine = _profiles(root, "machine") / f"{MESH_PRINTER}.json"
-    n = max(n_filaments, len(opts.filament_ids), len(opts.filament_types), 1)
-    fils = [filament_profile(root, opts.filament_ids[i] if i < len(opts.filament_ids) else None,
-                             opts.filament_types[i] if i < len(opts.filament_types) else None) for i in range(n)]
+    n = max(n_filaments, len(opts.filament_ids), len(opts.filament_types), len(opts.spools), 1)
+    fils = [filament_profile(root, *opts.filament(i)) for i in range(n)]
     args = (["--arrange", "1"] if arrange else []) + [
             "--load-settings", f"{machine};{mesh_process(root, opts, out_dir, keep)}",
             "--load-filaments", ";".join(str(f) for f in fils)]

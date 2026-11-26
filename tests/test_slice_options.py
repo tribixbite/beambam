@@ -28,7 +28,7 @@ def test_options_parse_and_refuse_what_the_slicer_would_not_take():
     assert (o.layer_height, o.wall_loops, o.infill, o.nozzles, o.filament_ids) == (0.2, 3, 20, (1, 2), ("GFA00",))
     for bad in ({"layer_height": 0.5}, {"wall_loops": 2.5}, {"infill": True}, {"supports": "always"},
                 {"brim": "mouse_ear"}, {"nozzles": [1, 3]}, {"nozzles": "12"}, {"colour": "red"},
-                {"filament_ids": "GFA00"}):
+                {"filament_ids": "GFA00"}, {"bed_type": "Glass Plate"}, {"filament_colours": ["#FFFFFF"]}):
         with pytest.raises(ValueError):
             so.SliceOptions.from_dict(bad)
     with pytest.raises(ValueError):
@@ -48,6 +48,9 @@ def test_process_keys_and_a_tall_layer_widening_thin_lines():
     assert so.SliceOptions(supports="off").process_keys() == {"enable_support": "0"}
     assert so.SliceOptions(supports="auto").process_keys()["support_type"] == "tree(auto)"
     assert so.SliceOptions().process_keys(current) == {}
+    # The plate: Bambu's own name, written as the project's / process's `curr_bed_type` (checked on an STL slice).
+    bed = so.SliceOptions.from_dict({"bed_type": "Supertack Plate"})
+    assert bed.process_keys() == {"curr_bed_type": "Supertack Plate"}
 
 
 def test_nozzle_map_pads_left_and_cuts_to_the_project():
@@ -158,3 +161,17 @@ def test_a_project_for_another_printer_is_sliced_for_this_one(tmp_path):
     # The caller's options still win over the project's.
     so.mesh_args(root, so.SliceOptions(wall_loops=2), out, keep=settings)
     assert json.loads((out / "beambam_process.json").read_text())["wall_loops"] == "2"
+
+
+def test_the_print_files_own_warnings_are_passed_on(tmp_path):
+    """slice_info carries warnings result.json does not (seen: PETG on the SuperTack plate, 2026-11-26)."""
+    from beambam.slice_service import sliced_warnings
+    f = tmp_path / "x.gcode.3mf"
+    with zipfile.ZipFile(f, "w") as z:
+        z.writestr("Metadata/slice_info.config",
+                   '<config><plate><warning msg="bed_temperature_too_high_than_filament" level="3" '
+                   'error_code ="1000C001"  /><warning msg="some_new_thing" level="1"/></plate></config>')
+    got = sliced_warnings(f)
+    assert got[0].startswith("Bambu Studio: the plate's bed temperature is above")
+    assert got[1] == "Bambu Studio: some new thing"
+    assert sliced_warnings(tmp_path / "missing.3mf") == []

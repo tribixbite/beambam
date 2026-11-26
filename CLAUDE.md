@@ -55,6 +55,11 @@ Running GUI apps (BambuStudio / wxWidgets 3.3) on termux-x11. These lessons were
   profile SEGFAULTS this CLI (rc -11), so filaments are system profiles picked by filament id. A MakerWorld project
   made for another printer (P2S) keeps that printer's profile unless re-targeted: one-nozzle G-code, every group 0.
   `--filament-map-mode Manual --filament-map 2,1` works for meshes. All in `beambam/slice_options.py`.
+  `--load-filaments` with a project made **for the X2D** crashes the CLI (rc -6, `std::length_error`, right after
+  "Initializing StaticPrintConfigs"), so a project takes the spools' presets by rewriting project_settings
+  (`beambam/project_sync.py`: inherits, then `include` templates, then own keys; per-variant blocks by name).
+- **The X2D's plate marker** `device.plate.cur_id` P0301 is the SuperTack plate (owner-confirmed 2026-11-26; `base`
+  9, `mat` 1). No public table: only confirmed markers go in `filament_mapping.PLATE_MARKERS` (and pokefit's copy).
 - **Test browsers on this box are shared:** another session drives a headless Chromium on CDP port 9333 (it even
   attached to one started here). Use an unusual port and your own `--user-data-dir`, select tabs by URL, and never
   kill "chromium on port N" without checking whose it is. Edge on the phone: CDP via
