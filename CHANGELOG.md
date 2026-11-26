@@ -4,6 +4,8 @@ All notable changes to this project.
 
 ## [Unreleased]
 
+## v1.9.0 — slice on any computer (2026-11-26)
+
 ### Added
 - **Slicing off the phone:** the daemon's `POST /slice` (pokefit.party, beambam.boo/print) slices with whatever
   Bambu Studio it finds: `$BAMBU_STUDIO`, the phone's source build, the official build `beambam slicer install`
@@ -38,6 +40,9 @@ All notable changes to this project.
   which `--load-filaments` reads without its `inherits` chain. Bambu PLA Basic came out with density 0 (0 g
   reported), no filament id and the CLI's default plate temperatures (hot plate 45 instead of 55 °C). Meshes now
   take the flattened (`filament_full`) profile.
+- `/healthz` stays up when the slicer's path cannot be read; a wrong `$BAMBU_STUDIO` is named as such instead of
+  "no Bambu Studio"; `slicer install` swaps a reinstalled build in atomically, removes older downloads, takes a
+  relative config dir, and reports download / unpack failures without a traceback (Fable review).
 
 ### Fixed (Fable audit, 2026-11-26)
 - **Plate:** a plate's own bed type in a project no longer silently overrides `bed_type`. The plan check and the

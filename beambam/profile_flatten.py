@@ -12,6 +12,7 @@ profile's `inherits` chain (child keys over parent). Idempotent.
 from __future__ import annotations
 
 import json
+import shutil
 import sys
 from pathlib import Path
 from typing import Any
@@ -45,11 +46,16 @@ def _flatten_kind(profiles: Path, kind: str) -> int:
         merged.update({k: v for k, v in p.items() if k != "inherits"})
         return merged
 
-    dst.mkdir(exist_ok=True)
+    # Written beside it and renamed into place: `missing` tests the folder, so a run cut short must not leave one.
+    work = profiles / f".{kind}_full.tmp"
+    shutil.rmtree(work, ignore_errors=True)
+    work.mkdir()
     for name in found:
         flat = resolve(name, ())
         flat.pop("inherits", None)
-        (dst / f"{name}.json").write_text(json.dumps(flat, ensure_ascii=False), encoding="utf-8")
+        (work / f"{name}.json").write_text(json.dumps(flat, ensure_ascii=False), encoding="utf-8")
+    shutil.rmtree(dst, ignore_errors=True)
+    work.replace(dst)
     return len(found)
 
 

@@ -12,7 +12,9 @@ import pytest
 
 import beambam.slice_service as ss
 from beambam.slice_options import SliceOptions
-from tests.test_http_print import daemon  # noqa: F401  (the fixture)
+import tests.test_http_print as _http
+
+daemon = _http.daemon            # the daemon fixture, shared with the HTTP tests
 
 pytestmark = [pytest.mark.slow,
               pytest.mark.skipif(os.environ.get("BEAMBAM_REAL_SLICER") != "1",

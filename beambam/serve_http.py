@@ -1025,7 +1025,10 @@ def _serve_http(bind: str,
                 age = time.time() - last if last else float("inf")
                 healthy = age <= max_staleness
                 from beambam.slice_service import slicer_status
-                slicer = slicer_status()
+                try:
+                    slicer = slicer_status()
+                except OSError as e:           # a slicer path it may not read (EACCES): say so, stay up
+                    slicer = {"ready": False, "kind": None, "version": "", "problem": f"cannot check the slicer: {e}"}
                 payload = {
                     "printer":           printer,
                     "healthy":           healthy,
@@ -1125,7 +1128,7 @@ def _serve_http(bind: str,
             spools' filaments, the plate, the print settings, a nozzle map), as the .3mf to keep: what POST
             /slice would slice. Body: the .3mf; X-Filename names it. Answers the file (200), or 400."""
             from beambam.slice_options import SliceOptions, apply_to_project, has_print_settings
-            from beambam.slice_service import NO_SLICER, profiles_dir
+            from beambam.slice_service import no_slicer_message, profiles_dir
             got = self._read_upload(".3mf", "a Bambu Studio project")
             if got is None:
                 return
@@ -1149,7 +1152,7 @@ def _serve_http(bind: str,
                 profiles = profiles_dir()
                 if profiles is None and options.spools:
                     # The spools' presets come from Bambu Studio's profiles: none here to take them from.
-                    self._send_json({"error": f"cannot update {fname}: {NO_SLICER}"}, status=503)
+                    self._send_json({"error": f"cannot update {fname}: {no_slicer_message()}"}, status=503)
                     return
                 try:
                     apply_to_project(src, dst, options, profiles, notes)
@@ -1200,7 +1203,10 @@ def _serve_http(bind: str,
                 # …and for the plate on it, when the caller names none and the printer's marker is known: a mesh
                 # has no plate of its own, and the profiles' default (Cool Plate) refuses PETG outright.
                 from beambam.slice_service import is_mesh
-                plate = installed_plate(cached)[1]
+                try:
+                    plate = installed_plate(cached)[1]
+                except Exception:              # noqa: BLE001 — a partial report: the profiles' plate
+                    plate = None
                 if plate and options.bed_type is None and is_mesh(dest):
                     import dataclasses
                     options = dataclasses.replace(options, bed_type=plate)

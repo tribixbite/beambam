@@ -169,3 +169,31 @@ def test_load_problem_names_the_missing_library(tmp_path):
     log.write_text("bambu-studio: error while loading shared libraries: libwebkit2gtk-4.1.so.0: cannot open\n")
     assert "libwebkit2gtk-4.1.so.0" in ss.load_problem(log)
     assert ss.load_problem(tmp_path / "none.log") == ""
+
+
+def test_a_wrong_bambu_studio_setting_is_named(tmp_path, monkeypatch):
+    monkeypatch.setenv("BEAMBAM_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("BAMBU_STUDIO", str(tmp_path / "gone" / "bambu-studio"))
+    assert ss.resolve_slicer(tmp_path) is None
+    assert "BAMBU_STUDIO is set to" in ss.slicer_status(tmp_path)["problem"]
+
+
+def test_reinstall_swaps_the_tree_and_drops_other_versions(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("BEAMBAM_HOME", "home")                          # relative: the manifest is absolute
+    monkeypatch.setattr(sp, "REPO_ROOT", tmp_path / "no-checkout")
+    for var in ("BAMBU_STUDIO", "X2D_BS_BIN"):
+        monkeypatch.delenv(var, raising=False)
+    archive = _windows_zip(tmp_path)
+    data = archive.read_bytes()
+    asset = {"name": archive.name, "browser_download_url": archive.as_uri(), "size": len(data),
+             "digest": "sha256:" + hashlib.sha256(data).hexdigest()}
+    monkeypatch.setattr(si, "pick_asset", lambda assets: assets[0])
+    for tag in ("v8", "v9"):
+        monkeypatch.setattr(si, "release", lambda t, tag=tag: {"tag_name": tag, "assets": [asset]})
+        man = si.install(tag, progress=lambda _: None)
+    assert Path(man["exe"]).is_absolute() and man["version"] == "v9"
+    root = tmp_path / "home" / "slicer"
+    assert sorted(p.name for p in root.iterdir()) == ["current.json", "v9"]   # v8 dropped, no work dirs left
+    man = si.install("v9", force=True, progress=lambda _: None)
+    assert Path(man["exe"]).is_file() and sorted(p.name for p in root.iterdir()) == ["current.json", "v9"]

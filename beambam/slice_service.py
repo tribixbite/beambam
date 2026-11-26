@@ -66,6 +66,17 @@ NO_SLICER = ("no Bambu Studio to slice with: run `beambam slicer install` (downl
              "build), or install Bambu Studio, or set BAMBU_STUDIO to its executable, then slice again")
 
 
+def no_slicer_message() -> str:
+    """Why `resolve_slicer` found nothing: NO_SLICER, or the explicit setting that points nowhere (it is not
+    second-guessed, so a downloaded build is not used while it is set)."""
+    for var in ("BAMBU_STUDIO", "X2D_BS_BIN"):
+        raw = os.environ.get(var)
+        if raw:
+            return (f"{var} is set to {raw}, which is not a Bambu Studio executable (or its profiles are "
+                    f"missing): fix it, or unset it to use the one `beambam slicer install` downloads")
+    return NO_SLICER
+
+
 @dataclass(frozen=True)
 class Slicer:
     """The Bambu Studio the daemon slices with (`resolve_slicer`)."""
@@ -117,7 +128,7 @@ def slicer_status(root: Path | None = None) -> dict[str, Any]:
     from beambam.slicer_paths import downloaded_slicer
     s = resolve_slicer(root)
     if s is None:
-        return {"ready": False, "kind": None, "version": "", "problem": NO_SLICER}
+        return {"ready": False, "kind": None, "version": "", "problem": no_slicer_message()}
     got = downloaded_slicer()
     downloaded = got is not None and Path(got["exe"]) == s.exe
     problem = s.problem()
@@ -258,7 +269,7 @@ def slice_project(src: Path, out_dir: Path, *, timeout: float = SLICE_TIMEOUT_S,
     opts = options or SliceOptions()
     slicer = resolve_slicer(root)
     if slicer is None:
-        return {"ok": False, "error": NO_SLICER}
+        return {"ok": False, "error": no_slicer_message()}
     if slicer.phone and slicer.problem():
         # The checkout's own build: its profiles are ours to complete (tools/x2d_cli_slice.sh did this too).
         from beambam.profile_flatten import flatten

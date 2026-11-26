@@ -119,7 +119,7 @@ def release(tag: str = DEFAULT_TAG) -> dict[str, Any]:
     try:
         with _get(f"https://api.github.com/repos/{REPO}/releases/{path}") as r:
             data = json.load(r)
-    except OSError as e:
+    except (OSError, ValueError) as e:            # unreachable, or not JSON
         raise SlicerInstallError(f"cannot read Bambu Studio's release {tag} from GitHub: {e}") from e
     if not isinstance(data, dict) or not isinstance(data.get("assets"), list):
         raise SlicerInstallError(f"GitHub answered no release for {tag}")
@@ -189,6 +189,7 @@ def _extract_dmg(archive: Path, dest: Path) -> None:
     r = subprocess.run(["hdiutil", "attach", "-nobrowse", "-readonly", "-noautoopen", "-mountpoint", str(mount),
                         str(archive)], input=b"Y\n", capture_output=True, timeout=600)
     if r.returncode != 0:
+        shutil.rmtree(mount, ignore_errors=True)
         raise SlicerInstallError(f"cannot open {archive.name}: {r.stderr.decode(errors='replace').strip()}")
     try:
         apps = sorted(mount.glob("*.app"))
@@ -232,7 +233,8 @@ def locate(tree: Path) -> tuple[Path, Path]:
 # --------------------------------------------------------------------------- install
 
 def slicer_root() -> Path:
-    return config_path("slicer")
+    """Where downloaded builds live; absolute, so the manifest's paths hold from any working directory."""
+    return config_path("slicer").resolve()
 
 
 def install(tag: str = DEFAULT_TAG, force: bool = False,
@@ -274,14 +276,20 @@ def install(tag: str = DEFAULT_TAG, force: bool = False,
         if missing(profiles):
             progress(f"Writing the flattened profiles it lacks ({', '.join(missing(profiles))})…")
             flatten(profiles)
+        # Swapped in with two renames (a daemon slicing meanwhile finds one tree or the other, never half of
+        # one); the old copy is deleted after.
+        old = work / "previous"
         if final.exists():
-            shutil.rmtree(final)
+            final.replace(old)
         unpacked.replace(final)
+        exe, profiles = locate(final)
+        man = _manifest(version, exe, profiles, asset)
+        _write_manifest(manifest_path, man)
     finally:
         shutil.rmtree(work, ignore_errors=True)
-    exe, profiles = locate(final)
-    man = _manifest(version, exe, profiles, asset)
-    _write_manifest(manifest_path, man)
+    for other in root.iterdir():                  # other versions: no longer used by anything
+        if other.is_dir() and other.name != version and not other.name.startswith("."):
+            shutil.rmtree(other, ignore_errors=True)
     progress(f"Installed Bambu Studio {version}: {exe}")
     return man
 
@@ -327,12 +335,18 @@ def cmd_slicer(args: argparse.Namespace) -> int:
     if action == "install":
         try:
             install(args.tag, force=args.force)
-        except SlicerInstallError as e:
+        except (SlicerInstallError, OSError, subprocess.SubprocessError, zipfile.BadZipFile) as e:
+            # OSError includes a build in use (Windows will not replace a running exe: stop the daemon first).
             print(f"beambam slicer install: {e}", file=sys.stderr)
             return 1
         return _status()
     if action == "remove":
-        print("removed the downloaded Bambu Studio" if remove() else "no downloaded Bambu Studio to remove")
+        try:
+            gone = remove()
+        except OSError as e:
+            print(f"beambam slicer remove: {e} (stop a daemon that is slicing with it first)", file=sys.stderr)
+            return 1
+        print("removed the downloaded Bambu Studio" if gone else "no downloaded Bambu Studio to remove")
         return 0
     return _status()
 
