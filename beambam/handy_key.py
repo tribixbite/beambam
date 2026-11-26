@@ -275,7 +275,7 @@ def factor_in(data: bytes, n: int) -> int | None:
         import numpy as np
     except ImportError as e:
         raise KeyError_("reading the key needs numpy: pip install numpy (or uvx --with numpy beambam key)") from e
-    arr = np.frombuffer(data, dtype=np.uint8)
+    arr: "np.ndarray" = np.frombuffer(data, dtype=np.uint8)
     if len(arr) < 128:
         return None
     idx = np.arange(0, len(arr) - 128, 4)
