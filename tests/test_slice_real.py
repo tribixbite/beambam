@@ -91,7 +91,17 @@ def test_the_sliced_file_slices_again_as_a_project(tmp_path, slicer):
 def test_the_daemon_slices_over_http(tmp_path, slicer, daemon):
     """What pokefit.party and beambam.boo do: /healthz says it can slice, POST /slice an STL, poll the job."""
     from tests.test_http_print import _req, _wait
+    import socket
+    import time
     port, _ = daemon
+    t0 = time.time()
+    while True:                       # the fixture gives up waiting after 15 s without saying so
+        try:
+            socket.create_connection(("127.0.0.1", port), timeout=1).close()
+            break
+        except OSError:
+            assert time.time() - t0 < 60, f"the daemon never listened on {port}"
+            time.sleep(0.2)
     code, health, _ = _req(port, "/healthz", method="GET")
     assert "slice" in health["capabilities"] and health["slicer"]["ready"], health
     stl = _stl(tmp_path / "cube.stl", [(0, 15)]).read_bytes()
@@ -107,7 +117,9 @@ def test_a_mesh_slices_for_the_plate_asked_for(tmp_path, slicer):
     """The profiles' default plate (Cool Plate) refuses PETG (code -61); the plate asked for is used."""
     src = _stl(tmp_path / "cube.stl", [(0, 15)])
     refused = ss.slice_project(src, tmp_path / "a", name="cube.stl", options=SliceOptions(filament_types=("PETG",)))
-    assert not refused["ok"] and "Cool Plate" in refused["error"]
+    # The phone build's log names the plate ("Plate 1: Cool Plate does not support filament 1"); the official
+    # Windows build says only the code.
+    assert not refused["ok"] and "code -61" in refused["error"], refused
     res = ss.slice_project(src, tmp_path / "b", name="cube.stl",
                            options=SliceOptions(filament_types=("PETG",), bed_type="Textured PEI Plate"))
     _check(res, tmp_path / "b").close()
