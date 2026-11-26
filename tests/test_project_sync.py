@@ -131,6 +131,18 @@ def test_a_spool_with_no_preset_info_only_recolours_and_extra_spools_are_ignored
     assert len(out["filament_settings_id"]) == 2 and len(out["nozzle_temperature"]) == 6
 
 
+def test_a_spool_whose_filament_has_no_bundled_profile_says_which_preset_stands_in(tmp_path):
+    """Seen live: Bambu PLA Pure (GFA19) and eSUN PLA+ (GFL03) have no X2D profile in the bundled build; they
+    slice with PLA Basic, and the note says so (else the plan's "profile GFA00 vs loaded GFA19" reads as a
+    failed sync)."""
+    root = _resources(tmp_path / "r")
+    notes: list[str] = []
+    out = ps.adopt_filaments(_settings(2), root, [("GFA19", "PLA", "#FFFFFF"), ("GFA00", "PLA", "#000000")], notes)
+    assert out["filament_settings_id"] == [PLA, PLA]
+    assert notes == [f"filament 1: no bundled X2D profile for GFA19: it slices with {PLA} (same material), "
+                     "not that filament's own temperatures and flow"]
+
+
 def test_flush_matrix_follows_the_closest_old_colours(tmp_path):
     root = _resources(tmp_path / "r")
     # Black's slot turns red (closest old colour: black, so its row stays); white's turns almost-blue (closest:

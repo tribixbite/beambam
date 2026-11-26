@@ -35,7 +35,9 @@ All notable changes to this project.
 - **`daemon --camera`:** starts the camera for the daemon's own printer, says so when the proxy dies at once, and
   starts it only after the HTTP API is up.
 - **Spools:** a spool with no bundled profile, or a project for another nozzle size, keeps the project's preset
-  and says so (slice warnings, `X-Beambam-Warnings`). It used to become Bambu PLA Basic.
+  and says so (slice warnings, `X-Beambam-Warnings`). It used to become Bambu PLA Basic. A spool whose filament
+  has no bundled X2D profile but whose material has one (PLA Pure, eSUN PLA+) slices with that material's preset,
+  and the warnings now name it: the spool check still lists the id difference.
 - **Uploads:** read before any refusal, so clients get the 400 instead of a reset. Bad `Content-Length` answers
   400, unexpected errors answer a JSON 500, and refused uploads are deleted.
 - **Housekeeping:**

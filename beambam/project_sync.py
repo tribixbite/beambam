@@ -242,6 +242,11 @@ def adopt_filaments(settings: dict[str, Any], root: Path, spools: list[Spool],
             continue
         values = flatten_profile(root, name_path)
         name = str(values.get("name") or name_path.stem)
+        if fid and _resolved_id(values) != fid:
+            # Matched by material only (the bundled build lacks this filament's X2D profile, e.g. PLA Pure):
+            # the plan will still flag the id, so say which preset stood in.
+            notes.append(f"filament {i + 1}: no bundled X2D profile for {fid}: it slices with {name} (same "
+                         "material), not that filament's own temperatures and flow")
         old_variants = [str(v) for v in variants_all[i * vk:(i + 1) * vk]] if vk else None
         new_variants = [str(v) for v in _as_list(values["filament_extruder_variant"])] \
             if values.get("filament_extruder_variant") else None
