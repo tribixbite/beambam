@@ -49,12 +49,15 @@ export class PaintSession {
             const key = partKey(p);
             const triCount = (p.indices as Uint32Array).length / 3;
             if (!this.live.has(key)) {
-                const original = p.states && p.states.length === triCount ? p.states : new Uint8Array(triCount);
-                this.base.set(key, original);
-                this.live.set(key, original.slice()); // a clone the preview mutates; `original` stays pristine
+                // The object's own state array is the live buffer, mutated in place so the preview part (and
+                // any plate copy sharing it by reference) shows paint without a rebuild; `base` is a pristine
+                // snapshot for clear / undo-to-original.
+                const live = p.states && p.states.length === triCount ? p.states : new Uint8Array(triCount);
+                this.base.set(key, live.slice());
+                this.live.set(key, live);
                 this.geom.set(key, { positions: p.positions, indices: p.indices as Uint32Array });
             }
-            p.states = this.live.get(key)!; // every instance shows the same live paint
+            p.states = this.live.get(key)!; // every instance (incl. a freshly allocated buffer) shares it
         }
     }
 

@@ -16,6 +16,7 @@
 </script>
 
 <script lang="ts">
+    import { untrack } from 'svelte';
     import { textOn } from './colour';
     import type { LoadedModel, PreviewPart } from './model';
     import { PaintSession, paintable } from './paintstate';
@@ -46,18 +47,26 @@
     const paintablePartCount = $derived(model ? model.parts.filter(paintable).length : 0);
     const canPaint = $derived(paintablePartCount > 0);
 
-    // A new model: start a fresh session and reset the palette to the file's colours.
+    /** Most colours a user can paint with (daemon caps spools at 64; triangle states are bytes). */
+    const MAX_COLOURS = 16;
+
+    // A new model: start a fresh session and reset the palette to the file's colours. Read the two inputs as
+    // dependencies, then do every state write inside untrack() — otherwise the effect re-reads what it writes
+    // (session, colours, rev, and emit()'s reads) and Svelte re-runs it until the depth guard trips.
     $effect(() => {
         const m = model;
-        if (!m) {
-            session = null;
-            return;
-        }
-        session = new PaintSession(m.parts);
-        colours = fileColours.length ? [...fileColours] : ['#CCCCCC'];
-        activeIndex = Math.min(activeIndex, colours.length - 1);
-        rev++;
-        emit();
+        const fc = fileColours;
+        untrack(() => {
+            if (!m) {
+                session = null;
+                return;
+            }
+            session = new PaintSession(m.parts);
+            colours = fc.length ? [...fc] : ['#CCCCCC'];
+            activeIndex = Math.min(activeIndex, colours.length - 1);
+            rev++;
+            emit();
+        });
     });
 
     function nextColour(): string {
@@ -66,6 +75,7 @@
     }
 
     function addColour(): void {
+        if (colours.length >= MAX_COLOURS) return;
         colours = [...colours, nextColour()];
         activeIndex = colours.length - 1;
         erase = false;
@@ -150,7 +160,7 @@
                         />
                     </label>
                 {/each}
-                <button type="button" class="cp-add" onclick={addColour} aria-label="Add a colour">+</button>
+                <button type="button" class="cp-add" onclick={addColour} disabled={colours.length >= MAX_COLOURS} aria-label="Add a colour">+</button>
                 <button
                     type="button"
                     class="cp-swatch cp-erase"

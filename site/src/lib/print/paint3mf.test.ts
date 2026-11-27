@@ -65,9 +65,10 @@ describe('paintModelXml', () => {
 });
 
 describe('hasPaint', () => {
-    test('true only when some triangle has a state > 0', () => {
+    test('true when any triangle edit is recorded (including an erase to 0)', () => {
         expect(hasPaint(null)).toBe(false);
-        expect(hasPaint(paintOne('1', 0, 0))).toBe(false);
+        expect(hasPaint(new Map())).toBe(false);
+        expect(hasPaint(paintOne('1', 0, 0))).toBe(true); // an erase is still an edit to write
         expect(hasPaint(paintOne('1', 0, 2))).toBe(true);
     });
 });
@@ -80,9 +81,18 @@ describe('writePainted3mf round-trips through loadModel', () => {
         expect(Array.from(model.parts[0].states ?? [])).toEqual([0, 2]);
     });
 
-    test('nothing painted returns the original blob untouched', async () => {
+    test('an empty paint map returns the original blob untouched', async () => {
         const blob = make3mf();
-        expect(await writePainted3mf(blob, paintOne('1', 0, 0))).toBe(blob);
+        expect(await writePainted3mf(blob, new Map())).toBe(blob);
+    });
+
+    test('an erase (state 0) clears existing paint in the file', async () => {
+        const painted = await writePainted3mf(make3mf(), paintOne('1', 0, 1));
+        const erased = await writePainted3mf(painted as Blob, paintOne('1', 0, 0));
+        const model = await loadModel('e.3mf', erased as Blob);
+        // No triangle is painted any more (the loader reports null states when nothing carries paint).
+        const st = model.parts[0].states;
+        expect(st == null || [...st].every((x) => x === 0)).toBe(true);
     });
 
     test('other entries survive the rewrite', async () => {

@@ -219,14 +219,27 @@
     let paintInfo = $state<PaintInfo | null>(null);
     let preview = $state<ReturnType<typeof Preview> | undefined>();
     let colorPaint = $state<ReturnType<typeof ColorPaint> | undefined>();
-    /** Painting is for Bambu/Orca projects only (an STL/sliced file has no object meshes to paint into). */
-    const canPaint = $derived(!!model && !isMeshKind && ftype !== 'gcode.3mf');
+    /** Painting is for Bambu/Orca projects only (a mesh, geometry-only or already-sliced file has no filament
+     * list / object meshes to paint into). */
+    const canPaint = $derived(model?.kind === 'project');
     /** The preview palette: the painted palette (base + added colours) when painting, else the file's. */
     const previewPalette = $derived(canPaint && paintInfo?.palette.length ? paintInfo.palette : palette);
 
     function onPaint(info: PaintInfo): void {
         paintInfo = info;
         preview?.repaint();
+    }
+
+    /**
+     * The file and spools to send for a slice/download: when the model is painted, the paint baked into the
+     * 3MF (writePainted3mf) and a spool per colour (paint entries over `baseSpools` so appended colours get a
+     * filament); otherwise the original file and `baseSpools` unchanged.
+     */
+    async function paintedInput(src: File, baseSpools: SpoolOption[] | null): Promise<{ blob: Blob; spools: SpoolOption[] | null }> {
+        const painted = canPaint && paintInfo?.dirty ? paintInfo : null;
+        if (!painted) return { blob: src, spools: baseSpools };
+        const spools = baseSpools ? painted.spools?.map((s, i) => baseSpools[i] ?? s) ?? baseSpools : painted.spools;
+        return { blob: await writePainted3mf(src, painted.paintMap), spools };
     }
 
     async function takeFile(f: File | undefined | null): Promise<void> {
@@ -282,12 +295,23 @@
     let settings = $state<PrintSettings>({ ...PROJECT_SETTINGS });
     /** The spools a project slices with ("Slice with the spools' filaments"); null = its own filaments. */
     let adoptSpools = $state<SpoolOption[] | null>(null);
-    /** A compact signature of the paint (painted-triangle count + palette) so a paint change re-slices. */
+    /** A content signature of the paint (every painted triangle's state + the palette) so any paint change —
+     * even one that keeps the triangle count, like repainting a region another colour — re-slices, while an
+     * undo back to the sliced state compares equal again. */
     const paintSig = $derived.by(() => {
         if (!canPaint || !paintInfo?.dirty) return '';
-        let tris = 0;
-        for (const objs of paintInfo.paintMap.values()) for (const m of objs.values()) tris += m.size;
-        return JSON.stringify([tris, paintInfo.palette]);
+        // FNV-1a over sorted (path, object, tri, state) so the order of edits does not matter.
+        let h = 0x811c9dc5;
+        const mix = (s: string): void => {
+            for (let i = 0; i < s.length; i++) h = Math.imul(h ^ s.charCodeAt(i), 0x01000193);
+        };
+        const rows: string[] = [];
+        for (const [path, objs] of paintInfo.paintMap)
+            for (const [obj, tris] of objs)
+                for (const [tri, state] of tris) rows.push(`${path}\u0000${obj}\u0000${tri}\u0000${state}`);
+        rows.sort();
+        for (const r of rows) mix(r);
+        return `${(h >>> 0).toString(16)}:${paintInfo.palette.join(',')}`;
     });
     const settingsKey = $derived(
         JSON.stringify([hasOptions ? settings : null, meshSpool ? [meshSpool.profileId, meshSpool.type] : null, adoptSpools, paintSig])
@@ -370,6 +394,8 @@
         slicedKey = '';
         chosenNozzles = null;
         adoptSpools = null;
+        painting = false;    // a new file starts with painting off and no carried-over paint
+        paintInfo = null;
         plan = null;
         startSlots = null;
         resliceNote = '';
@@ -395,13 +421,11 @@
         sliceTick = 'Sending the file to beambam…';
         const key = settingsKey;
         const mesh = isMeshKind && meshSpool ? { profileId: meshSpool.profileId, type: meshSpool.type, colour: meshSpool.colour } : null;
-        // Painting bakes paint_color into the 3MF and, when a new colour was added, sends a spool per
-        // filament so the daemon has a filament for each painted colour (project_sync appends them).
-        const painted = canPaint && paintInfo?.dirty ? paintInfo : null;
-        const spools = painted?.spools ?? adoptSpools;
-        const opts = hasOptions ? buildSliceOptions(settings, mesh, nozzles, spools) : null;
         try {
-            const sendBlob = painted ? await writePainted3mf(file, painted.paintMap) : file;
+            // Painting bakes paint_color into the 3MF and sends a spool per colour so the daemon adds a
+            // filament for each painted colour (project_sync appends them); otherwise the file is sent as is.
+            const { blob: sendBlob, spools } = await paintedInput(file, adoptSpools);
+            const opts = hasOptions ? buildSliceOptions(settings, mesh, nozzles, spools) : null;
             const res = await d.slice(file.name, sendBlob, opts ? optionsHeader(opts) : null, (sec, step) => {
                 if (forSerial === fileSerial) sliceTick = `${again ? `Slicing again with ${what}` : 'Slicing'}: ${step || 'working'}… ${Math.round(sec)} s`;
             });
@@ -499,8 +523,9 @@
         syncBusy = 'Asking beambam for the project…';
         syncError = '';
         try {
-            const opts = buildSliceOptions(settings, null, chosenNozzles, adoptSpools);
-            const blob = await daemon.updateProject(file.name, file, opts ? optionsHeader(opts) : null);
+            const { blob: sendBlob, spools } = await paintedInput(file, adoptSpools);
+            const opts = buildSliceOptions(settings, null, chosenNozzles, spools);
+            const blob = await daemon.updateProject(file.name, sendBlob, opts ? optionsHeader(opts) : null);
             const a = document.createElement('a');
             a.href = URL.createObjectURL(blob);
             a.download = `${file.name.replace(/\.3mf$/i, '')}_printer.3mf`;
@@ -787,14 +812,12 @@
             model={shownModel}
             palette={previewPalette}
             paintMode={painting}
-            onpick={(part, face) => {
-                if (colorPaint?.pick(part, face)) preview?.repaint();
-            }}
+            onpick={(part, face) => colorPaint?.pick(part, face)}
         />
         {#if canPaint}
             <ColorPaint
                 bind:this={colorPaint}
-                model={shownModel}
+                {model}
                 fileColours={model ? model.filaments.map((f) => f.colour) : []}
                 bind:active={painting}
                 onpaint={onPaint}

@@ -181,14 +181,16 @@
     let down: { x: number; y: number; t: number } | null = null;
 
     function onPointerDown(e: PointerEvent): void {
-        down = { x: e.clientX, y: e.clientY, t: performance.now() };
+        // Only a primary press (left button / first finger) paints; a right-click or a pinch's second finger
+        // must not. A non-primary press cancels any tap in progress so a pinch never lands as a paint.
+        down = e.isPrimary && e.button === 0 ? { x: e.clientX, y: e.clientY, t: performance.now() } : null;
     }
 
     /** A tap (little movement, short) in paint mode picks the triangle under it. */
     function onPointerUp(e: PointerEvent): void {
         const d = down;
         down = null;
-        if (!d || !paintMode || !onpick || !THREE || !camera || !modelGroup || !canvas) return;
+        if (!d || !e.isPrimary || !paintMode || !onpick || !THREE || !camera || !modelGroup || !canvas) return;
         if (Math.hypot(e.clientX - d.x, e.clientY - d.y) > 8) return; // a drag / orbit, not a tap
         if (performance.now() - d.t > 700) return;
         const rect = canvas.getBoundingClientRect();

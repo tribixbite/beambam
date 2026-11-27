@@ -27,12 +27,10 @@ export type PaintMap = Map<string, ModelPaint>;
 const OBJECT_OR_TRIANGLE = /<object\b[^>]*>|<triangle\b[^>]*?\/>/g;
 const PAINT_ATTR = /\s+(?:paint_color|slic3rpe:mmu_segmentation)="[^"]*"/g;
 
-/** True when any object in the map paints at least one triangle (a 0-only map is a no-op). */
+/** True when the map records at least one triangle edit (including an erase to state 0). */
 export function hasPaint(paint: PaintMap | null | undefined): boolean {
     if (!paint) return false;
-    for (const objects of paint.values())
-        for (const tris of objects.values())
-            for (const state of tris.values()) if (state > 0) return true;
+    for (const objects of paint.values()) for (const tris of objects.values()) if (tris.size) return true;
     return false;
 }
 
@@ -80,7 +78,7 @@ export async function writePainted3mf(original: Blob, paint: PaintMap): Promise<
     const entries = unzipSync(buf);
     for (const [path, objects] of paint) {
         const data = entries[path];
-        if (!data) continue;
+        if (!data) throw new Error(`painted model entry ${path} is not in the 3MF`);
         entries[path] = strToU8(paintModelXml(strFromU8(data), objects));
     }
     const out = zipSync(entries, { level: 6 });
