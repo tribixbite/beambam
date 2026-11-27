@@ -358,6 +358,7 @@ def _serve_http(bind: str,
     import urllib.parse
     import urllib.request
     import urllib.error
+    served_since = time.time()   # for /healthz uptime (a long-up daemon may predate a code update)
     camera_lock = threading.Lock()
     camera_viewers = [0]                # live /camera.mjpeg viewers (CAMERA_MAX_VIEWERS)
     import re
@@ -1047,6 +1048,10 @@ def _serve_http(bind: str,
                     # What this daemon can do, for web clients that need a newer one
                     # (pokefit.party, beambam.boo) instead of guessing from versions.
                     "version":           _beambam_version(),
+                    # Seconds this daemon has been serving — a long uptime can mean it predates a code
+                    # update (POST /restart reloads it). `restartable`: it can re-exec itself.
+                    "uptime_s":          round(time.time() - served_since, 1),
+                    "restartable":       True,
                     # The protocol features of this version, plus "slice" while a slicer is there to use.
                     "capabilities":      list(CAPABILITIES) + (["slice"] if slicer["ready"] else []),
                     # Which Bambu Studio POST /slice uses, or why it cannot slice (slice_service.slicer_status).
@@ -1408,6 +1413,26 @@ def _serve_http(bind: str,
             url = urllib.parse.urlparse(self.path)
             path = url.path
             # Remote 1.6.x daemon print/slice API (additive).
+            if path == "/restart":
+                # Reload this daemon with the same arguments — picks up a code update (a long-up daemon can
+                # still be running pre-fix code). execv replaces the whole process after the response is
+                # flushed; allow_reuse_address lets the new process re-bind the port at once. If exec fails it
+                # raises (no exit), so the old daemon keeps running.
+                self._send_json({"restarting": True, "version": _beambam_version()})
+                try:
+                    self.wfile.flush()
+                except OSError:
+                    pass
+
+                def _relaunch():
+                    time.sleep(0.4)
+                    try:
+                        os.execv(sys.executable, [sys.executable, "-m", "beambam.cli", *sys.argv[1:]])
+                    except Exception as e:                                   # noqa: BLE001 - stay up on any failure
+                        print(f"[x2d-bridge] restart failed, staying up: {e}", file=sys.stderr)
+
+                threading.Thread(target=_relaunch, daemon=True).start()
+                return
             if path in ("/print", "/print/plan", "/print/upload"):
                 self._handle_print(path)
                 return
