@@ -133,7 +133,7 @@
         <!-- Maker attribution, wrench pattern -->
         <div class="frame pb-[var(--space-lg)] font-[var(--font-mono)] text-[var(--text-xs)] uppercase tracking-widest text-center" style="color: var(--color-mute-2);">
             <span aria-hidden="true" style="font-family: system-ui; letter-spacing: 0;">🪄💥</span>
-            &nbsp;by&nbsp;<a href="https://tribixbite.com" target="_blank" rel="noopener" style="text-decoration: none; color: var(--color-mute);">tribixbite</a>
+            &nbsp;by&nbsp;<a href="https://tribixbite.com/boo" target="_blank" rel="noopener" style="text-decoration: none; color: var(--color-mute);">tribixbite</a>
         </div>
     </footer>
 </div>
