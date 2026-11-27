@@ -14,6 +14,39 @@
  * a leaf, otherwise the state covering most of its area. Ported from pokefit/paint.py (MIT).
  */
 
+const HEX = '0123456789ABCDEF';
+
+/**
+ * The nibbles of a whole-triangle leaf painted with `state` (0 = unpainted). Mirror of
+ * pokefit's `_leaf_nibbles`: states 0-2 are one nibble `state << 2`; state 3+ is the `0b1100`
+ * marker then `0xF` per 15 and a final remainder nibble (so filaments 18+ round-trip).
+ */
+function leafNibbles(state: number): number[] {
+    if (state < 3) return [state << 2];
+    let n = state - 3;
+    const out = [0b1100];
+    while (n >= 15) {
+        out.push(0xf);
+        n -= 15;
+    }
+    out.push(n);
+    return out;
+}
+
+/**
+ * The `paint_color` string that paints a whole triangle with filament `state` (1-based; the
+ * decoder's `rootState`/`majorityState` read it back). `state <= 0` is unpainted and returns
+ * '' — the caller omits the attribute entirely. This is the inverse of `rootState` for leaves;
+ * split (partially painted) triangles are authored elsewhere.
+ */
+export function encodePaint(state: number): string {
+    if (state <= 0) return '';
+    const nib = leafNibbles(state);
+    let s = '';
+    for (let i = nib.length - 1; i >= 0; i--) s += HEX[nib[i]];
+    return s;
+}
+
 /** Nibbles in reading order (last character first). */
 function nibbles(code: string): number[] {
     const out: number[] = [];

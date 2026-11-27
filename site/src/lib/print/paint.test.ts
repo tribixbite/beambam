@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { majorityState, paintDecoder, paintWeights, rootState } from './paint';
+import { encodePaint, majorityState, paintDecoder, paintWeights, rootState } from './paint';
 
 describe('paint_color decoding', () => {
     test('whole-triangle states (pokefit/paint.py examples)', () => {
@@ -21,6 +21,21 @@ describe('paint_color decoding', () => {
         expect(w.get(2)).toBeCloseTo(0.75);
         expect(w.get(1)).toBeCloseTo(0.25);
         expect(majorityState(code)).toBe(2);
+    });
+    test('encodePaint is the inverse of rootState for whole-triangle leaves', () => {
+        expect(encodePaint(0)).toBe('');     // unpainted: no attribute
+        expect(encodePaint(1)).toBe('4');
+        expect(encodePaint(2)).toBe('8');
+        expect(encodePaint(3)).toBe('0C');
+        expect(encodePaint(4)).toBe('1C');
+        expect(encodePaint(18)).toBe('0FC');
+    });
+    test('encode/decode round-trips every filament state 1..40', () => {
+        for (let s = 1; s <= 40; s++) {
+            const code = encodePaint(s);
+            expect(rootState(code)).toBe(s);
+            expect(majorityState(code)).toBe(s);
+        }
     });
     test('memoised decoder agrees', () => {
         const d = paintDecoder();
