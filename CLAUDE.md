@@ -58,6 +58,10 @@ Running GUI apps (BambuStudio / wxWidgets 3.3) on termux-x11. These lessons were
   `--load-filaments` with a project made **for the X2D** crashes the CLI (rc -6, `std::length_error`, right after
   "Initializing StaticPrintConfigs"), so a project takes the spools' presets by rewriting project_settings
   (`beambam/project_sync.py`: inherits, then `include` templates, then own keys; per-variant blocks by name).
+- **`tools/x2d_cli_slice.sh --filament X` on a project made for another printer only half-applies X** (2026-11-27,
+  A1 caddy): the G-code took PETG temperatures but `filament_type` stayed PLA. Run `project_sync.adopt_project` first
+  for a real material change. `bed_temperature_too_high_than_filament` appears on that unmodified A1 project too: it
+  comes from the retarget, not the model.
 - **Official Bambu Studio CLI off the phone (2026-11-26, CI job `slicer`, v02.09.02.62):** the Linux AppImage
   (`--appimage-extract`, run `squashfs-root/AppRun`; needs GTK/WebKit/GStreamer libs on a bare runner) and the
   Windows zip ship NO `*_full` profile folders (macOS's .app does) — `beambam slicer install` flattens them.
