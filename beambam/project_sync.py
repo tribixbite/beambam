@@ -48,6 +48,30 @@ LAYOUT_KEYS = frozenset({"filament_extruder_variant", "filament_self_index", "fi
                          "filament_ids", "filament_colour"})
 # Lists whose length is a multiple of the filament count without being per-filament blocks.
 NOT_PER_FILAMENT = frozenset({"flush_volumes_matrix", "different_settings_to_system", "inherits_group"})
+# The project keys that are genuinely per-filament (one block per filament), for APPENDING filaments
+# (`_grow_filaments`): a project has many machine/process lists whose length happens to be a multiple of the
+# filament count (nozzle_diameter, printable_area, machine_max_*), so "length divisible by n" alone grows the
+# wrong arrays — ruinously so for a one-filament project, where almost every list divides by 1. Derived from
+# real X2D/A1/P2S projects (keys per-filament across several filament counts) plus every `filament_*` key via
+# LAYOUT_KEYS and the prefix check in `_grow_filaments`.
+FILAMENT_KEYS = frozenset({
+    'activate_air_filtration', 'additional_cooling_fan_speed', 'additional_fan_full_speed_layer', 'chamber_temperatures',
+    'circle_compensation_speed', 'close_additional_fan_first_x_layers', 'close_fan_the_first_x_layers', 'complete_print_exhaust_fan_speed',
+    'cool_plate_temp', 'cool_plate_temp_initial_layer', 'cooling_perimeter_transition_distance', 'cooling_slowdown_logic',
+    'counter_coef_1', 'counter_coef_2', 'counter_coef_3', 'counter_limit_max',
+    'counter_limit_min', 'default_filament_colour', 'diameter_limit', 'during_print_exhaust_fan_speed',
+    'enable_overhang_bridge_fan', 'enable_pressure_advance', 'eng_plate_temp', 'eng_plate_temp_initial_layer',
+    'fan_cooling_layer_time', 'fan_max_speed', 'fan_min_speed', 'first_x_layer_fan_speed',
+    'first_x_layer_part_fan_speed', 'flush_volumes_vector', 'full_fan_speed_layer', 'hole_coef_1',
+    'hole_coef_2', 'hole_coef_3', 'hole_limit_max', 'hole_limit_min',
+    'hot_plate_temp', 'hot_plate_temp_initial_layer', 'impact_strength_z', 'ironing_fan_speed',
+    'long_retractions_when_ec', 'no_slow_down_for_cooling_on_outwalls', 'nozzle_temperature', 'nozzle_temperature_initial_layer',
+    'nozzle_temperature_range_high', 'nozzle_temperature_range_low', 'overhang_fan_speed', 'overhang_fan_threshold',
+    'overhang_threshold_participating_cooling', 'override_process_overhang_speed', 'pre_start_fan_time', 'pressure_advance',
+    'reduce_fan_stop_start_freq', 'required_nozzle_HRC', 'retraction_distances_when_ec', 'slow_down_for_layer_cooling',
+    'slow_down_layer_time', 'slow_down_min_speed', 'supertack_plate_temp', 'supertack_plate_temp_initial_layer',
+    'temperature_vitrification', 'textured_plate_temp', 'textured_plate_temp_initial_layer', 'volumetric_speed_coefficients',
+})
 # One spool: (Bambu filament id e.g. "GFG02" | None, material e.g. "PETG" | None, colour "#RRGGBB").
 Spool = tuple[str | None, str | None, str]
 _COLOUR = re.compile(r"#?([0-9A-Fa-f]{6})([0-9A-Fa-f]{2})?")
@@ -175,23 +199,32 @@ def _nearest(colours: list[str], c: str) -> int:
 
 
 def _flush_matrix(mat: list[Any], old_colours: list[str], new_colours: list[str]) -> list[str]:
-    """`flush_volumes_matrix` (extruders × n × n, row-major) for the new colours: each pair keeps the purge
+    """`flush_volumes_matrix` (extruders × m × m, row-major) for the new colours: each pair keeps the purge
     volume between the old slots whose colours are closest, and a pair whose closest old slot is the same
-    (no measured volume between them) gets the median off-diagonal volume (pokefit `_filaments_from`)."""
+    (no measured volume between them) gets the median off-diagonal volume (pokefit `_filaments_from`).
+
+    The output is sized to the NEW colour count m, which may be larger than the old count n (filaments
+    appended for painted colours): an appended slot has no old slot of its own, so it maps to the nearest
+    old colour and the pair takes the typical purge."""
     n = len(old_colours)
-    if not mat or n == 0 or len(mat) % (n * n):
+    m_count = len(new_colours)
+    if not mat or n == 0 or m_count == 0 or len(mat) % (n * n):
         return list(mat)
-    # A slot whose colour did not change keeps its own row (two slots of one colour stay distinct).
-    near = [a if c.upper()[:7] == old_colours[a].upper()[:7] else _nearest(old_colours, c)  # alpha is not colour
-            for a, c in enumerate(new_colours)]
+    # A slot whose colour did not change keeps its own row (two slots of one colour stay distinct); a slot
+    # past the old count (an appended filament) has no own row, so it maps to the nearest old colour.
+    near = [a if a < n and c.upper()[:7] == old_colours[a].upper()[:7] else _nearest(old_colours, c)
+            for a, c in enumerate(new_colours)]  # alpha is not colour
     m = [float(x) for x in mat]
     out: list[str] = []
+    # No measured off-diagonal volume (a one-filament project painted into several) → a sensible default so
+    # the new colours actually purge between each other instead of bleeding (Bambu's ballpark for a colour change).
+    DEFAULT_PURGE = 280.0
     for e in range(len(m) // (n * n)):
         base = e * n * n
-        off = [m[base + i * n + j] for i in range(n) for j in range(n) if i != j]
-        typical = statistics.median(off) if off else 0.0
-        for a in range(n):
-            for b in range(n):
+        off = [v for i in range(n) for j in range(n) if i != j and (v := m[base + i * n + j]) > 0]
+        typical = statistics.median(off) if off else DEFAULT_PURGE
+        for a in range(m_count):
+            for b in range(m_count):
                 if a == b:
                     v = 0.0
                 elif near[a] != near[b]:
@@ -224,7 +257,9 @@ def _grow_filaments(out: dict[str, Any], n: int, m: int) -> None:
             if key != "flush_volumes_matrix" and isinstance(val, list) and len(val) == n + 2:
                 out[key] = val[:1 + n] + [""] * extra + val[1 + n:]
             continue
-        if _per_filament(out, key, n):
+        # Grow only genuine per-filament keys: a one-filament project has many machine/process lists whose
+        # length divides by 1, so "divisible by n" alone would corrupt nozzle_diameter, printable_area, etc.
+        if (key in FILAMENT_KEYS or key in LAYOUT_KEYS or key.startswith("filament_")) and _per_filament(out, key, n):
             k = len(val) // n
             out[key] = list(val) + list(val[(n - 1) * k:n * k]) * extra
     idx = out.get("filament_self_index")

@@ -152,6 +152,28 @@ def test_appended_filament_grows_every_per_filament_array_consistently(tmp_path)
     assert out["filament_colour"] == ["#111111", "#222222", "#333333"]
 
 
+def test_appending_grows_the_flush_matrix_to_the_new_colour_count(tmp_path):
+    """Regression: a one-filament project's 1x1 flush matrix must grow to m x m when colours are painted on
+    (it used to index old_colours with the new index and crash, then build an n x n matrix of the wrong size)."""
+    root = _resources(tmp_path / "r")
+    st = _settings(1)
+    # One filament, one extruder: a 1x1 flush matrix (just the zero diagonal).
+    st["flush_volumes_matrix"] = ["0"]
+    out = ps.adopt_filaments(st, root, [(None, None, "#FF0000"), (None, None, "#00FF00"), (None, None, "#0000FF")])
+    assert len(out["filament_settings_id"]) == 3
+    # 1 extruder x 3 x 3 = 9 entries, diagonal zero, off-diagonals a non-zero default (so colours purge).
+    fm = out["flush_volumes_matrix"]
+    assert len(fm) == 9
+    assert [fm[i * 3 + i] for i in range(3)] == ["0", "0", "0"]
+    assert all(float(fm[i * 3 + j]) > 0 for i in range(3) for j in range(3) if i != j)
+
+    # Two extruders: a 1-filament 1x1x2 matrix grows to 3x3x2 = 18.
+    st2 = _settings(1)
+    st2["flush_volumes_matrix"] = ["0", "0"]
+    out2 = ps.adopt_filaments(st2, root, [(None, None, "#FF0000"), (None, None, "#00FF00")])
+    assert len(out2["flush_volumes_matrix"]) == 2 * 2 * 2
+
+
 def test_a_spool_whose_filament_has_no_bundled_profile_says_which_preset_stands_in(tmp_path):
     """Seen live: Bambu PLA Pure (GFA19) and eSUN PLA+ (GFL03) have no X2D profile in the bundled build; they
     slice with PLA Basic, and the note says so (else the plan's "profile GFA00 vs loaded GFA19" reads as a

@@ -282,7 +282,17 @@ def retarget(settings: dict[str, Any], opts: SliceOptions) -> SliceOptions:
     if lh is not None and not LAYER_RANGE[0] <= lh <= LAYER_RANGE[1]:
         lh = None
     if opts.spools:                     # the printer's spools stand in for the project's filaments
-        return replace(opts, layer_height=lh)
+        # Painted colours carry no material (id/type null); keep each existing filament's own material
+        # from the project (so a PETG project is not sliced as PLA), while appended colours fall back to
+        # the default filament. A real loaded spool (id/type set) is left as the user chose it.
+        pids = [str(x) for x in settings.get("filament_ids") or ()]
+        ptypes = [str(x) for x in settings.get("filament_type") or ()]
+        filled = tuple(
+            (fid or (pids[i] if i < len(pids) else None),
+             material or (ptypes[i] if i < len(ptypes) else None),
+             colour)
+            for i, (fid, material, colour) in enumerate(opts.spools))
+        return replace(opts, layer_height=lh, spools=filled)
     return replace(opts, layer_height=lh,
                    filament_ids=opts.filament_ids or tuple(str(x) for x in settings.get("filament_ids") or ()),
                    filament_types=opts.filament_types or tuple(str(x) for x in settings.get("filament_type") or ()))

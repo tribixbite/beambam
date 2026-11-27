@@ -302,10 +302,22 @@ def slice_project(src: Path, out_dir: Path, *, timeout: float = SLICE_TIMEOUT_S,
         # profiles, keeping the model, paint and filament assignment and the project's portable settings;
         # its own printer profile would make a print file for the wrong printer.
         n = len(settings.get("filament_settings_id") or []) or 1
-        cmd += mesh_args(prof, retarget(settings, opts), out_dir, n_filaments=n, keep=settings, arrange=False)
+        model = src
+        ropts = retarget(settings, opts)
+        if ropts.spools and len(ropts.spools) > n:
+            # A colour was painted onto the model (more spools than the project's filaments): grow the
+            # project's embedded filament list to match, or Bambu Studio refuses it ("filament_colour's size
+            # N not equal to …"). project_sync appends the new filaments; retarget loads every filament's
+            # profile for MESH_PRINTER regardless.
+            from beambam.project_sync import adopt_project
+            grown = out_dir / f"grown_{src.name}"
+            settings = adopt_project(src, grown, prof, [tuple(s) for s in ropts.spools])
+            model = grown
+            n = len(settings.get("filament_settings_id") or []) or n
+        cmd += mesh_args(prof, ropts, out_dir, n_filaments=n, keep=settings, arrange=False)
         if track_switch:
             cmd.append("--has-filament-switcher=1")
-        model = src.resolve()
+        model = model.resolve()
         machine = prof / "machine" / f"{MESH_PRINTER}.json"
     elif not mesh:
         model = src.resolve()
