@@ -90,8 +90,9 @@ tap ──(Preview.svelte raycaster)──▶ {part, triangle}
   plate-level `filament_maps` is not grown for appended filaments.
 - **Multi-plate**: paint is recorded, sliced and shown on the current plate; a plate not drawn since
   painting may need a plate switch to show it (nothing is lost — the session is keyed to the whole model).
-- **Tools not yet ported** from pokefit: Mirror, Grow/Shrink, the floating paint dock, and the
-  field-following "wand"/brush. (Triangle, Region, Part, **Fill** and the **Pick** eyedropper are done.)
+- **Tools not yet ported** from pokefit: the floating paint dock (controls move onto the 3D view) and
+  the field-following "wand"/brush (needs a geometry field engine). Done: Triangle, Region, Part, Fill,
+  the Pick eyedropper, Grow/Shrink (ring in/out of the last region) and Mirror (symmetric paint).
 
 ## History
 
