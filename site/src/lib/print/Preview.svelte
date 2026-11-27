@@ -41,6 +41,10 @@
     let bedGroup: THREE_NS.Group | null = null;
     let observer: ResizeObserver | null = null;
     let raf = 0;
+    // Height ("layer") clip: show the model up to a Z height, scrubbed with the slider.
+    let clipPlane: THREE_NS.Plane | null = null;
+    let modelZ = $state<[number, number]>([0, 1]); // model Z bounds (min, max)
+    let clipFrac = $state(1); // 1 = show the whole height
     let shown: LoadedModel | null = null;
     let reduceMotion = false;
 
@@ -158,7 +162,20 @@
             modelGroup.add(mesh);
         }
         scene.add(modelGroup);
+        const { min, max } = bounds(m.parts);
+        modelZ = [Number.isFinite(min[2]) ? min[2] : 0, Number.isFinite(max[2]) ? max[2] : 1];
+        clipFrac = 1; // a new model shows its whole height
+        updateClip();
         resetView();
+    }
+
+    /** Set the clip plane to the slider height (shows the model up to it). */
+    function updateClip(): void {
+        if (!clipPlane) return;
+        const [lo, hi] = modelZ;
+        // A tiny margin above so the very top layer is not clipped at frac 1.
+        clipPlane.constant = clipFrac >= 1 ? Infinity : lo + clipFrac * (hi - lo) + 1e-3;
+        requestRender();
     }
 
     function recolour(colours: string[]): void {
@@ -220,6 +237,8 @@
                 THREE = T;
                 renderer = new T.WebGLRenderer({ canvas, antialias: window.devicePixelRatio < 2, powerPreference: 'default' });
                 renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+                renderer.localClippingEnabled = true; // for the height ("layer") clip slider
+                clipPlane = new T.Plane(new T.Vector3(0, 0, -1), Infinity); // keep z <= constant; ∞ = show all
                 // Filament colours arrive as sRGB bytes: pass every colour through as given
                 // (no linear conversion) so a swatch and the model show the same #RRGGBB.
                 T.ColorManagement.enabled = false;
@@ -235,7 +254,7 @@
                 const key = new T.DirectionalLight(0xffffff, 1.8);
                 key.position.set(0.4, 0.6, 1); // follows the camera: the side you look at is lit
                 camera.add(key);
-                material = new T.MeshLambertMaterial({ vertexColors: true });
+                material = new T.MeshLambertMaterial({ vertexColors: true, clippingPlanes: clipPlane ? [clipPlane] : [] });
                 controls = new OrbitControls(camera, canvas);
                 controls.enableDamping = !reduceMotion;
                 controls.dampingFactor = 0.12;
@@ -274,6 +293,10 @@
         const p = palette;
         if (ready && shown) recolour(p);
     });
+    $effect(() => {
+        clipFrac; // re-run when the height slider moves
+        if (ready && shown) updateClip();
+    });
 
     onDestroy(() => {
         if (raf) cancelAnimationFrame(raf);
@@ -296,6 +319,20 @@
     {/if}
     {#if model && !failed}
         <button type="button" class="pp-btn pv-reset" onclick={resetView}>Reset view</button>
+        <div class="pv-layer" title="Show the model up to this height">
+            <input
+                type="range"
+                min="0"
+                max="1"
+                step="0.01"
+                bind:value={clipFrac}
+                aria-label="Height shown"
+                class="pv-layer-range"
+            />
+            <span class="pv-layer-val pp-mono">
+                {clipFrac >= 1 ? 'all' : `${(modelZ[0] + clipFrac * (modelZ[1] - modelZ[0])).toFixed(1)} mm`}
+            </span>
+        </div>
     {/if}
 </div>
 
@@ -330,5 +367,33 @@
         top: var(--space-sm);
         right: var(--space-sm);
         background: color-mix(in oklab, var(--color-surface) 80%, transparent);
+    }
+    /* Vertical height ("layer") slider down the right edge. */
+    .pv-layer {
+        position: absolute;
+        right: var(--space-sm);
+        top: 3rem;
+        bottom: 2.2rem;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: var(--space-xs);
+    }
+    .pv-layer-range {
+        writing-mode: vertical-lr;
+        direction: rtl; /* top = full height, bottom = base */
+        width: 24px;
+        flex: 1;
+        accent-color: var(--color-accent);
+        cursor: pointer;
+        touch-action: none; /* the slider owns vertical drags, not the page */
+    }
+    .pv-layer-val {
+        font-size: 0.7rem;
+        color: var(--color-mute);
+        background: color-mix(in oklab, var(--color-surface) 80%, transparent);
+        padding: 1px 3px;
+        border-radius: 3px;
+        white-space: nowrap;
     }
 </style>
