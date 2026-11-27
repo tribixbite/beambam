@@ -44,6 +44,9 @@ export interface PreviewPart {
      */
     path?: string;
     objectId?: string;
+    /** The root `<build><item>` object id this part descended from (what the quantity feature duplicates;
+     * differs from objectId when the item is an assembly that references the mesh via components). */
+    buildObjectId?: string;
     /** Per-vertex normals (filled by `withNormals`, in the worker). */
     normals?: Float32Array;
     /** The project plate (1-based) the part is on; positions are as stored, plate N offset from plate 1. */
@@ -578,7 +581,7 @@ export function assemble3mf(name: string, files: Map<string, ModelFile>, meta: M
 
     const parts: PreviewPart[] = [];
     let triangles = 0;
-    const visit = (path: string, oid: string, xf: Xf, top: ObjectSettings | undefined, depth: number, plate: number): void => {
+    const visit = (path: string, oid: string, xf: Xf, top: ObjectSettings | undefined, depth: number, plate: number, buildOid: string): void => {
         const file = files.get(path);
         const obj = file?.objects.get(oid);
         if (!obj || depth > 8) return;
@@ -609,14 +612,15 @@ export function assemble3mf(name: string, files: Map<string, ModelFile>, meta: M
                 states: obj.mesh.states,
                 path,
                 objectId: oid,
+                buildObjectId: buildOid,
                 plate
             });
         }
-        for (const c of obj.components) visit(c.path, c.objectId, compose(c.transform, xf), top, depth + 1, plate);
+        for (const c of obj.components) visit(c.path, c.objectId, compose(c.transform, xf), top, depth + 1, plate, buildOid);
     };
     for (const item of root.build) {
         if (!item.printable) continue;
-        visit(root.path, item.objectId, item.transform, settings.get(item.objectId), 0, plateOf.get(item.objectId) ?? 1);
+        visit(root.path, item.objectId, item.transform, settings.get(item.objectId), 0, plateOf.get(item.objectId) ?? 1, item.objectId);
     }
     if (!parts.length) throw new Error('this 3MF has no printable objects on its plate');
 

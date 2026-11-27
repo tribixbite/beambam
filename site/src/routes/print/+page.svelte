@@ -17,6 +17,8 @@
     import MappingPanel from '$lib/print/MappingPanel.svelte';
     import { fileType, type FileType } from '$lib/print/load';
     import { NEUTRAL, partsOnPlate, type LoadedModel } from '$lib/print/model';
+    import { shelfPack } from '$lib/print/arrange';
+    import type { QuantitySpec } from '$lib/print/quantity3mf';
     import {
         BED_TYPES,
         BRIM_MODES_UI,
@@ -310,17 +312,106 @@
         }
     });
 
+    // --- per-object quantity -----------------------------------------------------
+    interface Piece {
+        objectId: string;
+        name: string;
+        colour: string;
+        w: number;
+        h: number;
+        cx: number;
+        cy: number;
+        base: number; // how many the file already places
+    }
+    /** The distinct objects (pieces) in a project, with their footprint, for the quantity control. */
+    const pieces = $derived.by<Piece[]>(() => {
+        if (!model || isMeshKind || ftype === 'gcode.3mf') return [];
+        const by = new Map<string, Piece & { minx: number; miny: number; maxx: number; maxy: number }>();
+        for (const p of model.parts) {
+            const oid = p.buildObjectId ?? p.objectId;
+            if (!oid) continue;
+            let ex = by.get(oid);
+            if (!ex) {
+                ex = {
+                    objectId: oid,
+                    name: p.name,
+                    colour: model.filaments[p.filament - 1]?.colour ?? NEUTRAL,
+                    w: 0,
+                    h: 0,
+                    cx: 0,
+                    cy: 0,
+                    base: 0,
+                    minx: Infinity,
+                    miny: Infinity,
+                    maxx: -Infinity,
+                    maxy: -Infinity
+                };
+                by.set(oid, ex);
+            }
+            // Count instances of this root item, and grow its footprint over all its meshes.
+            for (let i = 0; i < p.positions.length; i += 3) {
+                const x = p.positions[i];
+                const y = p.positions[i + 1];
+                if (x < ex.minx) ex.minx = x;
+                if (y < ex.miny) ex.miny = y;
+                if (x > ex.maxx) ex.maxx = x;
+                if (y > ex.maxy) ex.maxy = y;
+            }
+        }
+        return [...by.values()].map((e) => ({
+            objectId: e.objectId,
+            name: e.name,
+            colour: e.colour,
+            w: e.maxx - e.minx,
+            h: e.maxy - e.miny,
+            cx: (e.minx + e.maxx) / 2,
+            cy: (e.miny + e.maxy) / 2,
+            base: 1 // the control counts from one of each piece
+        }));
+    });
+    const canQuantity = $derived(pieces.length > 0 && (pieces.length > 1 || pieces[0].base > 0));
+    /** Count per object id (missing = its base count). */
+    let counts = $state<Record<string, number>>({});
+    const countOf = (p: Piece): number => counts[p.objectId] ?? p.base;
+    function setCount(p: Piece, n: number): void {
+        counts = { ...counts, [p.objectId]: Math.max(0, Math.min(99, n)) };
+    }
+    /** Pack every wanted copy; the per-object offsets for the 3MF rewrite + whether they fit the plate. */
+    const quantity = $derived.by(() => {
+        if (!model) return null;
+        const items: { piece: Piece; copy: number }[] = [];
+        for (const p of pieces) for (let c = 0; c < countOf(p); c++) items.push({ piece: p, copy: c });
+        const changed = pieces.some((p) => countOf(p) !== p.base);
+        if (!changed) return { spec: null as QuantitySpec | null, fits: true, total: items.length, changed: false };
+        const { places, fits } = shelfPack(items.map((it) => ({ w: it.piece.w, h: it.piece.h })), model.bed, 5);
+        const spec: QuantitySpec = new Map();
+        items.forEach((it, i) => {
+            const arr = spec.get(it.piece.objectId) ?? [];
+            arr.push({ dx: places[i].cx - it.piece.cx, dy: places[i].cy - it.piece.cy });
+            spec.set(it.piece.objectId, arr);
+        });
+        for (const p of pieces) if (!spec.has(p.objectId)) spec.set(p.objectId, []); // count 0: drop it
+        return { spec, fits, total: items.length, changed: true };
+    });
+
     /**
-     * The file and spools to send for a slice/download: when the model is painted, the paint baked into the
-     * 3MF (writePainted3mf) and a spool per colour (paint entries over `baseSpools` so appended colours get a
-     * filament); otherwise the original file and `baseSpools` unchanged.
+     * The file and spools to send for a slice/download: paint baked in (serializePainted), the per-object
+     * quantity applied (writeQuantity3mf), and a spool per painted colour; otherwise the file unchanged.
      */
-    async function paintedInput(src: File, baseSpools: SpoolOption[] | null): Promise<{ blob: Blob; spools: SpoolOption[] | null }> {
+    async function sliceInput(src: File, baseSpools: SpoolOption[] | null): Promise<{ blob: Blob; spools: SpoolOption[] | null }> {
         const painted = canPaint && paintInfo?.dirty ? paintInfo : null;
-        if (!painted) return { blob: src, spools: baseSpools };
-        const spools = baseSpools ? painted.spools?.map((s, i) => baseSpools[i] ?? s) ?? baseSpools : painted.spools;
-        const { serializePainted } = await import('$lib/print/worker-client');
-        return { blob: await serializePainted(src, painted.paintMap), spools };
+        let blob: Blob = src;
+        let spools = baseSpools;
+        if (painted) {
+            spools = baseSpools ? painted.spools?.map((s, i) => baseSpools[i] ?? s) ?? baseSpools : painted.spools;
+            const { serializePainted } = await import('$lib/print/worker-client');
+            blob = await serializePainted(blob, painted.paintMap);
+        }
+        if (quantity?.changed && quantity.spec) {
+            const { writeQuantity3mf } = await import('$lib/print/quantity3mf');
+            blob = await writeQuantity3mf(blob, quantity.spec);
+        }
+        return { blob, spools };
     }
 
     async function takeFile(f: File | undefined | null): Promise<void> {
@@ -398,7 +489,7 @@
         return `${(h >>> 0).toString(16)}:${paintInfo.palette.join(',')}`;
     });
     const settingsKey = $derived(
-        JSON.stringify([hasOptions ? settings : null, meshSpool ? [meshSpool.profileId, meshSpool.type] : null, adoptSpools, paintSig, chosenNozzles])
+        JSON.stringify([hasOptions ? settings : null, meshSpool ? [meshSpool.profileId, meshSpool.type] : null, adoptSpools, paintSig, chosenNozzles, counts])
     );
 
     /** What "not sent" means for this file: the project's own value, or Bambu's default for a mesh. */
@@ -495,6 +586,7 @@
         adoptSpools = null;
         painting = false;    // a new file starts with painting off and no carried-over paint
         paintInfo = null;
+        counts = {};         // reset per-object quantity
         plan = null;
         startSlots = null;
         resliceNote = '';
@@ -523,7 +615,7 @@
         try {
             // Painting bakes paint_color into the 3MF and sends a spool per colour so the daemon adds a
             // filament for each painted colour (project_sync appends them); otherwise the file is sent as is.
-            const { blob: sendBlob, spools } = await paintedInput(file, adoptSpools);
+            const { blob: sendBlob, spools } = await sliceInput(file, adoptSpools);
             const opts = hasOptions ? buildSliceOptions(settings, mesh, nozzles, spools) : null;
             const res = await d.slice(file.name, sendBlob, opts ? optionsHeader(opts) : null, (sec, step) => {
                 if (forSerial === fileSerial) sliceTick = `${again ? `Slicing again with ${what}` : 'Slicing'}: ${step || 'working'}… ${Math.round(sec)} s`;
@@ -622,7 +714,7 @@
         syncBusy = 'Asking beambam for the project…';
         syncError = '';
         try {
-            const { blob: sendBlob, spools } = await paintedInput(file, adoptSpools);
+            const { blob: sendBlob, spools } = await sliceInput(file, adoptSpools);
             const opts = buildSliceOptions(settings, null, chosenNozzles, spools);
             const blob = await daemon.updateProject(file.name, sendBlob, opts ? optionsHeader(opts) : null);
             const a = document.createElement('a');
@@ -935,6 +1027,32 @@
                 bind:active={painting}
                 onpaint={onPaint}
             />
+        {/if}
+        {#if canQuantity && ftype !== 'gcode.3mf'}
+            <div class="quantity">
+                <div class="pp-legend">Quantity ({pieces.length} {pieces.length === 1 ? 'piece' : 'pieces'})</div>
+                <ul class="fil-list">
+                    {#each pieces as pc, i (pc.objectId)}
+                        <li>
+                            <Swatch colour={pc.colour} text={String(i + 1)} />
+                            <span class="pp-small">{pc.name || `piece ${i + 1}`}</span>
+                            <span class="pp-muted pp-small">{Math.round(pc.w)}×{Math.round(pc.h)} mm</span>
+                            <span class="qty" role="group" aria-label={`Count of ${pc.name || `piece ${i + 1}`}`}>
+                                <button type="button" class="nz" onclick={() => setCount(pc, countOf(pc) - 1)} disabled={countOf(pc) <= 0} aria-label="One fewer">−</button>
+                                <span class="qty-n pp-mono">{countOf(pc)}</span>
+                                <button type="button" class="nz" onclick={() => setCount(pc, countOf(pc) + 1)} aria-label="One more">+</button>
+                            </span>
+                        </li>
+                    {/each}
+                </ul>
+                {#if quantity?.changed}
+                    {#if quantity.fits}
+                        <p class="pp-small pp-ok-text">{quantity.total} piece{quantity.total === 1 ? '' : 's'} auto-arranged on the plate; slice to apply.</p>
+                    {:else}
+                        <div class="pp-msg warn">The {quantity.total} pieces don't fit the plate — reduce a count, or they'll overlap.</div>
+                    {/if}
+                {/if}
+            </div>
         {/if}
         {#if model}
             <div class="fils">
@@ -1324,6 +1442,9 @@
     .fil-list li { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-sm) var(--space-md); }
     .fil-g { font-family: var(--font-mono); }
     .nozzle-assign { margin-top: var(--space-md); display: grid; gap: var(--space-sm); }
+    .quantity { margin-top: var(--space-md); display: grid; gap: var(--space-sm); }
+    .qty { display: inline-flex; align-items: center; gap: var(--space-xs); margin-left: auto; }
+    .qty-n { min-width: 1.5rem; text-align: center; }
     .fil-nozzle { display: inline-flex; gap: 2px; margin-left: auto; }
     .fil-nozzle .nz {
         min-width: 32px; min-height: 32px; padding: 0 var(--space-xs);
