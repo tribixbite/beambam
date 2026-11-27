@@ -37,6 +37,13 @@ export interface PreviewPart {
     /** null: non-indexed (every three vertices are a triangle, e.g. STL). */
     indices: Uint32Array | null;
     states: Uint8Array | null;
+    /**
+     * Source of this part's mesh, for writing paint back (paint3mf.ts): the model entry path and
+     * the `<object>` id. Empty for an STL/OBJ mesh (no 3MF entry to paint). Several instances of
+     * one object share these, so painting one paints them all (paint lives on the object mesh).
+     */
+    path?: string;
+    objectId?: string;
     /** Per-vertex normals (filled by `withNormals`, in the worker). */
     normals?: Float32Array;
     /** The project plate (1-based) the part is on; positions are as stored, plate N offset from plate 1. */
@@ -600,6 +607,8 @@ export function assemble3mf(name: string, files: Map<string, ModelFile>, meta: M
                 positions: transformPositions(obj.mesh.positions, xf),
                 indices,
                 states: obj.mesh.states,
+                path,
+                objectId: oid,
                 plate
             });
         }
