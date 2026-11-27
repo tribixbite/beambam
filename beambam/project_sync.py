@@ -209,13 +209,39 @@ def _filaments(nums: list[int]) -> str:
     return f"filaments {', '.join(map(str, nums[:-1]))} and {nums[-1]}"
 
 
+def _grow_filaments(out: dict[str, Any], n: int, m: int) -> None:
+    """Append ``m - n`` filaments to a project's per-filament arrays in place by repeating the last
+    filament's values; the caller then sets each new slot's colour and preset from its spool. Grows the
+    ``n + 2`` bookkeeping arrays (different_settings_to_system, inherits_group) by inserting blanks after
+    the last filament, and renumbers filament_self_index. flush_volumes_matrix is rebuilt from the new
+    colours later (`_flush_matrix` already handles a longer colour list). Used so painting a new colour
+    onto a project (a spool past its filament list) adds that filament instead of being ignored."""
+    extra = m - n
+    if extra <= 0:
+        return
+    for key, val in list(out.items()):
+        if key in NOT_PER_FILAMENT:
+            if key != "flush_volumes_matrix" and isinstance(val, list) and len(val) == n + 2:
+                out[key] = val[:1 + n] + [""] * extra + val[1 + n:]
+            continue
+        if _per_filament(out, key, n):
+            k = len(val) // n
+            out[key] = list(val) + list(val[(n - 1) * k:n * k]) * extra
+    idx = out.get("filament_self_index")
+    if isinstance(idx, list) and idx and len(idx) % m == 0:
+        k = len(idx) // m   # entries per filament (one per extruder variant)
+        as_int = isinstance(idx[0], int)
+        out["filament_self_index"] = [(j + 1) if as_int else str(j + 1) for j in range(m) for _ in range(k)]
+
+
 def adopt_filaments(settings: dict[str, Any], profiles: Path, spools: list[Spool],
                     warnings: list[str] | None = None) -> dict[str, Any]:
     """`settings` (a project's Metadata/project_settings.config) with project filament i set to `spools[i]`:
     the bundled system preset for the spool's filament id / material (`slice_options.filament_profile`), and
     the spool's colour. A spool with neither id nor material keeps the slot's preset and takes only the
-    colour. Filaments past len(spools) stay as they are; spools past the project's filaments are ignored (a
-    filament no object uses would only add purge volumes). Returns new settings; `settings` is not changed.
+    colour. Filaments past len(spools) stay as they are; spools past the project's filaments append new
+    filaments (copied from the last, then given the spool's colour/preset) so a colour painted onto the
+    model gets a filament to print it. Returns new settings; `settings` is not changed.
     A spool no bundled X2D 0.4 mm profile matches, or any spool of a project for another nozzle size (the
     bundled presets are the 0.4 mm ones), changes only the colour, and `warnings` says so.
     ValueError for a bad colour or a project with no filament list."""
@@ -230,11 +256,20 @@ def adopt_filaments(settings: dict[str, Any], profiles: Path, spools: list[Spool
         raise ValueError("the project has no filament list (filament_settings_id)")
     n = len(names)
     out: dict[str, Any] = {k: (list(v) if isinstance(v, list) else v) for k, v in settings.items()}
-    old_colours = [str(c) for c in _as_list(settings.get("filament_colour") or [])]
-    old_colours = (old_colours + ["#808080"] * n)[:n]
+    # The project's own colours before any growth, length n_orig: the flush matrix is read against these.
+    orig_colours = [str(c) for c in _as_list(settings.get("filament_colour") or [])]
+    orig_colours = (orig_colours + ["#808080"] * n)[:n]
+    n_orig = n
+    # Spools past the project's filaments append new filaments (e.g. a colour painted onto a single-colour
+    # model), copied from the last filament; the loop below then sets each new slot's colour and preset.
+    if len(spools) > n:
+        _grow_filaments(out, n, len(spools))
+        n = len(spools)
+        names = out["filament_settings_id"]
+    old_colours = (list(orig_colours) + ["#808080"] * n)[:n]
     new_colours = list(old_colours)
 
-    raw_variants = settings.get("filament_extruder_variant")
+    raw_variants = out.get("filament_extruder_variant")
     variants_all: list[Any] = raw_variants if isinstance(raw_variants, list) else []
     vk = len(variants_all) // n if len(variants_all) % n == 0 else 0   # variants per filament (0 = none)
 
@@ -286,7 +321,9 @@ def adopt_filaments(settings: dict[str, Any], profiles: Path, spools: list[Spool
     out["filament_colour"] = new_colours
     mat = settings.get("flush_volumes_matrix")
     if isinstance(mat, list) and mat:
-        out["flush_volumes_matrix"] = _flush_matrix(mat, old_colours, new_colours)
+        # Read the original matrix against the project's original colours (n_orig); it is rebuilt to the
+        # new colour count (m), so appended filaments get a full-size matrix the slicer accepts.
+        out["flush_volumes_matrix"] = _flush_matrix(mat, orig_colours[:n_orig], new_colours)
     return out
 
 

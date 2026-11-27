@@ -121,15 +121,35 @@ def test_spool_presets_replace_their_filaments_blocks_by_variant(tmp_path):
     assert "compatible_printers" not in out and "setting_id" not in out and "include" not in out
 
 
-def test_a_spool_with_no_preset_info_only_recolours_and_extra_spools_are_ignored(tmp_path):
+def test_a_spool_with_no_preset_info_only_recolours_and_extra_spools_append(tmp_path):
     root = _resources(tmp_path / "r")
     st = _settings(2)
     out = ps.adopt_filaments(st, root, [(None, None, "#123456"), ("GFG02", "PETG", "#000000"),
                                         ("GFA00", "PLA", "#FFFFFF")])
-    assert out["filament_settings_id"] == ["Generic PLA @BBL X2D 0.4 nozzle", PETG]
-    assert out["filament_colour"] == ["#123456", "#000000"]
-    assert out["nozzle_temperature"][:3] == ["210"] * 3
-    assert len(out["filament_settings_id"]) == 2 and len(out["nozzle_temperature"]) == 6
+    # First spool keeps the project preset (only recolours); a third spool past the project's two filaments
+    # appends a filament (its own preset + colour), so a painted colour has a filament to print.
+    assert out["filament_settings_id"] == ["Generic PLA @BBL X2D 0.4 nozzle", PETG, PLA]
+    assert out["filament_colour"] == ["#123456", "#000000", "#FFFFFF"]
+    assert len(out["filament_settings_id"]) == 3 and len(out["nozzle_temperature"]) == 9
+
+
+def test_appended_filament_grows_every_per_filament_array_consistently(tmp_path):
+    """Painting a colour onto a one-filament-style project adds a filament: every per-filament array keeps a
+    whole number of filaments, the bookkeeping arrays grow, and self-index renumbers."""
+    root = _resources(tmp_path / "r")
+    st = _settings(2)
+    k = len(VARIANTS)
+    out = ps.adopt_filaments(st, root, [(None, None, "#111111"), (None, None, "#222222"), (None, None, "#333333")])
+    assert len(out["filament_settings_id"]) == 3
+    for key in ("filament_ids", "filament_type", "filament_vendor"):
+        assert len(out[key]) == 3, key
+    for key in ("nozzle_temperature", "filament_wipe", "filament_flow_ratio", "filament_extruder_variant"):
+        assert len(out[key]) == 3 * k, key
+    # self-index renumbers in whole-filament blocks (k per filament).
+    assert out["filament_self_index"] == [str(j + 1) for j in range(3) for _ in range(k)]
+    # the n+2 bookkeeping arrays grew to m+2.
+    assert len(out["different_settings_to_system"]) == 5 and len(out["inherits_group"]) == 5
+    assert out["filament_colour"] == ["#111111", "#222222", "#333333"]
 
 
 def test_a_spool_whose_filament_has_no_bundled_profile_says_which_preset_stands_in(tmp_path):
