@@ -71,6 +71,14 @@ Running GUI apps (BambuStudio / wxWidgets 3.3) on termux-x11. These lessons were
   Windows/macOS); `/my/task` needs PoP signed with an app key (open-bamboo-networking §10.5).
 - **The X2D's plate marker** `device.plate.cur_id` P0301 is the SuperTack plate (owner-confirmed 2026-11-26; `base`
   9, `mat` 1). No public table: only confirmed markers go in `filament_mapping.PLATE_MARKERS` (and pokefit's copy).
+- **Bambu Connect installers (`beambam connect --install`, 2026-11-26):** the official builds are at
+  `https://public-cdn.bblmw.com/upgrade/bambu-connect/updates/versions/<ver>/bambu-connect-v<ver>-<platform>.<ext>`
+  with `<platform>` one of `win32-x64.exe` (~90 MB), `darwin-arm64.dmg` / `darwin-x64.dmg` (~112 MB); no Linux
+  build. There is **no public update manifest** — `latest.yml`/`latest-mac.yml` and bucket listings all 403 — so
+  the current version comes from parsing the wiki download page (`wiki.bambulab.com/en/software/bambu-connect`),
+  with `PINNED_VERSION` (2.6.0-beta.0) as the fallback. `bambu_connect.py` only ever downloads from that one CDN
+  host. The install is CLI-only and never wired to the daemon's `POST /connect` (a web page must not trigger a
+  host download); the download + launch/`hdiutil` steps can't run on this Linux box, so tests mock the runner.
 - **Test browsers on this box are shared:** another session drives a headless Chromium on CDP port 9333 (it even
   attached to one started here). Use an unusual port and your own `--user-data-dir`, select tabs by URL, and never
   kill "chromium on port N" without checking whose it is. Edge on the phone: CDP via

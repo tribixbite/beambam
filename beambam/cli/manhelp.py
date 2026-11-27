@@ -169,6 +169,7 @@ EXAMPLES: dict[str, list[tuple[str, str]]] = {
     "connect": [
         ("beambam connect part.gcode.3mf", "Open it in Bambu Connect; pick the printer there and press Send."),
         ("beambam connect part.gcode.3mf --print-url", "Only show the bambu-connect:// URL."),
+        ("beambam connect --install", "Download and install Bambu Connect (Windows/macOS), no rooted phone needed."),
     ],
     "slicer": [
         ("beambam slicer", "Show which Bambu Studio slices (POST /slice, slice-print) and whether it can."),

@@ -208,7 +208,9 @@ Connect and allow the browser's "access other apps and services on this device" 
 key from `beambam key` (option A above) or the printer's Developer LAN Mode (option B). Without either,
 everything up to Start works (spools, colour matching, slicing, status, camera), and on Windows or macOS
 beambam.boo/print offers **Send with Bambu Connect** instead: Bambu's own app prints the sliced file with your
-Bambu login (`beambam connect part.gcode.3mf` from the command line).
+Bambu login (`beambam connect part.gcode.3mf` from the command line). This route needs **no rooted phone** — only
+a Bambu account. Don't have Bambu Connect yet? `beambam connect --install` downloads and installs it for you on
+Windows or macOS (`beambam connect part.gcode.3mf` also offers to install it when it's missing).
 
 `beambam key` does the whole key setup with a **rooted** Android phone that runs Bambu Handy (USB, or
 `--adb <phone IP>` on the LAN; `pip install numpy` for the scan): it finds the phone, opens Handy's Devices tab

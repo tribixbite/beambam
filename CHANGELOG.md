@@ -4,6 +4,15 @@ All notable changes to this project.
 
 ## [Unreleased]
 
+### Added
+- **`beambam connect --install` installs Bambu Connect for you** (Windows and macOS), so the key-free print
+  needs no rooted phone and no manual download: it reads the current version off the Bambu wiki (falling back to
+  a pinned one), downloads the official installer from Bambu's CDN — and only that host — launches it on Windows
+  (`--silent` for an unattended `/S` run) or copies the app from the disk image on macOS. `beambam connect
+  <file>` now offers to install it when it's missing, asking first and never downloading unprompted in a
+  non-interactive shell. The daemon's `POST /connect` deliberately never installs — a web page must not be able
+  to trigger a host download. Linux has no build, so there it still points at the download page.
+
 ## v1.10.0 — the key, and a key-free print (2026-11-26)
 
 ### Added

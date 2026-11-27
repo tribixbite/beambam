@@ -204,6 +204,12 @@ Bambu Connect is not installed or has no build (it exists for Windows and macOS)
 `/connect` cannot work here, `""` when it can), and lists `bambu-connect` in `capabilities`. The CLI is
 `beambam connect part.gcode.3mf`.
 
+This is the key-free, **no-rooted-phone** path. On a Windows or macOS machine that doesn't have Bambu Connect
+yet, `beambam connect --install` downloads the official installer (the current version from the Bambu wiki, with
+a pinned fallback) and installs it; `beambam connect <file>` offers the same when it finds it missing. The daemon
+deliberately does **not** install from `POST /connect` — a browser page must never be able to trigger a download
+and install on the host — so the install is CLI-only and asks before fetching (`--silent` skips the prompt).
+
 ## Controls
 
 `POST /control/<verb>` takes a JSON body:
