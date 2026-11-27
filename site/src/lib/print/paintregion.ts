@@ -9,7 +9,7 @@
  *
  * Paint targets 3MF models, whose triangles share indexed vertices, so an edge is a shared pair of
  * vertex indices. Split-triangle (sub-triangle) paint and the field-following "wand"/brush modes are
- * later follow-ups (see docs/PAINT_PLAN.md).
+ * later follow-ups (see docs/specs/colour-painting.md).
  */
 export type PaintMode = 'face' | 'region' | 'part';
 

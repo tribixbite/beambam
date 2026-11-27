@@ -116,7 +116,7 @@ Running GUI apps (BambuStudio / wxWidgets 3.3) on termux-x11. These lessons were
   the wrong arrays (nozzle_diameter, printable_area, machine_max_*), ruinously for a **one-filament** project
   where every machine/process list divides by one. Always verify a filament-append change with a **real slice**
   (bs-bionic on this box), not only unit tests — a single-colour A1 project painted to two colours must slice
-  to two filaments. See `docs/PAINT_PLAN.md`.
+  to two filaments. See `docs/specs/colour-painting.md`.
 - CLI help is built by `beambam/cli/manhelp.py` (ManParser, inherited by every subparser) and
   argument text missing at the `add_argument` site is filled from `beambam/cli/arghelp.py`.
   `tests/test_cli_manhelp.py` fails if any argument has no help, or an EXAMPLES entry does not

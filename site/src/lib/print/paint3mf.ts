@@ -10,7 +10,7 @@
  * the object's mesh, so every build instance of the object shows it (as Bambu does). Only whole
  * triangles are painted here (one `paint_color` leaf); split paint is a later follow-up.
  *
- * See docs/PAINT_PLAN.md.
+ * See docs/specs/colour-painting.md.
  */
 import { strFromU8, strToU8, unzipSync, zipSync } from 'fflate';
 
@@ -70,7 +70,7 @@ export function paintModelXml(xml: string, objects: ModelPaint): string {
  * unchanged. Returns the original Blob when nothing is painted.
  *
  * v1 holds the archive in memory (unzip all → rewrite → re-zip); fine for the small figures
- * painting targets. Streaming the big `.model` entry is a follow-up (see docs/PAINT_PLAN.md).
+ * painting targets. Streaming the big `.model` entry is a follow-up (see docs/specs/colour-painting.md).
  */
 export async function writePainted3mf(original: Blob, paint: PaintMap): Promise<Blob> {
     if (!hasPaint(paint)) return original;

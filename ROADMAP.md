@@ -13,10 +13,10 @@ commitment.
 | **IMPROVEMENTS.md** | The historical 95+ phased item ledger (pre-v1.0.0 → present). Append-only. | Add a new numbered item when a concrete change lands or is queued. |
 | **CHANGELOG.md** | What shipped per `vX.Y.Z`. Backward-looking. | Append a section per release. |
 
-[Bridge split phases](docs/BRIDGE_SPLIT_PLAN.md),
-[BambuStudio submodule migration](docs/SUBMODULE_MIGRATION_PLAN.md) and
-[color painting port](docs/PAINT_PLAN.md) (Pokefit → beambam.boo; encoder
-shipped, 3MF writer next) are tracked in their own deep-dive plan files.
+[Bridge split phases](docs/BRIDGE_SPLIT_PLAN.md) and
+[BambuStudio submodule migration](docs/SUBMODULE_MIGRATION_PLAN.md) are tracked
+in their own deep-dive plan files. Feature specs live in
+[docs/specs/](docs/specs/README.md) (routed from [AGENTS.md](AGENTS.md)).
 
 ---
 

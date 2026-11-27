@@ -6,7 +6,7 @@
  * is preserved (the writer leaves those alone). Paint lives on the object mesh, so every placed
  * instance of an object shares one live state buffer and repaints together.
  *
- * See docs/PAINT_PLAN.md.
+ * See docs/specs/colour-painting.md.
  */
 import type { PreviewPart } from './model';
 import type { PaintMap } from './paint3mf';
