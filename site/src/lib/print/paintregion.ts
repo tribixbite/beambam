@@ -129,3 +129,94 @@ export function regionAround(
     }
     return out;
 }
+
+/** The edge map for a mesh, from the cache or freshly built (and stored in the cache). */
+function getEdges(mesh: RegionMesh, cache?: RegionCache): Map<number, number[]> {
+    if (cache?.edges) return cache.edges;
+    const edges = edgeMap(mesh.indices, (mesh.indices.length / 3) | 0, mesh.positions.length / 3);
+    if (cache) cache.edges = edges;
+    return edges;
+}
+
+/** Triangles sharing an edge with triangle `t`. */
+function neighbours(mesh: RegionMesh, edges: Map<number, number[]>, t: number): number[] {
+    const vCount = mesh.positions.length / 3;
+    const out: number[] = [];
+    for (const [x, y] of edgesOf(mesh.indices, t)) {
+        for (const nb of edges.get(x * vCount + y) ?? []) if (nb !== t) out.push(nb);
+    }
+    return out;
+}
+
+/** Triangles adjacent to `tris` but not in it (the ring that Grow adds). */
+export function ringAround(mesh: RegionMesh, tris: Set<number>, cache?: RegionCache): Set<number> {
+    const edges = getEdges(mesh, cache);
+    const ring = new Set<number>();
+    for (const t of tris) for (const nb of neighbours(mesh, edges, t)) if (!tris.has(nb)) ring.add(nb);
+    return ring;
+}
+
+/** Triangles in `tris` that touch one outside it (the boundary ring that Shrink removes). */
+export function boundaryOf(mesh: RegionMesh, tris: Set<number>, cache?: RegionCache): Set<number> {
+    const edges = getEdges(mesh, cache);
+    const edge = new Set<number>();
+    for (const t of tris) {
+        for (const nb of neighbours(mesh, edges, t)) {
+            if (!tris.has(nb)) {
+                edge.add(t);
+                break;
+            }
+        }
+    }
+    return edge;
+}
+
+/** Centroid of triangle `t`. */
+function centroid(positions: Float32Array, indices: Uint32Array, t: number): [number, number, number] {
+    const a = indices[t * 3] * 3;
+    const b = indices[t * 3 + 1] * 3;
+    const c = indices[t * 3 + 2] * 3;
+    return [
+        (positions[a] + positions[b] + positions[c]) / 3,
+        (positions[a + 1] + positions[b + 1] + positions[c + 1]) / 3,
+        (positions[a + 2] + positions[b + 2] + positions[c + 2]) / 3
+    ];
+}
+
+/**
+ * For each triangle in `tris`, the triangle whose centroid is nearest the mirror of its centroid across
+ * the plane `axis = planeAt` (axis 0 = X, the usual left/right symmetry). Used by Mirror to paint the
+ * symmetric spot. Triangles with no reasonably close mirror (further than `tol`) are skipped — an
+ * asymmetric model simply mirrors the parts that do match.
+ */
+export function mirrorTriangles(mesh: RegionMesh, tris: Iterable<number>, axis = 0, planeAt?: number, tol?: number): Set<number> {
+    const { positions, indices } = mesh;
+    const triCount = (indices.length / 3) | 0;
+    // Plane position: the bounding-box centre on `axis` unless given.
+    let lo = Infinity;
+    let hi = -Infinity;
+    for (let i = axis; i < positions.length; i += 3) {
+        if (positions[i] < lo) lo = positions[i];
+        if (positions[i] > hi) hi = positions[i];
+    }
+    const plane = planeAt ?? (lo + hi) / 2;
+    const limit = (tol ?? (hi - lo) * 0.02) ** 2; // 2% of the span, squared (nearest match must be close)
+    const out = new Set<number>();
+    for (const t of tris) {
+        const c = centroid(positions, indices, t);
+        const target: [number, number, number] = [c[0], c[1], c[2]];
+        target[axis] = 2 * plane - c[axis]; // reflect across the plane
+        let best = -1;
+        let bestD = Infinity;
+        for (let o = 0; o < triCount; o++) {
+            const oc = centroid(positions, indices, o);
+            const d = (oc[0] - target[0]) ** 2 + (oc[1] - target[1]) ** 2 + (oc[2] - target[2]) ** 2;
+            if (d < bestD) {
+                bestD = d;
+                best = o;
+            }
+        }
+        if (best >= 0 && bestD <= limit) out.add(best);
+    }
+    return out;
+}

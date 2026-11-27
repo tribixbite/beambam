@@ -16,6 +16,17 @@ function quadPart(over: Partial<PreviewPart> = {}): PreviewPart {
     };
 }
 
+/** A unit cube as a paintable part (8 shared vertices, 12 triangles). */
+function cubePart(): PreviewPart {
+    return quadPart({
+        positions: new Float32Array([0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0, 0, 0, 1, 1, 0, 1, 1, 1, 1, 0, 1, 1]),
+        indices: new Uint32Array([
+            0, 2, 1, 0, 3, 2, 4, 5, 6, 4, 6, 7, 0, 1, 5, 0, 5, 4, 2, 3, 7, 2, 7, 6, 1, 2, 6, 1, 6, 5, 0, 4, 7, 0, 7, 3
+        ])
+    });
+}
+const count2 = (p: PreviewPart): number => [...(p.states ?? [])].filter((x) => x === 2).length;
+
 describe('paintable / partKey', () => {
     test('needs a 3MF object with geometry', () => {
         expect(paintable(quadPart())).toBe(true);
@@ -88,6 +99,40 @@ describe('PaintSession', () => {
         s.paint(a, 0, 'face', 4);
         expect(a.states).toBe(b.states as Uint8Array); // same buffer
         expect(Array.from(b.states ?? [])).toEqual([4, 0]);
+    });
+
+    test('grow extends the last painted area, shrink contracts it (undoable)', () => {
+        const part = cubePart();
+        const s = new PaintSession([part]);
+        s.paint(part, 0, 'face', 2);
+        const a = count2(part);
+        expect(s.grow()).toBe(true);
+        const b = count2(part);
+        expect(b).toBeGreaterThan(a);
+        expect(s.shrink()).toBe(true);
+        expect(count2(part)).toBeLessThan(b);
+        s.undo(); // shrink is undoable
+        expect(count2(part)).toBe(b);
+    });
+
+    test('grow does nothing with no prior paint', () => {
+        const s = new PaintSession([cubePart()]);
+        expect(s.grow()).toBe(false);
+    });
+
+    test('clear resets the grow/shrink region', () => {
+        const part = cubePart();
+        const s = new PaintSession([part]);
+        s.paint(part, 0, 'face', 2);
+        s.clear();
+        expect(s.grow()).toBe(false); // nothing to grow after clear
+    });
+
+    test('mirror paints the symmetric triangle too', () => {
+        const part = cubePart();
+        const s = new PaintSession([part]);
+        s.paint(part, 10, 'face', 2, 30, true); // a left-face triangle, mirrored
+        expect(count2(part)).toBe(2); // the tapped one and its mirror
     });
 
     test('stateAt reports a triangle current colour, and fill buckets the same colour', () => {

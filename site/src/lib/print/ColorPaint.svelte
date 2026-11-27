@@ -42,6 +42,7 @@
     let activeIndex = $state(0); // 0-based; filament number = activeIndex + 1
     let erase = $state(false);
     let picking = $state(false); // eyedropper: the next tap adopts the tapped colour
+    let mirror = $state(false); // also paint the symmetric (left/right) spot
     let mode = $state<PaintMode>('region');
     let crease = $state(30);
     /** Bumped after every edit so derived UI (undo/redo enabled, dirty) re-reads the session. */
@@ -127,7 +128,7 @@
             picking = false; // one-shot
             return false;
         }
-        const changed = session.paint(part, face, mode, erase ? 0 : activeIndex + 1, crease);
+        const changed = session.paint(part, face, mode, erase ? 0 : activeIndex + 1, crease, mirror);
         if (changed) {
             rev++;
             emit();
@@ -201,6 +202,7 @@
                     {/each}
                 </div>
                 <button type="button" class="pp-btn" class:primary={picking} aria-pressed={picking} onclick={() => (picking = !picking)} title="Eyedropper: tap the model to adopt that colour">Pick</button>
+                <button type="button" class="pp-btn" class:primary={mirror} aria-pressed={mirror} onclick={() => (mirror = !mirror)} title="Also paint the symmetric (left/right) spot">Mirror</button>
             </div>
             {#if mode === 'region'}
                 <label class="cp-crease pp-small">
@@ -211,6 +213,8 @@
 
             <div class="cp-row">
                 {#key rev}
+                    <button type="button" class="pp-btn" onclick={() => act(() => session!.grow())} title="Grow the last painted area by one ring">Grow</button>
+                    <button type="button" class="pp-btn" onclick={() => act(() => session!.shrink())} title="Shrink the last painted area by one ring">Shrink</button>
                     <button type="button" class="pp-btn" disabled={!session?.canUndo} onclick={() => act(() => session!.undo())}>Undo</button>
                     <button type="button" class="pp-btn" disabled={!session?.canRedo} onclick={() => act(() => session!.redo())}>Redo</button>
                     <button type="button" class="pp-btn" disabled={!session?.dirty} onclick={() => act(() => session!.clear())}>Clear</button>

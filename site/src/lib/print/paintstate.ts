@@ -10,7 +10,7 @@
  */
 import type { PreviewPart } from './model';
 import type { PaintMap } from './paint3mf';
-import { regionAround, type PaintMode, type RegionCache } from './paintregion';
+import { boundaryOf, mirrorTriangles, regionAround, ringAround, type PaintMode, type RegionCache } from './paintregion';
 
 /** Key for an object mesh: its model entry path and `<object>` id. */
 export function partKey(part: Pick<PreviewPart, 'path' | 'objectId'>): string {
@@ -105,35 +105,81 @@ export class PaintSession {
         return true;
     }
 
-    /**
-     * Paint the region a tap on `part`'s triangle `face` selects, in `mode`, with filament `filament`
-     * (0 clears to the part's own colour). Returns true when any triangle changed.
-     */
-    paint(part: PreviewPart, face: number, mode: PaintMode, filament: number, creaseDeg = 30): boolean {
-        if (!paintable(part)) return false;
-        const key = partKey(part);
-        const g = this.geom.get(key);
-        const buf = this.live.get(key);
-        if (!g || !buf) return false;
+    /** The last painted region, so Grow / Shrink can extend or contract it. */
+    private lastPaint: { key: string; filament: number; tris: Set<number> } | null = null;
+
+    private cacheFor(key: string): RegionCache {
         let cache = this.regionCache.get(key);
         if (!cache) {
             cache = {};
             this.regionCache.set(key, cache);
         }
+        return cache;
+    }
+
+    /** Set every triangle in `tris` to `filament` on object `key`; returns the edits (not committed). */
+    private editsFor(key: string, tris: Iterable<number>, filament: number): Edit[] {
+        const buf = this.live.get(key)!;
         const ov = this.overrides.get(key);
         const edits: Edit[] = [];
-        for (const tri of regionAround(g, face, mode, creaseDeg, cache, buf)) {
+        for (const tri of tris) {
             if (buf[tri] === filament) continue;
-            edits.push({
-                key,
-                tri,
-                beforeOverride: ov?.get(tri),
-                afterOverride: filament,
-                beforeState: buf[tri],
-                afterState: filament
-            });
+            edits.push({ key, tri, beforeOverride: ov?.get(tri), afterOverride: filament, beforeState: buf[tri], afterState: filament });
         }
-        return this.commit(edits);
+        return edits;
+    }
+
+    /**
+     * Paint the region a tap on `part`'s triangle `face` selects, in `mode`, with filament `filament`
+     * (0 clears to the part's own colour). `mirror` also paints the symmetric region (left/right).
+     * Returns true when any triangle changed.
+     */
+    paint(part: PreviewPart, face: number, mode: PaintMode, filament: number, creaseDeg = 30, mirror = false): boolean {
+        if (!paintable(part)) return false;
+        const key = partKey(part);
+        const g = this.geom.get(key);
+        const buf = this.live.get(key);
+        if (!g || !buf) return false;
+        const cache = this.cacheFor(key);
+        const region = regionAround(g, face, mode, creaseDeg, cache, buf);
+        const all = new Set(region);
+        if (mirror) for (const m of mirrorTriangles(g, region)) all.add(m);
+        const ok = this.commit(this.editsFor(key, all, filament));
+        if (ok) this.lastPaint = { key, filament, tris: all };
+        return ok;
+    }
+
+    /** Grow the last painted region by one ring of triangles. */
+    grow(): boolean {
+        const lp = this.lastPaint;
+        if (!lp) return false;
+        const g = this.geom.get(lp.key);
+        if (!g) return false;
+        const ring = ringAround(g, lp.tris, this.cacheFor(lp.key));
+        const ok = this.commit(this.editsFor(lp.key, ring, lp.filament));
+        if (ok) for (const t of ring) lp.tris.add(t);
+        return ok;
+    }
+
+    /** Shrink the last painted region by one boundary ring, reverting those triangles to before the paint. */
+    shrink(): boolean {
+        const lp = this.lastPaint;
+        if (!lp || lp.tris.size === 0) return false;
+        const g = this.geom.get(lp.key);
+        const buf = this.live.get(lp.key);
+        if (!g || !buf) return false;
+        const ov = this.overrides.get(lp.key);
+        const base = this.base.get(lp.key)!;
+        const edge = boundaryOf(g, lp.tris, this.cacheFor(lp.key));
+        const edits: Edit[] = [];
+        for (const tri of edge) {
+            const back = base[tri]; // revert to the model's own colour under the paint
+            if (buf[tri] === back) continue;
+            edits.push({ key: lp.key, tri, beforeOverride: ov?.get(tri), afterOverride: back || undefined, beforeState: buf[tri], afterState: back });
+        }
+        const ok = this.commit(edits);
+        if (ok) for (const t of edge) lp.tris.delete(t);
+        return ok;
     }
 
     /** The current filament state of a triangle (for the eyedropper); 0 when unpainted or not paintable. */
@@ -159,6 +205,7 @@ export class PaintSession {
                 });
             }
         }
+        this.lastPaint = null; // nothing painted now; Grow/Shrink have no region
         return this.commit(edits);
     }
 

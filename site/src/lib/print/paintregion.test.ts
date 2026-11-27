@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { regionAround, triangleNormal, type RegionMesh } from './paintregion';
+import { boundaryOf, mirrorTriangles, regionAround, ringAround, triangleNormal, type RegionMesh } from './paintregion';
 
 /** A unit cube centred at the origin: 8 shared vertices, 12 triangles (2 per face). */
 function cube(): RegionMesh {
@@ -64,6 +64,24 @@ describe('regionAround', () => {
         expect(r.has(0)).toBe(false);
         expect(r.has(1)).toBe(false);
         expect(r.size).toBe(10);
+    });
+});
+
+describe('grow / shrink / mirror helpers', () => {
+    test('ringAround returns adjacent triangles not already in the set', () => {
+        const r = ringAround(cube(), new Set([0]));
+        expect(r.has(0)).toBe(false);
+        expect(r.size).toBeGreaterThan(0);
+    });
+    test('boundaryOf is empty for the whole mesh, the patch itself for a small set', () => {
+        const c = cube();
+        expect(boundaryOf(c, new Set(Array.from({ length: 12 }, (_, i) => i))).size).toBe(0);
+        expect(boundaryOf(c, new Set([0, 1])).size).toBe(2); // the bottom face both touch outside
+    });
+    test('mirrorTriangles finds the opposite side across the X centre', () => {
+        const m = mirrorTriangles(cube(), [10]); // a left-face triangle -> a right-face one
+        expect(m.size).toBeGreaterThan(0);
+        expect(m.has(10)).toBe(false);
     });
 });
 
