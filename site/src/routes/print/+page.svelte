@@ -297,6 +297,9 @@
     let settings = $state<PrintSettings>({ ...PROJECT_SETTINGS });
     /** The spools a project slices with ("Slice with the spools' filaments"); null = its own filaments. */
     let adoptSpools = $state<SpoolOption[] | null>(null);
+    /** The nozzle each filament is sliced on (1 = left, 2 = right); null = let Bambu choose. Settable before
+     * the first slice so a dual-nozzle multi-colour print is sliced once, not sliced then re-sliced. */
+    let chosenNozzles = $state<number[] | null>(null);
     /** A content signature of the paint (every painted triangle's state + the palette) so any paint change —
      * even one that keeps the triangle count, like repainting a region another colour — re-slices, while an
      * undo back to the sliced state compares equal again. */
@@ -316,7 +319,7 @@
         return `${(h >>> 0).toString(16)}:${paintInfo.palette.join(',')}`;
     });
     const settingsKey = $derived(
-        JSON.stringify([hasOptions ? settings : null, meshSpool ? [meshSpool.profileId, meshSpool.type] : null, adoptSpools, paintSig])
+        JSON.stringify([hasOptions ? settings : null, meshSpool ? [meshSpool.profileId, meshSpool.type] : null, adoptSpools, paintSig, chosenNozzles])
     );
 
     /** What "not sent" means for this file: the project's own value, or Bambu's default for a mesh. */
@@ -358,7 +361,6 @@
     let handingOff = $state(false);
     let connectMsg = $state<{ ok: boolean; text: string } | null>(null);
     let slicedKey = $state('');
-    let chosenNozzles = $state<number[] | null>(null);
     let printFile = $state<string | null>(null);
     /** The plate of a multi-plate project to preview and print (1-based); beambam slices every plate. */
     let printPlate = $state(1);
@@ -386,6 +388,16 @@
         !!daemon && !!model && !slicing && ftype !== 'gcode.3mf' && (!isMeshKind || (hasMesh && !!meshSpool))
     );
     const canRenozzle = $derived(hasNozzlePlan && hasOptions && ftype !== 'gcode.3mf');
+    /** A dual-nozzle project with more than one filament can have its nozzles assigned before slicing. */
+    const canPickNozzles = $derived(canRenozzle && !isMeshKind && (model?.filaments.length ?? 0) > 1);
+    /** Default when the user first assigns nozzles: one colour per nozzle, round-robin left/right. */
+    function nozzleDefaults(): number[] {
+        return (model?.filaments ?? []).map((_, i) => (i % 2) + 1);
+    }
+    function setFilamentNozzle(i: number, n: number): void {
+        const base = chosenNozzles ?? nozzleDefaults();
+        chosenNozzles = base.map((v, j) => (j === i ? n : v));
+    }
 
     function resetSlice(): void {
         sliceResult = null;
@@ -851,9 +863,20 @@
                                 <span class="pp-mono pp-small">{f.type || '—'}</span>
                                 <span class="pp-muted pp-small">{f.colour}</span>
                                 {#if summary?.per?.[i]}<span class="pp-small fil-g">{gramsText(summary.per[i])}</span>{/if}
+                                {#if canPickNozzles}
+                                    <span class="fil-nozzle" role="group" aria-label={`Nozzle for filament ${i + 1}`}>
+                                        <button type="button" class="nz" class:on={chosenNozzles?.[i] === 1} aria-pressed={chosenNozzles?.[i] === 1} onclick={() => setFilamentNozzle(i, 1)} title="Left nozzle">L</button>
+                                        <button type="button" class="nz" class:on={chosenNozzles?.[i] === 2} aria-pressed={chosenNozzles?.[i] === 2} onclick={() => setFilamentNozzle(i, 2)} title="Right nozzle">R</button>
+                                    </span>
+                                {/if}
                             </li>
                         {/each}
                     </ul>
+                    {#if canPickNozzles}
+                        <p class="pp-muted pp-small">
+                            {#if chosenNozzles}Assigning nozzles (L/R) — it slices once with this. <button type="button" class="pp-link" onclick={() => (chosenNozzles = null)}>Let Bambu choose</button>.{:else}Two nozzles: pick L/R per colour to set it before slicing, or leave it to Bambu and adjust after.{/if}
+                        </p>
+                    {/if}
                 {/if}
             </div>
         {/if}
@@ -1191,8 +1214,16 @@
     .plates { margin-bottom: var(--space-md); }
     .plate-time { display: block; color: var(--color-mute); font-size: var(--text-xs); letter-spacing: 0; text-transform: none; }
     .fil-list { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--space-sm); }
-    .fil-list li { display: grid; grid-template-columns: auto auto minmax(0, 1fr) auto; align-items: center; gap: var(--space-md); }
+    .fil-list li { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-sm) var(--space-md); }
     .fil-g { font-family: var(--font-mono); }
+    .fil-nozzle { display: inline-flex; gap: 2px; margin-left: auto; }
+    .fil-nozzle .nz {
+        min-width: 32px; min-height: 32px; padding: 0 var(--space-xs);
+        border: 1px solid var(--color-hair); border-radius: var(--radius-sm, 0.3rem);
+        background: transparent; color: var(--color-mute); cursor: pointer; font-size: var(--text-sm);
+    }
+    .fil-nozzle .nz.on { background: var(--color-accent); border-color: var(--color-accent); color: var(--color-surface); }
+    .pp-link { background: none; border: 0; padding: 0; color: var(--color-accent); cursor: pointer; font: inherit; text-decoration: underline; }
     .settings { border: 0; padding: 0; margin: 0; display: grid; gap: var(--space-lg); min-width: 0; }
     .settings:disabled { opacity: 0.5; }
     .sync { display: grid; gap: var(--space-sm); margin-top: var(--space-md); }

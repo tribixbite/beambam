@@ -8,7 +8,9 @@ made for another Bambu printer (an A1/P2S from MakerWorld) is re-targeted to the
 1. **Connect** (step 01) to your daemon (`http://127.0.0.1:8765`). The printer and plate show up.
 2. **Choose a file** (step 02) — drop a `.3mf`, `.stl` or `.obj`, or an already-sliced `.gcode.3mf`.
 3. **Preview** (step 03) — rotate/zoom the model on the plate; pick the plate if the project has
-   several. Optionally [paint colours](Colour-painting.md).
+   several. On a two-nozzle printer with a multi-colour file you can also assign each colour to the
+   **L**eft or **R**ight nozzle here, so it slices once (leave it to Bambu to choose and adjust after
+   the slice instead). Optionally [paint colours](Colour-painting.md).
 4. **Settings** (steps 04–05) — keep the project's settings or override layer height, walls, infill,
    supports, brim and the build plate, then **Slice**. The floating bar shows progress and the result.
 5. **Spools** (step 06) — map each filament to a loaded AMS slot; on a two-nozzle print pick Left/Right
