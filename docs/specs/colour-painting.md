@@ -82,9 +82,9 @@ tap ──(Preview.svelte raycaster)──▶ {part, triangle}
 
 ## Known limitations / future work
 
-- **Large meshes**: `writePainted3mf` unzips/re-zips and builds the model XML as one string on the main
-  thread — fine for figures, would freeze on a ~1.9M-triangle model. Move it (and the edge-map build,
-  already cached) into the preview worker and stream the `.model` entry.
+- **Large meshes**: `writePainted3mf` runs in the preview worker (`worker-client.serializePainted`), so
+  re-zipping does not freeze the tab, and the edge-map is cached per object. Still unzips/re-zips the
+  whole archive in memory; streaming the `.model` entry is a further optimisation.
 - **Split paint**: only whole-triangle leaves are authored (no sub-triangle edges). `model_settings`
   plate-level `filament_maps` is not grown for appended filaments.
 - **Multi-plate**: paint is recorded, sliced and shown on the current plate; a plate not drawn since

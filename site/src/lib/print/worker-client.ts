@@ -4,6 +4,7 @@
  * when workers are unavailable.
  */
 import type { LoadedModel } from './model';
+import type { PaintMap } from './paint3mf';
 import type { WorkerReply, WorkerRequest } from './preview.worker';
 
 let worker: Worker | null = null;
@@ -39,7 +40,8 @@ export async function readModelFile(file: File, onProgress: (fraction: number, w
             w.removeEventListener('message', onMessage);
             w.removeEventListener('error', onError);
             if (r.type === 'done') resolve(r.model);
-            else reject(new Error(r.message));
+            else if (r.type === 'error') reject(new Error(r.message));
+            else reject(new Error('unexpected worker reply'));
         };
         const onError = (ev: ErrorEvent): void => {
             w.removeEventListener('message', onMessage);
@@ -51,5 +53,40 @@ export async function readModelFile(file: File, onProgress: (fraction: number, w
         w.addEventListener('message', onMessage);
         w.addEventListener('error', onError);
         w.postMessage({ id, name: file.name, file } satisfies WorkerRequest);
+    });
+}
+
+/**
+ * Bake `paint` into `file` (a 3MF) off the main thread, so re-zipping a large model does not freeze the
+ * tab. Falls back to the main thread when workers are unavailable.
+ */
+export async function serializePainted(file: Blob, paint: PaintMap): Promise<Blob> {
+    const w = getWorker();
+    if (!w) {
+        const { writePainted3mf } = await import('./paint3mf');
+        return writePainted3mf(file, paint);
+    }
+    const id = ++seq;
+    return new Promise<Blob>((resolve, reject) => {
+        const onMessage = (ev: MessageEvent<WorkerReply>): void => {
+            const r = ev.data;
+            if (r.id !== id) return;
+            if (r.type === 'progress') return;
+            w.removeEventListener('message', onMessage);
+            w.removeEventListener('error', onError);
+            if (r.type === 'painted') resolve(r.blob);
+            else if (r.type === 'error') reject(new Error(r.message));
+            else reject(new Error('unexpected worker reply'));
+        };
+        const onError = (ev: ErrorEvent): void => {
+            w.removeEventListener('message', onMessage);
+            w.removeEventListener('error', onError);
+            worker?.terminate();
+            worker = null;
+            reject(new Error(ev.message || 'the preview worker failed while baking the paint'));
+        };
+        w.addEventListener('message', onMessage);
+        w.addEventListener('error', onError);
+        w.postMessage({ id, type: 'paint', file, paint } satisfies WorkerRequest);
     });
 }

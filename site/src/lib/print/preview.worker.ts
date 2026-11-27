@@ -5,17 +5,32 @@
  */
 import { loadModel } from './load';
 import { withNormals, type LoadedModel } from './model';
+import { writePainted3mf, type PaintMap } from './paint3mf';
 
-export type WorkerRequest = { id: number; name: string; file: Blob };
+export type WorkerRequest =
+    | { id: number; name: string; file: Blob }
+    | { id: number; type: 'paint'; file: Blob; paint: PaintMap };
 export type WorkerReply =
     | { id: number; type: 'progress'; fraction: number; what: string }
     | { id: number; type: 'done'; model: LoadedModel }
+    | { id: number; type: 'painted'; blob: Blob }
     | { id: number; type: 'error'; message: string };
 
 const ctx = self as unknown as DedicatedWorkerGlobalScope;
 
 ctx.onmessage = async (ev: MessageEvent<WorkerRequest>) => {
-    const { id, name, file } = ev.data;
+    const req = ev.data;
+    if ('paint' in req) {
+        // Bake the paint into the 3MF off the main thread (unzip → rewrite XML → re-zip can be heavy).
+        try {
+            const blob = await writePainted3mf(req.file, req.paint);
+            ctx.postMessage({ id: req.id, type: 'painted', blob } satisfies WorkerReply);
+        } catch (e) {
+            ctx.postMessage({ id: req.id, type: 'error', message: e instanceof Error ? e.message : String(e) } satisfies WorkerReply);
+        }
+        return;
+    }
+    const { id, name, file } = req;
     let last = 0;
     try {
         const loaded = await loadModel(name, file, (fraction, what) => {

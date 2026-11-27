@@ -17,7 +17,6 @@
     import MappingPanel from '$lib/print/MappingPanel.svelte';
     import { fileType, type FileType } from '$lib/print/load';
     import { NEUTRAL, partsOnPlate, type LoadedModel } from '$lib/print/model';
-    import { writePainted3mf } from '$lib/print/paint3mf';
     import {
         BED_TYPES,
         BRIM_MODES_UI,
@@ -241,7 +240,8 @@
         const painted = canPaint && paintInfo?.dirty ? paintInfo : null;
         if (!painted) return { blob: src, spools: baseSpools };
         const spools = baseSpools ? painted.spools?.map((s, i) => baseSpools[i] ?? s) ?? baseSpools : painted.spools;
-        return { blob: await writePainted3mf(src, painted.paintMap), spools };
+        const { serializePainted } = await import('$lib/print/worker-client');
+        return { blob: await serializePainted(src, painted.paintMap), spools };
     }
 
     async function takeFile(f: File | undefined | null): Promise<void> {
