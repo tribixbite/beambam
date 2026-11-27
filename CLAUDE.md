@@ -83,6 +83,14 @@ Running GUI apps (BambuStudio / wxWidgets 3.3) on termux-x11. These lessons were
 - **No reverse-DNS on the daemon's start path:** `socket.getfqdn()` takes ~30 s on the macOS CI
   runners, and in `http_validate.allowed_host_names` (run before the bind) it made every HTTP
   test there fail with "connection refused" (2026-11-25).
+- **Cross-platform test traps the Termux box hides (bit v1.10.0's new tests, 2026-11-26):** a path
+  put in a URL is `/`→`%2F` on POSIX but `\`→`%5C` on Windows (assert either); `os.chmod(…, 0o600)`
+  is a no-op on Windows (`st_mode & 0o777` is not `0o600` there — guard the check with
+  `sys.platform != "win32"`); and the `daemon` fixture (test_http_print) timed out on macOS only when
+  it was the session's FIRST spin-up, because `_serve_http` imports `print_service` / `slice_service` /
+  `filament_mapping` lazily *before* it binds and those are cold unless some earlier test imported them
+  at module level — the fixture now warms them first and waits 30 s. mypy 2.4 (CI) also needs
+  `np.frombuffer(...)` annotated where 2.1 (local) did not.
 - CLI help is built by `beambam/cli/manhelp.py` (ManParser, inherited by every subparser) and
   argument text missing at the `add_argument` site is filled from `beambam/cli/arghelp.py`.
   `tests/test_cli_manhelp.py` fails if any argument has no help, or an EXAMPLES entry does not
