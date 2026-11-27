@@ -388,11 +388,17 @@
         !!daemon && !!model && !slicing && ftype !== 'gcode.3mf' && (!isMeshKind || (hasMesh && !!meshSpool))
     );
     const canRenozzle = $derived(hasNozzlePlan && hasOptions && ftype !== 'gcode.3mf');
-    /** A dual-nozzle project with more than one filament can have its nozzles assigned before slicing. */
-    const canPickNozzles = $derived(canRenozzle && !isMeshKind && (model?.filaments.length ?? 0) > 1);
+    /** The colours the print will use: the painted palette when painting adds colours, else the file's
+     * filaments. This is what the nozzle picker assigns, so a single-colour file painted to several colours
+     * can still have its nozzles set before slicing. */
+    const effectiveColours = $derived(
+        canPaint && paintInfo?.palette.length ? paintInfo.palette : (model?.filaments.map((f) => f.colour) ?? [])
+    );
+    /** A dual-nozzle print with more than one colour can have its nozzles assigned before slicing. */
+    const canPickNozzles = $derived(canRenozzle && !isMeshKind && effectiveColours.length > 1);
     /** Default when the user first assigns nozzles: one colour per nozzle, round-robin left/right. */
     function nozzleDefaults(): number[] {
-        return (model?.filaments ?? []).map((_, i) => (i % 2) + 1);
+        return effectiveColours.map((_, i) => (i % 2) + 1);
     }
     function setFilamentNozzle(i: number, n: number): void {
         const base = chosenNozzles ?? nozzleDefaults();
@@ -863,19 +869,28 @@
                                 <span class="pp-mono pp-small">{f.type || '—'}</span>
                                 <span class="pp-muted pp-small">{f.colour}</span>
                                 {#if summary?.per?.[i]}<span class="pp-small fil-g">{gramsText(summary.per[i])}</span>{/if}
-                                {#if canPickNozzles}
-                                    <span class="fil-nozzle" role="group" aria-label={`Nozzle for filament ${i + 1}`}>
-                                        <button type="button" class="nz" class:on={chosenNozzles?.[i] === 1} aria-pressed={chosenNozzles?.[i] === 1} onclick={() => setFilamentNozzle(i, 1)} title="Left nozzle">L</button>
-                                        <button type="button" class="nz" class:on={chosenNozzles?.[i] === 2} aria-pressed={chosenNozzles?.[i] === 2} onclick={() => setFilamentNozzle(i, 2)} title="Right nozzle">R</button>
-                                    </span>
-                                {/if}
                             </li>
                         {/each}
                     </ul>
                     {#if canPickNozzles}
-                        <p class="pp-muted pp-small">
-                            {#if chosenNozzles}Assigning nozzles (L/R) — it slices once with this. <button type="button" class="pp-link" onclick={() => (chosenNozzles = null)}>Let Bambu choose</button>.{:else}Two nozzles: pick L/R per colour to set it before slicing, or leave it to Bambu and adjust after.{/if}
-                        </p>
+                        <div class="nozzle-assign">
+                            <div class="pp-legend">Nozzles (before slicing)</div>
+                            <ul class="fil-list">
+                                {#each effectiveColours as colour, i (i)}
+                                    <li>
+                                        <Swatch {colour} text={String(i + 1)} />
+                                        <span class="pp-muted pp-small">{colour}</span>
+                                        <span class="fil-nozzle" role="group" aria-label={`Nozzle for colour ${i + 1}`}>
+                                            <button type="button" class="nz" class:on={chosenNozzles?.[i] === 1} aria-pressed={chosenNozzles?.[i] === 1} onclick={() => setFilamentNozzle(i, 1)} title="Left nozzle">L</button>
+                                            <button type="button" class="nz" class:on={chosenNozzles?.[i] === 2} aria-pressed={chosenNozzles?.[i] === 2} onclick={() => setFilamentNozzle(i, 2)} title="Right nozzle">R</button>
+                                        </span>
+                                    </li>
+                                {/each}
+                            </ul>
+                            <p class="pp-muted pp-small">
+                                {#if chosenNozzles}Assigned — it slices once with this. <button type="button" class="pp-link" onclick={() => (chosenNozzles = null)}>Let Bambu choose</button>.{:else}Pick L/R per colour to set the nozzle before slicing, or leave it to Bambu and adjust after.{/if}
+                            </p>
+                        </div>
                     {/if}
                 {/if}
             </div>
@@ -1216,6 +1231,7 @@
     .fil-list { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--space-sm); }
     .fil-list li { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-sm) var(--space-md); }
     .fil-g { font-family: var(--font-mono); }
+    .nozzle-assign { margin-top: var(--space-md); display: grid; gap: var(--space-sm); }
     .fil-nozzle { display: inline-flex; gap: 2px; margin-left: auto; }
     .fil-nozzle .nz {
         min-width: 32px; min-height: 32px; padding: 0 var(--space-xs);
