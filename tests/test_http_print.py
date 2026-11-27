@@ -51,6 +51,11 @@ def daemon(monkeypatch):
     """A daemon on a free port; returns (port, calls)."""
     import beambam.ftps as ftps
     import beambam.print_job as pj
+    # Warm what _serve_http imports lazily before it binds its port, so the session's first daemon spin-up still
+    # binds within the readiness wait on a slow (cold) macOS runner rather than timing out the first request.
+    import beambam.filament_mapping  # noqa: F401
+    import beambam.print_service  # noqa: F401
+    import beambam.slice_service  # noqa: F401
     calls: dict = {"upload": [], "start": []}
     monkeypatch.setattr(ftps, "upload_file",
                         lambda creds, path, **kw: calls["upload"].append((path, kw)))
@@ -64,7 +69,7 @@ def daemon(monkeypatch):
         bind=f"127.0.0.1:{port}", get_state=lambda _p: STATE,
         get_last_ts=lambda _p: time.time(), printer_names=[""],
         clients={"": _Client()}, cors_origins=["https://pokefit.party"])).start()
-    deadline = time.time() + 15
+    deadline = time.time() + 30          # a cold first spin-up on a loaded macOS runner can be slow to bind
     while time.time() < deadline:
         try:
             socket.create_connection(("127.0.0.1", port), timeout=0.3).close()

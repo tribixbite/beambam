@@ -4,6 +4,7 @@ app cert and cert_id as the working setup, 2026-11-26.)"""
 from __future__ import annotations
 
 import datetime as dt
+import sys
 from pathlib import Path
 
 import pytest
@@ -69,7 +70,8 @@ def test_save_keeps_a_different_previous_copy(tmp_path, key):
     (tmp_path / "printer_cert_id.txt").write_text("oldCN=GLOF1.bambulab.com")
     written = hk.save(found, tmp_path, say=lambda _: None)
     assert {p.name for p in written} == {"printer_sign_key.pem", "printer_app_cert.pem", "printer_cert_id.txt"}
-    assert (tmp_path / "printer_sign_key.pem").stat().st_mode & 0o777 == 0o600
+    if sys.platform != "win32":                         # Windows has no POSIX file modes (chmod 0o600 is a no-op)
+        assert (tmp_path / "printer_sign_key.pem").stat().st_mode & 0o777 == 0o600
     assert len(list(tmp_path.glob("printer_cert_id.txt.bak-*"))) == 1
     hk.save(found, tmp_path, say=lambda _: None)        # the same again: no new backups
     assert len(list(tmp_path.glob("*.bak-*"))) == 1

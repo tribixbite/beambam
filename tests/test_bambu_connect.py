@@ -26,7 +26,8 @@ def test_the_handoff_url_is_the_documented_one(tmp_path):
     assert url.startswith("bambu-connect://import-file?path=")
     q = urllib.parse.parse_qs(urllib.parse.urlsplit(url).query)
     assert q == {"path": [str(f.resolve())], "name": ["Jolteon & co"], "version": ["1.0.0"]}
-    assert "%2F" in url and "%20" in url                  # every value encoded, slashes too
+    # Every value encoded, the path separators too (/ on POSIX -> %2F, \ on Windows -> %5C).
+    assert "%20" in url and ("%2F" in url or "%5C" in url)
 
 
 def test_only_a_sliced_file_is_handed_over(tmp_path, monkeypatch):
