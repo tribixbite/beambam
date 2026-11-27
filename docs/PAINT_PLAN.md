@@ -62,6 +62,35 @@ POST /slice (daemon)                             →  multi-colour sliced file
    (eyedropper), Grow/Shrink, the floating paint dock, and split-triangle paint
    for sub-triangle edges.
 
+## Status (2026-11-27) — shipped and verified
+
+Increments 1–6 are done, plus the daemon-side filament append and the fixes
+from a Fable audit. **Verified end to end**: a single-colour A1 keychain
+painted with a second colour slices to a valid two-filament X2D print
+(1.38 g + 2.58 g) through the retarget path. All paint lib tests (bun) and
+`test_project_sync` (pytest) pass; the site builds.
+
+Daemon: `project_sync._grow_filaments` appends filaments scoped to real
+per-filament keys (`FILAMENT_KEYS` allowlist); the retarget path grows the
+embedded project and keeps each filament's material; `_flush_matrix` is
+growth-aware with a default purge; `/healthz` advertises `paint-filaments`.
+
+### Known limitations (future work)
+- **Large meshes**: `writePainted3mf` unzips/re-zips and rewrites the model XML
+  as one string on the main thread — fine for figures, but a 1.9M-triangle
+  model would freeze the tab. Move it (and the edge-map build, now cached per
+  object) into the preview worker and stream the `.model` entry.
+- **Multi-plate live display**: the paint is recorded, sliced and shown on the
+  current plate, but a plate the preview has not drawn since painting may need a
+  plate switch to show it (the session is keyed to the whole model, so nothing
+  is lost).
+- **Split paint**: only whole-triangle leaves are authored; a file's existing
+  split paint on untouched triangles is preserved, but painting always writes
+  whole triangles (no sub-triangle edges), and `model_settings.config`
+  plate-level `filament_maps` is not grown for appended filaments.
+- Triangles written as `<triangle …></triangle>` (not self-closing) are not
+  matched by the writer; Bambu/Orca/PrusaSlicer always self-close them.
+
 ## Notes / risks
 
 - **Triangle-index contract** is the linchpin: the writer in step 2 must count

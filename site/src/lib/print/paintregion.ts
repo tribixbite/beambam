@@ -60,11 +60,17 @@ export interface RegionMesh {
     indices: Uint32Array;
 }
 
+/** Reusable per-mesh index so a repeated tap on the same object does not rebuild the edge map. */
+export interface RegionCache {
+    edges?: Map<number, number[]>;
+}
+
 /**
  * The set of triangle indices a tap on `seed` selects, for `mode`. `creaseDeg` is the crease angle
- * for `region` (a larger angle floods further; default 30°, pokefit's "region" default).
+ * for `region` (a larger angle floods further; default 30°, pokefit's "region" default). Pass a `cache`
+ * (one per object) to reuse the edge map across taps — it is built once and stored there.
  */
-export function regionAround(mesh: RegionMesh, seed: number, mode: PaintMode, creaseDeg = 30): Set<number> {
+export function regionAround(mesh: RegionMesh, seed: number, mode: PaintMode, creaseDeg = 30, cache?: RegionCache): Set<number> {
     const { positions, indices } = mesh;
     const triCount = (indices.length / 3) | 0;
     const out = new Set<number>();
@@ -73,7 +79,11 @@ export function regionAround(mesh: RegionMesh, seed: number, mode: PaintMode, cr
     if (mode === 'face') return out;
 
     const vCount = positions.length / 3;
-    const edges = edgeMap(indices, triCount, vCount);
+    let edges = cache?.edges;
+    if (!edges) {
+        edges = edgeMap(indices, triCount, vCount);
+        if (cache) cache.edges = edges;
+    }
     const cosLimit = Math.cos((Math.max(0, Math.min(180, creaseDeg)) * Math.PI) / 180);
     const normals: ([number, number, number] | null)[] = mode === 'region' ? new Array(triCount).fill(null) : [];
     const normal = (t: number): [number, number, number] => {
@@ -94,7 +104,10 @@ export function regionAround(mesh: RegionMesh, seed: number, mode: PaintMode, cr
                 if (mode === 'region') {
                     const a = normal(t);
                     const b = normal(nb);
-                    if (a[0] * b[0] + a[1] * b[1] + a[2] * b[2] < cosLimit) continue; // crease: stop
+                    // A degenerate triangle has a zero normal; treat it as coplanar (cross it) rather than a
+                    // crease, so a sliver does not wall off the region.
+                    const degenerate = (!a[0] && !a[1] && !a[2]) || (!b[0] && !b[1] && !b[2]);
+                    if (!degenerate && a[0] * b[0] + a[1] * b[1] + a[2] * b[2] < cosLimit) continue; // crease: stop
                 }
                 out.add(nb);
                 stack.push(nb);

@@ -83,6 +83,8 @@
     const hasOptions = $derived(caps.includes('slice-options'));
     const hasMesh = $derived(caps.includes('slice-mesh'));
     const hasNozzlePlan = $derived(caps.includes('plan-sliced-nozzles'));
+    /** The daemon appends a filament for a painted new colour (needs slice-options to carry the spools). */
+    const canAddColours = $derived(caps.includes('paint-filaments') && caps.includes('slice-options'));
     const loaded = $derived(loadedTrays(trays));
     const command = $derived(startCommand(origin, safeUrl(urlInput)));
     /** Ask for the token only where it is needed, so the usual same-device connect stays one field. */
@@ -819,6 +821,7 @@
                 bind:this={colorPaint}
                 {model}
                 fileColours={model ? model.filaments.map((f) => f.colour) : []}
+                {canAddColours}
                 bind:active={painting}
                 onpaint={onPaint}
             />

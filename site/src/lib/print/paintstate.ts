@@ -10,7 +10,7 @@
  */
 import type { PreviewPart } from './model';
 import type { PaintMap } from './paint3mf';
-import { regionAround, type PaintMode } from './paintregion';
+import { regionAround, type PaintMode, type RegionCache } from './paintregion';
 
 /** Key for an object mesh: its model entry path and `<object>` id. */
 export function partKey(part: Pick<PreviewPart, 'path' | 'objectId'>): string {
@@ -40,6 +40,8 @@ export class PaintSession {
     /** The model's original per-triangle state, never mutated (for clear / undo-to-original). */
     private readonly base = new Map<string, Uint8Array>();
     private readonly geom = new Map<string, { positions: Float32Array; indices: Uint32Array }>();
+    /** Per-object edge map, built on first region/part tap and reused (big meshes rebuild it slowly). */
+    private readonly regionCache = new Map<string, RegionCache>();
     private readonly undoStack: Edit[][] = [];
     private readonly redoStack: Edit[][] = [];
 
@@ -113,9 +115,14 @@ export class PaintSession {
         const g = this.geom.get(key);
         const buf = this.live.get(key);
         if (!g || !buf) return false;
+        let cache = this.regionCache.get(key);
+        if (!cache) {
+            cache = {};
+            this.regionCache.set(key, cache);
+        }
         const ov = this.overrides.get(key);
         const edits: Edit[] = [];
-        for (const tri of regionAround(g, face, mode, creaseDeg)) {
+        for (const tri of regionAround(g, face, mode, creaseDeg, cache)) {
             if (buf[tri] === filament) continue;
             edits.push({
                 key,

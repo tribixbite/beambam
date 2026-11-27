@@ -208,12 +208,16 @@ class SliceJobRegistry:
 # printer is not the one the file was sliced for, and /slice takes `bed_type`.
 # "project-sync": X-Slice-Options takes `spools` (a project prints with the
 # spools' presets and colours) and POST /project/update hands the project back.
+# "paint-filaments": `spools` longer than the project's filament list appends
+# filaments (project_sync), so a colour painted onto the model gets one — a web
+# client must not paint new colours on a daemon without this (the extra spools
+# would be ignored and the painted paint_color would point at a missing filament).
 # The camera relay: at most this many live viewers (each holds a thread and an upstream connection), and a
 # viewer that stops reading (a frozen background tab) is dropped after this many seconds.
 CAMERA_MAX_VIEWERS = 4
 CAMERA_SEND_TIMEOUT_S = 15.0
 CAPABILITIES = ("plan-sliced-nozzles", "slice-reason", "slice-options", "slice-mesh", "camera", "plate-check",
-                "project-sync", "bambu-connect")
+                "project-sync", "paint-filaments", "bambu-connect")
 DEFAULT_CAMERA_URL = "http://127.0.0.1:8766"
 
 

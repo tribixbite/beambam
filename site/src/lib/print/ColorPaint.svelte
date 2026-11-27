@@ -26,11 +26,13 @@
         model: LoadedModel | null;
         /** The file's filament colours (index 0 = filament 1). */
         fileColours: string[];
+        /** The daemon can add a filament for a painted new colour; when false, only the file's colours paint. */
+        canAddColours?: boolean;
         /** Paint mode on/off (the preview picks on tap while true). */
         active?: boolean;
         onpaint?: (info: PaintInfo) => void;
     }
-    let { model, fileColours, active = $bindable(false), onpaint }: Props = $props();
+    let { model, fileColours, canAddColours = true, active = $bindable(false), onpaint }: Props = $props();
 
     /** Distinct-ish defaults offered by "Add colour" (cycled, then a random hue). */
     const DEFAULTS = ['#E53935', '#1E88E5', '#43A047', '#FDD835', '#8E24AA', '#FB8C00', '#00ACC1', '#6D4C41'];
@@ -75,7 +77,7 @@
     }
 
     function addColour(): void {
-        if (colours.length >= MAX_COLOURS) return;
+        if (colours.length >= MAX_COLOURS || !canAddColours) return;
         colours = [...colours, nextColour()];
         activeIndex = colours.length - 1;
         erase = false;
@@ -97,12 +99,15 @@
     function emit(): void {
         if (!session) return;
         const used = maxUsed();
-        // Spools are needed only when a colour past the file's filaments was painted (the daemon then
-        // appends those filaments); send one per filament up to the highest painted, with its colour.
-        const spools: SpoolOption[] | null =
-            used > fileColours.length
-                ? Array.from({ length: used }, (_, i) => ({ id: null, type: null, colour: colours[i] ?? '#CCCCCC' }))
-                : null;
+        const recoloured = colours.some((c, i) => c !== fileColours[i]); // a new colour, or a changed existing one
+        // Send spools when a colour was painted past the file's filaments (the daemon appends those), or when a
+        // filament's colour was changed (so the print uses the shown colour). Cover every filament the print
+        // uses: the file's filaments plus any appended ones. Re-assigning regions among the file's own,
+        // unchanged colours needs none (the paint_color in the 3MF is enough).
+        const count = used > fileColours.length ? used : recoloured ? Math.max(used, fileColours.length) : 0;
+        const spools: SpoolOption[] | null = count
+            ? Array.from({ length: count }, (_, i) => ({ id: null, type: null, colour: colours[i] ?? fileColours[i] ?? '#CCCCCC' }))
+            : null;
         onpaint?.({ dirty: session.dirty, palette: colours, paintMap: session.toPaintMap(), spools });
     }
 
@@ -138,7 +143,10 @@
         </button>
 
         {#if active}
-            <p class="pp-muted pp-small">Tap the model to paint the {mode === 'face' ? 'triangle' : mode}. Painting adds colours as new filaments to map below.</p>
+            <p class="pp-muted pp-small">
+                Tap the model to paint the {mode === 'face' ? 'triangle' : mode}.
+                {#if canAddColours}Painting a new colour adds a filament to map below.{:else}Update beambam (<code>pip install -U beambam</code>) to paint colours the file doesn't already have.{/if}
+            </p>
 
             <div class="cp-palette" role="group" aria-label="Paint colours">
                 {#each colours as c, i (i)}
@@ -160,7 +168,9 @@
                         />
                     </label>
                 {/each}
-                <button type="button" class="cp-add" onclick={addColour} disabled={colours.length >= MAX_COLOURS} aria-label="Add a colour">+</button>
+                {#if canAddColours}
+                    <button type="button" class="cp-add" onclick={addColour} disabled={colours.length >= MAX_COLOURS} aria-label="Add a colour">+</button>
+                {/if}
                 <button
                     type="button"
                     class="cp-swatch cp-erase"
