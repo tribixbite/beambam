@@ -313,6 +313,16 @@ def _profiles(profiles: Path, kind: str) -> Path:
     return profiles / kind
 
 
+def machine_file(profiles: Path, name: str) -> Path:
+    """The machine profile `name` to pass to `--load-settings`: the flattened `machine_full` copy when it
+    exists, else the raw one. The raw machine profile carries its start / end / layer-change G-code only
+    through `include` templates, which Bambu Studio does not resolve from a file given by path — so loading it
+    raw leaves the print with a bare start G-code and no AMS load (M620), i.e. it extrudes nothing.
+    `profile_flatten` resolves the includes into `machine_full`."""
+    full = _profiles(profiles, "machine_full") / f"{name}.json"
+    return full if full.is_file() else _profiles(profiles, "machine") / f"{name}.json"
+
+
 @lru_cache(maxsize=4)
 def _filament_index(profiles: Path) -> tuple[tuple[str, str, str], ...]:
     """(profile name, filament_id, filament_type) of each bundled filament profile for MESH_PRINTER, its id and
@@ -422,7 +432,7 @@ def mesh_args(profiles: Path, opts: SliceOptions, out_dir: Path, n_filaments: in
     """The CLI arguments that slice a bare mesh, or a project made for another printer (`keep`: its portable
     process settings; `arrange` False keeps its placement), for MESH_PRINTER with `opts` (process, filaments,
     nozzle map)."""
-    machine = _profiles(profiles, "machine") / f"{MESH_PRINTER}.json"
+    machine = machine_file(profiles, MESH_PRINTER)
     n = max(n_filaments, len(opts.filament_ids), len(opts.filament_types), len(opts.spools), 1)
     fils = [flattened(filament_profile(profiles, *opts.filament(i))) for i in range(n)]
     args = (["--arrange", "1"] if arrange else []) + [

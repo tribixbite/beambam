@@ -32,7 +32,7 @@ from pathlib import Path
 from typing import Any
 
 from beambam.slice_options import (MESH_PRINTER, MESH_SUFFIXES, SliceOptions, apply_to_project,
-                                   has_print_settings, made_for_another_printer, mesh_args, retarget)
+                                   has_print_settings, machine_file, made_for_another_printer, mesh_args, retarget)
 from beambam.slicer_paths import bambu_studio_bin, bbl_profiles_dir, is_bionic_build, run_bambu_cli
 
 # Wall-clock limit for one slice. A figure on the phone takes ~10 s; a full
@@ -180,11 +180,13 @@ def project_settings(src: Path) -> dict[str, Any]:
 
 
 def machine_profile(settings: dict[str, Any], profiles: Path) -> Path | None:
-    """The slicer's own machine profile named like the project's printer, if any (`profiles`: its BBL folder)."""
+    """The slicer's own machine profile named like the project's printer, if any (`profiles`: its BBL folder).
+    Prefers the flattened `machine_full` copy, which carries the start / end / change-filament G-code the raw
+    profile only `include`s (loaded raw, the print gets a bare start G-code and no AMS load → it extrudes air)."""
     name = settings.get("printer_settings_id")
     if not isinstance(name, str) or not name or "/" in name or "\\" in name:
         return None
-    p = profiles / "machine" / f"{name}.json"
+    p = machine_file(profiles, name)
     return p if p.is_file() else None
 
 
@@ -285,7 +287,7 @@ def slice_project(src: Path, out_dir: Path, *, timeout: float = SLICE_TIMEOUT_S,
     mesh = is_mesh(src)
     machine: Path | None = None
     if mesh:
-        machine = prof / "machine" / f"{MESH_PRINTER}.json"
+        machine = machine_file(prof, MESH_PRINTER)
         cmd += mesh_args(prof, opts, out_dir)
         if track_switch:
             cmd.append("--has-filament-switcher=1")
@@ -318,7 +320,7 @@ def slice_project(src: Path, out_dir: Path, *, timeout: float = SLICE_TIMEOUT_S,
         if track_switch:
             cmd.append("--has-filament-switcher=1")
         model = model.resolve()
-        machine = prof / "machine" / f"{MESH_PRINTER}.json"
+        machine = machine_file(prof, MESH_PRINTER)
     elif not mesh:
         model = src.resolve()
         if opts != SliceOptions():

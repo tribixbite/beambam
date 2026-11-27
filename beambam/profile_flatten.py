@@ -18,11 +18,31 @@ from pathlib import Path
 from typing import Any
 
 KINDS = ("process", "filament", "machine")
+# Bump when the flattening logic changes so existing (stale) `*_full` folders are rebuilt, not just missing
+# ones. v2: resolve `include` templates (a machine's start / end / change-filament G-code) — without it every
+# X2D slice got a bare start G-code with no AMS load (M620) and the print came out as air.
+FLATTEN_VERSION = 2
+
+
+def _stamp(profiles: Path) -> Path:
+    return profiles / ".flatten_version"
+
+
+def _stamped_current(profiles: Path) -> bool:
+    try:
+        return _stamp(profiles).read_text(encoding="utf-8").strip() == str(FLATTEN_VERSION)
+    except OSError:
+        return False
 
 
 def missing(profiles: Path) -> list[str]:
-    """The `*_full` folders `profiles` (a `resources/profiles/BBL` folder) lacks among those it has sources for."""
-    return [f"{k}_full" for k in KINDS if (profiles / k).is_dir() and not (profiles / f"{k}_full").is_dir()]
+    """The `*_full` folders to (re)build: any that `profiles` lacks a copy of, and — when the flattener has
+    changed since they were written (`FLATTEN_VERSION`) — every kind it has sources for, so a stale build is
+    regenerated rather than silently kept."""
+    kinds = [k for k in KINDS if (profiles / k).is_dir()]
+    if not _stamped_current(profiles):
+        return [f"{k}_full" for k in kinds]
+    return [f"{k}_full" for k in kinds if not (profiles / f"{k}_full").is_dir()]
 
 
 def _flatten_kind(profiles: Path, kind: str) -> int:
@@ -43,7 +63,15 @@ def _flatten_kind(profiles: Path, kind: str) -> int:
         if p is None or name in stack:            # missing parent / inheritance cycle
             return {}
         merged = dict(resolve(str(p["inherits"]), stack + (name,))) if p.get("inherits") else {}
-        merged.update({k: v for k, v in p.items() if k != "inherits"})
+        # `include` pulls in template profiles (Bambu splits a machine's start/end/layer/change_filament
+        # G-code into "<name> template <section>" files the profile includes). They apply over the parent and
+        # under the profile's own keys. Missing this left every X2D slice with a bare start G-code and no AMS
+        # load (M620), so the nozzle was never fed and the print came out as air.
+        inc = p.get("include")
+        if isinstance(inc, list):
+            for name2 in inc:
+                merged.update(resolve(str(name2), stack + (name,)))
+        merged.update({k: v for k, v in p.items() if k not in ("inherits", "include")})
         return merged
 
     # Written beside it and renamed into place: `missing` tests the folder, so a run cut short must not leave one.
@@ -53,6 +81,7 @@ def _flatten_kind(profiles: Path, kind: str) -> int:
     for name in found:
         flat = resolve(name, ())
         flat.pop("inherits", None)
+        flat.pop("include", None)
         (work / f"{name}.json").write_text(json.dumps(flat, ensure_ascii=False), encoding="utf-8")
     shutil.rmtree(dst, ignore_errors=True)
     work.replace(dst)
@@ -61,7 +90,12 @@ def _flatten_kind(profiles: Path, kind: str) -> int:
 
 def flatten(profiles: Path) -> dict[str, int]:
     """Write every `*_full` folder of `profiles`; the number of profiles flattened per kind."""
-    return {kind: _flatten_kind(profiles, kind) for kind in KINDS}
+    counts = {kind: _flatten_kind(profiles, kind) for kind in KINDS}
+    try:
+        _stamp(profiles).write_text(str(FLATTEN_VERSION), encoding="utf-8")   # mark these as current
+    except OSError:
+        pass
+    return counts
 
 
 def main(argv: list[str]) -> int:
