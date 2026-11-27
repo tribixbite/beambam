@@ -314,6 +314,22 @@
     let printPlate = $state(1);
     let reslicing = $state(false);
     let resliceNote = $state('');
+    /** Slice outcome shown in the floating status bar for a few seconds after a slice settles. */
+    let floatOutcome = $state<{ ok: boolean; text: string } | null>(null);
+    let floatTimer: ReturnType<typeof setTimeout> | null = null;
+    function flashOutcome(ok: boolean, text: string): void {
+        floatOutcome = { ok, text };
+        if (floatTimer) clearTimeout(floatTimer);
+        floatTimer = setTimeout(() => { floatOutcome = null; floatTimer = null; }, ok ? 5000 : 9000);
+    }
+    /** What the floating (position: fixed) status bar shows: live slicing progress, then the outcome. */
+    const floatBar = $derived(
+        slicing || reslicing
+            ? { kind: 'busy' as const, text: sliceTick || 'Slicing…' }
+            : floatOutcome
+                ? { kind: (floatOutcome.ok ? 'ok' : 'err') as 'ok' | 'err', text: floatOutcome.text }
+                : null,
+    );
 
     const stale = $derived(!!printFile && ftype !== 'gcode.3mf' && slicedKey !== settingsKey);
     const canSlice = $derived(
@@ -369,10 +385,12 @@
             chosenNozzles = nozzles;
             sliceTick = '';
             resliceNote = again ? `Sliced again with ${what}: the time above is for it.` : '';
+            flashOutcome(true, again ? `Sliced again with ${what}.` : 'Sliced — map spools below, then print.');
         } catch (e) {
             if (forSerial !== fileSerial || daemon !== d) return;
             sliceError = e instanceof Error ? e.message : String(e);
             sliceTick = '';
+            flashOutcome(false, sliceError);
         } finally {
             slicing = false;
             reslicing = false;
@@ -395,10 +413,12 @@
             startSlots = null;
             slicedKey = settingsKey;
             sliceTick = '';
+            flashOutcome(true, 'Uploaded — map spools below, then print.');
         } catch (e) {
             if (forSerial !== fileSerial || daemon !== d) return;
             sliceError = e instanceof Error ? e.message : String(e);
             sliceTick = '';
+            flashOutcome(false, sliceError);
         } finally {
             slicing = false;
         }
@@ -1007,10 +1027,71 @@
             </div>
         {/if}
     </section>
+
+    <!-- Floating slice status: fixed to the viewport so progress and outcome stay visible at any scroll position. -->
+    {#if floatBar}
+        <div class="pp-float pp-float-{floatBar.kind}" role="status" aria-live="polite">
+            {#if floatBar.kind === 'busy'}<span class="pp-float-spin" aria-hidden="true"></span>{/if}
+            <span class="pp-float-text">{floatBar.text}</span>
+            {#if floatBar.kind !== 'busy'}
+                <button type="button" class="pp-float-x" aria-label="Dismiss" onclick={() => { floatOutcome = null; if (floatTimer) { clearTimeout(floatTimer); floatTimer = null; } }}>×</button>
+            {/if}
+            {#if floatBar.kind === 'busy'}<div class="pp-float-bar" aria-hidden="true"><div></div></div>{/if}
+        </div>
+    {/if}
 </div>
 
 <style>
     .print-page { max-width: 46rem; }
+    /* Floating slice status — pinned to the viewport, always visible while scrolling the long step list. */
+    .pp-float {
+        position: fixed;
+        left: 50%;
+        bottom: max(var(--space-lg), env(safe-area-inset-bottom, 0px));
+        transform: translateX(-50%);
+        z-index: 50;
+        width: min(46rem, calc(100vw - 2 * var(--space-md)));
+        display: grid;
+        grid-template-columns: auto 1fr auto;
+        align-items: center;
+        gap: var(--space-sm);
+        padding: var(--space-md) var(--space-lg);
+        border: 1px solid var(--color-line, oklch(50% 0 0 / 0.4));
+        border-left-width: 3px;
+        border-radius: var(--radius-md, 0.5rem);
+        background: var(--color-bg, oklch(18% 0 0));
+        box-shadow: 0 8px 28px oklch(0% 0 0 / 0.45);
+        font-size: var(--text-sm);
+    }
+    .pp-float-busy { border-left-color: var(--color-accent); }
+    .pp-float-ok { border-left-color: oklch(70% 0.15 150); }
+    .pp-float-err { border-left-color: oklch(65% 0.2 25); }
+    .pp-float-text { grid-column: 2; min-width: 0; overflow-wrap: anywhere; }
+    .pp-float-x {
+        grid-column: 3; appearance: none; background: none; border: 0; cursor: pointer;
+        color: var(--color-mute); font-size: 1.25rem; line-height: 1; padding: 0 var(--space-xs); min-height: 32px;
+    }
+    .pp-float-spin {
+        grid-column: 1; width: 16px; height: 16px; border-radius: 50%;
+        border: 2px solid var(--color-mute-2, oklch(50% 0 0 / 0.4)); border-top-color: var(--color-accent);
+        animation: pp-float-spin 0.8s linear infinite;
+    }
+    .pp-float-bar {
+        grid-column: 1 / -1; height: 3px; border-radius: 3px; overflow: hidden;
+        background: var(--color-mute-2, oklch(50% 0 0 / 0.3));
+    }
+    .pp-float-bar > div {
+        height: 100%; width: 40%; border-radius: 3px; background: var(--color-accent);
+        animation: pp-float-slide 1.1s ease-in-out infinite;
+    }
+    @keyframes pp-float-spin { to { transform: rotate(360deg); } }
+    @keyframes pp-float-slide {
+        0% { margin-left: -40%; } 100% { margin-left: 100%; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+        .pp-float-spin { animation: none; }
+        .pp-float-bar > div { animation: none; width: 100%; margin-left: 0; }
+    }
     .connect { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: var(--space-sm); align-items: end; margin-block: var(--space-lg) var(--space-md); }
     .conn { display: grid; gap: var(--space-md); }
     .conn-head { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-sm) var(--space-md); }
