@@ -103,6 +103,20 @@ Running GUI apps (BambuStudio / wxWidgets 3.3) on termux-x11. These lessons were
   `filament_mapping` lazily *before* it binds and those are cold unless some earlier test imported them
   at module level — the fixture now warms them first and waits 30 s. mypy 2.4 (CI) also needs
   `np.frombuffer(...)` annotated where 2.1 (local) did not.
+- **Colour painting (beambam.boo) adds filaments two different ways — know which path a project takes.**
+  Painting a new colour needs that colour to become a project filament. A **native X2D** project goes through
+  `slice_options.apply_to_project` → `project_sync.adopt_filaments`, which now **appends** filaments when
+  `spools` is longer than the project's list. A project **made for another printer** (A1/P2S MakerWorld, the
+  common case) takes the **retarget** path in `slice_service.slice_project` (`made_for_another_printer`), which
+  bypasses `adopt_filaments` entirely and loads filaments via `mesh_args --load-filaments`; it needs the
+  **embedded** `project_settings` grown too (via `adopt_project`) or Bambu Studio refuses it
+  ("filament_colour's size N not equal to …"). `retarget()` fills painted spools' null material from the
+  project so a PETG project is not sliced as PLA. **`_grow_filaments` must only grow genuine per-filament keys
+  (`FILAMENT_KEYS` allowlist + `filament_*` + LAYOUT_KEYS)** — "length divisible by the filament count" grows
+  the wrong arrays (nozzle_diameter, printable_area, machine_max_*), ruinously for a **one-filament** project
+  where every machine/process list divides by one. Always verify a filament-append change with a **real slice**
+  (bs-bionic on this box), not only unit tests — a single-colour A1 project painted to two colours must slice
+  to two filaments. See `docs/PAINT_PLAN.md`.
 - CLI help is built by `beambam/cli/manhelp.py` (ManParser, inherited by every subparser) and
   argument text missing at the `add_argument` site is filled from `beambam/cli/arghelp.py`.
   `tests/test_cli_manhelp.py` fails if any argument has no help, or an EXAMPLES entry does not
