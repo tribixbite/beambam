@@ -13,14 +13,18 @@
     import { onDestroy, onMount } from 'svelte';
     import type * as THREE_NS from 'three';
     import type { OrbitControls as OrbitControlsT } from 'three/examples/jsm/controls/OrbitControls.js';
-    import { bounds, vertexColours, type LoadedModel } from './model';
+    import { bounds, vertexColours, type LoadedModel, type PreviewPart } from './model';
 
     interface Props {
         model: LoadedModel | null;
         /** Colour of each filament (index 0 = filament 1). */
         palette: string[];
+        /** When true a tap (not a drag) picks a triangle instead of only orbiting. */
+        paintMode?: boolean;
+        /** A tap in paint mode: the part, the triangle index in its mesh, and the hit point. */
+        onpick?: (part: PreviewPart, face: number, point: [number, number, number]) => void;
     }
-    let { model, palette }: Props = $props();
+    let { model, palette, paintMode = false, onpick }: Props = $props();
 
     let wrap: HTMLDivElement | undefined = $state();
     let canvas: HTMLCanvasElement | undefined = $state();
@@ -168,6 +172,41 @@
         requestRender();
     }
 
+    /** Redraw the parts' colours from their current paint states (after a paint edit). */
+    export function repaint(): void {
+        recolour(palette);
+    }
+
+    // --- tap-to-pick (paint mode) ------------------------------------------------
+    let down: { x: number; y: number; t: number } | null = null;
+
+    function onPointerDown(e: PointerEvent): void {
+        down = { x: e.clientX, y: e.clientY, t: performance.now() };
+    }
+
+    /** A tap (little movement, short) in paint mode picks the triangle under it. */
+    function onPointerUp(e: PointerEvent): void {
+        const d = down;
+        down = null;
+        if (!d || !paintMode || !onpick || !THREE || !camera || !modelGroup || !canvas) return;
+        if (Math.hypot(e.clientX - d.x, e.clientY - d.y) > 8) return; // a drag / orbit, not a tap
+        if (performance.now() - d.t > 700) return;
+        const rect = canvas.getBoundingClientRect();
+        const ndc = new THREE.Vector2(
+            ((e.clientX - rect.left) / rect.width) * 2 - 1,
+            -((e.clientY - rect.top) / rect.height) * 2 + 1
+        );
+        const ray = new THREE.Raycaster();
+        ray.setFromCamera(ndc, camera);
+        const hit = ray.intersectObjects(modelGroup.children, false)[0];
+        if (!hit || hit.faceIndex == null) return;
+        onpick((hit.object as THREE_NS.Mesh).userData.part as PreviewPart, hit.faceIndex, [
+            hit.point.x,
+            hit.point.y,
+            hit.point.z
+        ]);
+    }
+
     onMount(() => {
         let cancelled = false;
         reduceMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false;
@@ -208,6 +247,8 @@
                 // three.js rebuilds its GPU state after a lost context (common on phones under
                 // memory pressure); with on-demand frames the view must be redrawn by hand.
                 canvas.addEventListener('webglcontextrestored', () => requestRender());
+                canvas.addEventListener('pointerdown', onPointerDown);
+                canvas.addEventListener('pointerup', onPointerUp);
                 observer = new ResizeObserver(resize);
                 if (wrap) observer.observe(wrap);
                 resize();
@@ -244,7 +285,7 @@
     });
 </script>
 
-<div class="pv" bind:this={wrap}>
+<div class="pv" class:painting={paintMode} bind:this={wrap}>
     <canvas bind:this={canvas} aria-label="3D preview of the model on the build plate. Drag sideways to rotate, pinch to zoom."></canvas>
     {#if failed}
         <div class="pv-note pp-msg warn">{failed}</div>
@@ -272,6 +313,9 @@
         width: 100%;
         height: 100%;
         touch-action: pan-y;
+    }
+    .pv.painting canvas {
+        cursor: crosshair;
     }
     .pv-note {
         position: absolute;

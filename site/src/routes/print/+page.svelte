@@ -12,10 +12,12 @@
     import '$lib/print/print.css';
     import { Daemon, DaemonError, DEFAULT_URL, isLoopback, SITE_ORIGIN, startCommand, type Health, type SliceResult } from '$lib/print/daemon';
     import CameraView from '$lib/print/CameraView.svelte';
+    import ColorPaint, { type PaintInfo } from '$lib/print/ColorPaint.svelte';
     import JobView from '$lib/print/JobView.svelte';
     import MappingPanel from '$lib/print/MappingPanel.svelte';
     import { fileType, type FileType } from '$lib/print/load';
     import { NEUTRAL, partsOnPlate, type LoadedModel } from '$lib/print/model';
+    import { writePainted3mf } from '$lib/print/paint3mf';
     import {
         BED_TYPES,
         BRIM_MODES_UI,
@@ -212,6 +214,21 @@
         model ? (isMeshKind ? [meshSpool?.colour || NEUTRAL] : model.filaments.map((f) => f.colour)) : []
     );
 
+    // --- colour painting ---------------------------------------------------------
+    let painting = $state(false);
+    let paintInfo = $state<PaintInfo | null>(null);
+    let preview = $state<ReturnType<typeof Preview> | undefined>();
+    let colorPaint = $state<ReturnType<typeof ColorPaint> | undefined>();
+    /** Painting is for Bambu/Orca projects only (an STL/sliced file has no object meshes to paint into). */
+    const canPaint = $derived(!!model && !isMeshKind && ftype !== 'gcode.3mf');
+    /** The preview palette: the painted palette (base + added colours) when painting, else the file's. */
+    const previewPalette = $derived(canPaint && paintInfo?.palette.length ? paintInfo.palette : palette);
+
+    function onPaint(info: PaintInfo): void {
+        paintInfo = info;
+        preview?.repaint();
+    }
+
     async function takeFile(f: File | undefined | null): Promise<void> {
         if (!f) return;
         if (starting) {
@@ -265,8 +282,15 @@
     let settings = $state<PrintSettings>({ ...PROJECT_SETTINGS });
     /** The spools a project slices with ("Slice with the spools' filaments"); null = its own filaments. */
     let adoptSpools = $state<SpoolOption[] | null>(null);
+    /** A compact signature of the paint (painted-triangle count + palette) so a paint change re-slices. */
+    const paintSig = $derived.by(() => {
+        if (!canPaint || !paintInfo?.dirty) return '';
+        let tris = 0;
+        for (const objs of paintInfo.paintMap.values()) for (const m of objs.values()) tris += m.size;
+        return JSON.stringify([tris, paintInfo.palette]);
+    });
     const settingsKey = $derived(
-        JSON.stringify([hasOptions ? settings : null, meshSpool ? [meshSpool.profileId, meshSpool.type] : null, adoptSpools])
+        JSON.stringify([hasOptions ? settings : null, meshSpool ? [meshSpool.profileId, meshSpool.type] : null, adoptSpools, paintSig])
     );
 
     /** What "not sent" means for this file: the project's own value, or Bambu's default for a mesh. */
@@ -371,9 +395,14 @@
         sliceTick = 'Sending the file to beambam…';
         const key = settingsKey;
         const mesh = isMeshKind && meshSpool ? { profileId: meshSpool.profileId, type: meshSpool.type, colour: meshSpool.colour } : null;
-        const opts = hasOptions ? buildSliceOptions(settings, mesh, nozzles, adoptSpools) : null;
+        // Painting bakes paint_color into the 3MF and, when a new colour was added, sends a spool per
+        // filament so the daemon has a filament for each painted colour (project_sync appends them).
+        const painted = canPaint && paintInfo?.dirty ? paintInfo : null;
+        const spools = painted?.spools ?? adoptSpools;
+        const opts = hasOptions ? buildSliceOptions(settings, mesh, nozzles, spools) : null;
         try {
-            const res = await d.slice(file.name, file, opts ? optionsHeader(opts) : null, (sec, step) => {
+            const sendBlob = painted ? await writePainted3mf(file, painted.paintMap) : file;
+            const res = await d.slice(file.name, sendBlob, opts ? optionsHeader(opts) : null, (sec, step) => {
                 if (forSerial === fileSerial) sliceTick = `${again ? `Slicing again with ${what}` : 'Slicing'}: ${step || 'working'}… ${Math.round(sec)} s`;
             });
             if (forSerial !== fileSerial || daemon !== d) return;
@@ -753,7 +782,24 @@
                 </div>
             </div>
         {/if}
-        <Preview model={shownModel} {palette} />
+        <Preview
+            bind:this={preview}
+            model={shownModel}
+            palette={previewPalette}
+            paintMode={painting}
+            onpick={(part, face) => {
+                if (colorPaint?.pick(part, face)) preview?.repaint();
+            }}
+        />
+        {#if canPaint}
+            <ColorPaint
+                bind:this={colorPaint}
+                model={shownModel}
+                fileColours={model ? model.filaments.map((f) => f.colour) : []}
+                bind:active={painting}
+                onpaint={onPaint}
+            />
+        {/if}
         {#if model}
             <div class="fils">
                 <div class="pp-legend">{isMeshKind ? 'Filament' : `Filaments (${model.filaments.length})`}</div>
