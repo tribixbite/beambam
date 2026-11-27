@@ -54,6 +54,12 @@ describe('regionAround', () => {
         expect(regionAround(cube(), 99, 'part').size).toBe(0);
     });
 
+    test('brush selects the connected surface within the radius', () => {
+        const c = cube(); // unit cube
+        expect(regionAround(c, 0, 'brush', 30, undefined, undefined, 10).size).toBe(12); // large radius → whole shell
+        expect(regionAround(c, 0, 'brush', 30, undefined, undefined, 0.1).size).toBe(1); // tiny radius → just the seed
+    });
+
     test('fill selects the connected same-colour area', () => {
         const c = cube();
         const states = new Uint8Array(12); // all one colour

@@ -8,12 +8,13 @@
  *   - `part`   — every triangle connected to the tapped one (a whole shell).
  *   - `fill`   — a bucket fill: triangles connected to the tapped one that currently show the SAME
  *                colour (needs the per-triangle state array).
+ *   - `brush`  — the connected surface within `brushRadius` (model units) of the tapped triangle.
  *
  * Paint targets 3MF models, whose triangles share indexed vertices, so an edge is a shared pair of
- * vertex indices. Split-triangle (sub-triangle) paint and the field-following "wand"/brush modes are
- * later follow-ups (see docs/specs/colour-painting.md).
+ * vertex indices. Split-triangle (sub-triangle) paint and the field-following "wand" are later
+ * follow-ups (see docs/specs/colour-painting.md).
  */
-export type PaintMode = 'face' | 'region' | 'part' | 'fill';
+export type PaintMode = 'face' | 'region' | 'part' | 'fill' | 'brush';
 
 /** The three undirected edges of triangle `t`, each as the ordered vertex-index pair. */
 function edgesOf(indices: Uint32Array, t: number): [number, number][] {
@@ -79,7 +80,8 @@ export function regionAround(
     mode: PaintMode,
     creaseDeg = 30,
     cache?: RegionCache,
-    states?: Uint8Array
+    states?: Uint8Array,
+    brushRadius = 5
 ): Set<number> {
     const { positions, indices } = mesh;
     const triCount = (indices.length / 3) | 0;
@@ -95,6 +97,8 @@ export function regionAround(
         if (cache) cache.edges = edges;
     }
     const fillState = mode === 'fill' && states ? states[seed] : -1;
+    const brushCentre = mode === 'brush' ? centroid(positions, indices, seed) : null;
+    const brushR2 = brushRadius * brushRadius;
     const cosLimit = Math.cos((Math.max(0, Math.min(180, creaseDeg)) * Math.PI) / 180);
     const normals: ([number, number, number] | null)[] = mode === 'region' ? new Array(triCount).fill(null) : [];
     const normal = (t: number): [number, number, number] => {
@@ -114,6 +118,12 @@ export function regionAround(
                 if (nb === t || out.has(nb)) continue;
                 if (mode === 'fill') {
                     if (!states || states[nb] !== fillState) continue; // bucket: stop at a colour change
+                } else if (mode === 'brush') {
+                    if (brushCentre) {
+                        const c = centroid(positions, indices, nb);
+                        const d2 = (c[0] - brushCentre[0]) ** 2 + (c[1] - brushCentre[1]) ** 2 + (c[2] - brushCentre[2]) ** 2;
+                        if (d2 > brushR2) continue; // outside the brush radius
+                    }
                 } else if (mode === 'region') {
                     const a = normal(t);
                     const b = normal(nb);

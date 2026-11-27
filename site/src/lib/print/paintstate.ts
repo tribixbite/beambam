@@ -134,14 +134,14 @@ export class PaintSession {
      * (0 clears to the part's own colour). `mirror` also paints the symmetric region (left/right).
      * Returns true when any triangle changed.
      */
-    paint(part: PreviewPart, face: number, mode: PaintMode, filament: number, creaseDeg = 30, mirror = false): boolean {
+    paint(part: PreviewPart, face: number, mode: PaintMode, filament: number, creaseDeg = 30, mirror = false, brushRadius = 5): boolean {
         if (!paintable(part)) return false;
         const key = partKey(part);
         const g = this.geom.get(key);
         const buf = this.live.get(key);
         if (!g || !buf) return false;
         const cache = this.cacheFor(key);
-        const region = regionAround(g, face, mode, creaseDeg, cache, buf);
+        const region = regionAround(g, face, mode, creaseDeg, cache, buf, brushRadius);
         const all = new Set(region);
         if (mirror) for (const m of mirrorTriangles(g, region)) all.add(m);
         const ok = this.commit(this.editsFor(key, all, filament));

@@ -45,6 +45,7 @@
     let mirror = $state(false); // also paint the symmetric (left/right) spot
     let mode = $state<PaintMode>('region');
     let crease = $state(30);
+    let brushRadius = $state(10); // model units, for brush mode
     /** Bumped after every edit so derived UI (undo/redo enabled, dirty) re-reads the session. */
     let rev = $state(0);
 
@@ -128,7 +129,7 @@
             picking = false; // one-shot
             return false;
         }
-        const changed = session.paint(part, face, mode, erase ? 0 : activeIndex + 1, crease, mirror);
+        const changed = session.paint(part, face, mode, erase ? 0 : activeIndex + 1, crease, mirror, brushRadius);
         if (changed) {
             rev++;
             emit();
@@ -145,7 +146,7 @@
 </script>
 
 {#if canPaint}
-    <div class="cp">
+    <div class="cp" class:cp-dock={active}>
         <button
             type="button"
             class="pp-btn wide"
@@ -197,7 +198,7 @@
 
             <div class="cp-row">
                 <div class="pp-seg" role="group" aria-label="What a tap paints">
-                    {#each [['face', 'Triangle'], ['region', 'Region'], ['part', 'Part'], ['fill', 'Fill']] as [m, label] (m)}
+                    {#each [['face', 'Triangle'], ['region', 'Region'], ['part', 'Part'], ['fill', 'Fill'], ['brush', 'Brush']] as [m, label] (m)}
                         <button type="button" class="pp-seg-btn" class:on={mode === m} onclick={() => (mode = m as PaintMode)}>{label}</button>
                     {/each}
                 </div>
@@ -208,6 +209,11 @@
                 <label class="cp-crease pp-small">
                     Crease {crease}°
                     <input type="range" min="5" max="90" step="5" bind:value={crease} />
+                </label>
+            {:else if mode === 'brush'}
+                <label class="cp-crease pp-small">
+                    Brush {brushRadius} mm
+                    <input type="range" min="2" max="40" step="1" bind:value={brushRadius} />
                 </label>
             {/if}
 
@@ -229,6 +235,24 @@
         display: grid;
         gap: var(--space-sm);
         margin-top: var(--space-md);
+    }
+    /* While painting, dock the controls to the viewport bottom so they stay reachable as the model is
+       rotated and the page scrolled (pokefit's paint dock). */
+    .cp.cp-dock {
+        position: fixed;
+        left: 50%;
+        transform: translateX(-50%);
+        bottom: max(var(--space-sm), env(safe-area-inset-bottom, 0px));
+        z-index: 60;
+        width: min(46rem, calc(100vw - 2 * var(--space-md)));
+        max-height: 60vh;
+        overflow-y: auto;
+        margin-top: 0;
+        padding: var(--space-md);
+        background: var(--color-surface, oklch(20% 0 0));
+        border: 1px solid var(--color-line, oklch(50% 0 0 / 0.4));
+        border-radius: var(--radius-md, 0.5rem);
+        box-shadow: 0 8px 28px oklch(0% 0 0 / 0.5);
     }
     .cp-palette {
         display: flex;
