@@ -320,12 +320,18 @@ def build_parser() -> argparse.ArgumentParser:
                         "other Host header is refused as DNS rebinding. "
                         "Also read from $X2D_ALLOWED_HOSTS (comma-separated).")
     d.add_argument("--cors-origin", action="append", default=[], metavar="ORIGIN",
-                   help="Let a browser web app on ORIGIN (e.g. https://pokefit.party "
-                        "or http://localhost:5173) call the HTTP API: it gets CORS "
-                        "headers, and its POSTs are accepted. Other web pages are "
-                        "refused. Repeatable; also $BEAMBAM_CORS_ORIGINS "
-                        "(comma-separated). Programs that send no Origin header "
-                        "(curl, Home Assistant, a server-side app) are unaffected.")
+                   help="Let a browser web app on ORIGIN (e.g. http://localhost:5173) "
+                        "call the HTTP API: it gets CORS headers, and its POSTs are "
+                        "accepted. The project's own front-ends https://beambam.boo and "
+                        "https://pokefit.party are allowed by default (the loopback "
+                        "daemon is theirs to drive). Other web pages are refused. "
+                        "Repeatable; also $BEAMBAM_CORS_ORIGINS (comma-separated). "
+                        "Programs that send no Origin header (curl, Home Assistant, a "
+                        "server-side app) are unaffected.")
+    d.add_argument("--no-default-cors", action="store_true", dest="no_default_cors",
+                   help="Do not allow https://beambam.boo / https://pokefit.party by "
+                        "default; only origins given via --cors-origin / "
+                        "$BEAMBAM_CORS_ORIGINS may call the API.")
     d.add_argument("--camera", action="store_true",
                    help="Also start the chamber-camera proxy (`beambam cam start`, on --camera-url's "
                         "address) unless one already answers there, so GET /camera.mjpeg and "

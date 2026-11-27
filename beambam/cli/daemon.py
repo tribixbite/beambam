@@ -25,11 +25,44 @@ from __future__ import annotations
 import argparse
 import copy
 import json
+import os
 import sys
 import time
 from typing import Any, Protocol, TypedDict
 
 from beambam.state_hub import merge_report
+
+# The project's own hosted control UIs. The daemon binds loopback only and the
+# DNS-rebinding Host allow-list is enforced separately, so letting these two
+# first-party origins reach the local API by default is safe — and it is their
+# entire purpose (they drive the user's own daemon). Users add more with
+# --cors-origin / $BEAMBAM_CORS_ORIGINS; pass --no-default-cors to drop these.
+DEFAULT_CORS_ORIGINS: tuple[str, ...] = (
+    "https://beambam.boo",
+    "https://pokefit.party",
+)
+
+
+def resolve_cors_origins(args: argparse.Namespace) -> list[str]:
+    """Browser origins the HTTP API accepts: the project's own front-ends
+    (`DEFAULT_CORS_ORIGINS`) unless ``--no-default-cors``, then every
+    ``--cors-origin``, then ``$BEAMBAM_CORS_ORIGINS`` (comma-separated).
+
+    Order is preserved and duplicates are dropped so the daemon's startup
+    banner can list exactly what it allows."""
+    origins = ([] if getattr(args, "no_default_cors", False)
+               else list(DEFAULT_CORS_ORIGINS))
+    origins += list(getattr(args, "cors_origin", None) or [])
+    origins += [o.strip() for o in os.environ.get(
+        "BEAMBAM_CORS_ORIGINS", "").split(",") if o.strip()]
+    seen: set[str] = set()
+    out: list[str] = []
+    for o in origins:
+        key = o.rstrip("/")
+        if key and key not in seen:
+            seen.add(key)
+            out.append(o)
+    return out
 
 
 class _StateConsumer(Protocol):
@@ -348,9 +381,7 @@ def cmd_daemon(args: argparse.Namespace) -> int:
                        "get_hub": get_hub,
                        "allowed_hosts": list(
                            getattr(args, "allow_host", None) or []),
-                       "cors_origins": list(getattr(args, "cors_origin", None) or [])
-                                       + [o.strip() for o in os.environ.get(
-                                           "BEAMBAM_CORS_ORIGINS", "").split(",") if o.strip()],
+                       "cors_origins": resolve_cors_origins(args),
                        "camera_url": getattr(args, "camera_url", None)},
                daemon=True).start()
         if getattr(args, "camera", False):
