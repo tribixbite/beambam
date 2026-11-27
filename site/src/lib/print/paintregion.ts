@@ -6,12 +6,14 @@
  *   - `region` — flood across shared edges while the crease between faces is softer than the
  *                angle (stop at any crease sharper than it): one smooth patch up to the nearest edge.
  *   - `part`   — every triangle connected to the tapped one (a whole shell).
+ *   - `fill`   — a bucket fill: triangles connected to the tapped one that currently show the SAME
+ *                colour (needs the per-triangle state array).
  *
  * Paint targets 3MF models, whose triangles share indexed vertices, so an edge is a shared pair of
  * vertex indices. Split-triangle (sub-triangle) paint and the field-following "wand"/brush modes are
  * later follow-ups (see docs/specs/colour-painting.md).
  */
-export type PaintMode = 'face' | 'region' | 'part';
+export type PaintMode = 'face' | 'region' | 'part' | 'fill';
 
 /** The three undirected edges of triangle `t`, each as the ordered vertex-index pair. */
 function edgesOf(indices: Uint32Array, t: number): [number, number][] {
@@ -68,9 +70,17 @@ export interface RegionCache {
 /**
  * The set of triangle indices a tap on `seed` selects, for `mode`. `creaseDeg` is the crease angle
  * for `region` (a larger angle floods further; default 30°, pokefit's "region" default). Pass a `cache`
- * (one per object) to reuse the edge map across taps — it is built once and stored there.
+ * (one per object) to reuse the edge map across taps — it is built once and stored there. `states` is the
+ * per-triangle colour state, required for `fill` (a bucket of one colour).
  */
-export function regionAround(mesh: RegionMesh, seed: number, mode: PaintMode, creaseDeg = 30, cache?: RegionCache): Set<number> {
+export function regionAround(
+    mesh: RegionMesh,
+    seed: number,
+    mode: PaintMode,
+    creaseDeg = 30,
+    cache?: RegionCache,
+    states?: Uint8Array
+): Set<number> {
     const { positions, indices } = mesh;
     const triCount = (indices.length / 3) | 0;
     const out = new Set<number>();
@@ -84,6 +94,7 @@ export function regionAround(mesh: RegionMesh, seed: number, mode: PaintMode, cr
         edges = edgeMap(indices, triCount, vCount);
         if (cache) cache.edges = edges;
     }
+    const fillState = mode === 'fill' && states ? states[seed] : -1;
     const cosLimit = Math.cos((Math.max(0, Math.min(180, creaseDeg)) * Math.PI) / 180);
     const normals: ([number, number, number] | null)[] = mode === 'region' ? new Array(triCount).fill(null) : [];
     const normal = (t: number): [number, number, number] => {
@@ -101,7 +112,9 @@ export function regionAround(mesh: RegionMesh, seed: number, mode: PaintMode, cr
         for (const [x, y] of edgesOf(indices, t)) {
             for (const nb of edges.get(x * vCount + y) ?? []) {
                 if (nb === t || out.has(nb)) continue;
-                if (mode === 'region') {
+                if (mode === 'fill') {
+                    if (!states || states[nb] !== fillState) continue; // bucket: stop at a colour change
+                } else if (mode === 'region') {
                     const a = normal(t);
                     const b = normal(nb);
                     // A degenerate triangle has a zero normal; treat it as coplanar (cross it) rather than a

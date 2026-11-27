@@ -12,7 +12,9 @@ Studio needed. Works on Bambu/Orca **project** files (`.3mf`) on the beambam.boo
    - **Region** — one smooth patch, up to the nearest crease (use the **Crease** slider to flood
      further or stop sooner).
    - **Part** — the whole connected piece you tap (an ear, a lid, a letter).
-4. Pick a colour, or press **+** to add a new one (and tap the swatch to change it).
+   - **Fill** — a bucket fill: everything connected to the tap that is currently the same colour.
+4. Pick a colour, or press **+** to add a new one (and tap the swatch to change it). **Pick** turns on
+   the eyedropper — the next tap adopts the colour you tap.
 5. **Tap the model** to paint. Use **Undo / Redo / Clear** as needed. Press **⌫** then tap to erase
    paint back to the part's own colour.
 6. Press **Done painting** when finished.

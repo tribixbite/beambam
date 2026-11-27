@@ -53,6 +53,18 @@ describe('regionAround', () => {
     test('an out-of-range seed selects nothing', () => {
         expect(regionAround(cube(), 99, 'part').size).toBe(0);
     });
+
+    test('fill selects the connected same-colour area', () => {
+        const c = cube();
+        const states = new Uint8Array(12); // all one colour
+        expect(regionAround(c, 0, 'fill', 30, undefined, states).size).toBe(12);
+        states[0] = 2;
+        states[1] = 2; // the bottom face is another colour now
+        const r = regionAround(c, 2, 'fill', 30, undefined, states); // fill from a different-colour triangle
+        expect(r.has(0)).toBe(false);
+        expect(r.has(1)).toBe(false);
+        expect(r.size).toBe(10);
+    });
 });
 
 describe('triangleNormal', () => {

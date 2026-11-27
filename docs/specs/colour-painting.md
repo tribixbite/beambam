@@ -43,9 +43,10 @@ tap ──(Preview.svelte raycaster)──▶ {part, triangle}
 ## Key types & functions
 
 - `paint.ts` `encodePaint(state) / rootState(code) / majorityState(code)` — paint_color codec.
-- `paintregion.ts` `regionAround(mesh, seed, mode, creaseDeg, cache?)` — triangles a tap selects:
-  `face` (one), `region` (flood until a crease sharper than the angle), `part` (connected shell). The
-  `cache` (per object) reuses the edge-adjacency map across taps.
+- `paintregion.ts` `regionAround(mesh, seed, mode, creaseDeg, cache?, states?)` — triangles a tap
+  selects: `face` (one), `region` (flood until a crease sharper than the angle), `part` (connected
+  shell), `fill` (a bucket of the tapped colour, needs `states`). The `cache` (per object) reuses the
+  edge-adjacency map across taps. `PaintSession.stateAt(part, face)` backs the Pick eyedropper.
 - `paintstate.ts` `PaintSession` — overrides per `(path,object)`, live buffers mutated in place (so the
   preview and plate copies share them), undo/redo/clear, `toPaintMap()`, `usedFilaments()`.
 - `paint3mf.ts` `writePainted3mf(blob, paintMap)` / `paintModelXml(xml, objects)` / `hasPaint(map)`.
@@ -89,8 +90,8 @@ tap ──(Preview.svelte raycaster)──▶ {part, triangle}
   plate-level `filament_maps` is not grown for appended filaments.
 - **Multi-plate**: paint is recorded, sliced and shown on the current plate; a plate not drawn since
   painting may need a plate switch to show it (nothing is lost — the session is keyed to the whole model).
-- **Tools not yet ported** from pokefit: bucket Fill, Mirror, eyedropper, Grow/Shrink, the floating
-  paint dock.
+- **Tools not yet ported** from pokefit: Mirror, Grow/Shrink, the floating paint dock, and the
+  field-following "wand"/brush. (Triangle, Region, Part, **Fill** and the **Pick** eyedropper are done.)
 
 ## History
 

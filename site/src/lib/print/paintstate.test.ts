@@ -90,6 +90,15 @@ describe('PaintSession', () => {
         expect(Array.from(b.states ?? [])).toEqual([4, 0]);
     });
 
+    test('stateAt reports a triangle current colour, and fill buckets the same colour', () => {
+        const part = quadPart();
+        const s = new PaintSession([part]);
+        expect(s.stateAt(part, 0)).toBe(0);
+        s.paint(part, 0, 'fill', 4); // both coplanar, same colour, connected → both painted
+        expect(Array.from(part.states ?? [])).toEqual([4, 4]);
+        expect(s.stateAt(part, 1)).toBe(4);
+    });
+
     test('toPaintMap keeps only touched triangles (file paint elsewhere is preserved)', () => {
         const part = quadPart({ states: new Uint8Array([5, 5]) });
         const s = new PaintSession([part]);

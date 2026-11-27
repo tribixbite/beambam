@@ -122,7 +122,7 @@ export class PaintSession {
         }
         const ov = this.overrides.get(key);
         const edits: Edit[] = [];
-        for (const tri of regionAround(g, face, mode, creaseDeg, cache)) {
+        for (const tri of regionAround(g, face, mode, creaseDeg, cache, buf)) {
             if (buf[tri] === filament) continue;
             edits.push({
                 key,
@@ -134,6 +134,12 @@ export class PaintSession {
             });
         }
         return this.commit(edits);
+    }
+
+    /** The current filament state of a triangle (for the eyedropper); 0 when unpainted or not paintable. */
+    stateAt(part: PreviewPart, face: number): number {
+        const buf = this.live.get(partKey(part));
+        return buf && face >= 0 && face < buf.length ? buf[face] : 0;
     }
 
     /** Clear every edit as one undoable step, restoring each touched triangle to its original state. */

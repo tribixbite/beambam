@@ -41,6 +41,7 @@
     let colours = $state<string[]>([]);
     let activeIndex = $state(0); // 0-based; filament number = activeIndex + 1
     let erase = $state(false);
+    let picking = $state(false); // eyedropper: the next tap adopts the tapped colour
     let mode = $state<PaintMode>('region');
     let crease = $state(30);
     /** Bumped after every edit so derived UI (undo/redo enabled, dirty) re-reads the session. */
@@ -114,6 +115,18 @@
     /** Called by the page when the preview is tapped in paint mode. Returns true when anything changed. */
     export function pick(part: PreviewPart, face: number): boolean {
         if (!session) return false;
+        if (picking) {
+            // Eyedropper: adopt the tapped triangle's colour (or switch to erase on an unpainted area).
+            const st = session.stateAt(part, face);
+            if (st > 0 && st <= colours.length) {
+                activeIndex = st - 1;
+                erase = false;
+            } else {
+                erase = true;
+            }
+            picking = false; // one-shot
+            return false;
+        }
         const changed = session.paint(part, face, mode, erase ? 0 : activeIndex + 1, crease);
         if (changed) {
             rev++;
@@ -144,7 +157,7 @@
 
         {#if active}
             <p class="pp-muted pp-small">
-                Tap the model to paint the {mode === 'face' ? 'triangle' : mode}.
+                {#if picking}Tap the model to pick up that colour.{:else}Tap the model to paint the {mode === 'face' ? 'triangle' : mode === 'fill' ? 'connected same-colour area' : mode}.{/if}
                 {#if canAddColours}Painting a new colour adds a filament to map below.{:else}Update beambam (<code>pip install -U beambam</code>) to paint colours the file doesn't already have.{/if}
             </p>
 
@@ -183,10 +196,11 @@
 
             <div class="cp-row">
                 <div class="pp-seg" role="group" aria-label="What a tap paints">
-                    {#each [['face', 'Triangle'], ['region', 'Region'], ['part', 'Part']] as [m, label] (m)}
+                    {#each [['face', 'Triangle'], ['region', 'Region'], ['part', 'Part'], ['fill', 'Fill']] as [m, label] (m)}
                         <button type="button" class="pp-seg-btn" class:on={mode === m} onclick={() => (mode = m as PaintMode)}>{label}</button>
                     {/each}
                 </div>
+                <button type="button" class="pp-btn" class:primary={picking} aria-pressed={picking} onclick={() => (picking = !picking)} title="Eyedropper: tap the model to adopt that colour">Pick</button>
             </div>
             {#if mode === 'region'}
                 <label class="cp-crease pp-small">
