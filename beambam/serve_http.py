@@ -217,7 +217,7 @@ class SliceJobRegistry:
 CAMERA_MAX_VIEWERS = 4
 CAMERA_SEND_TIMEOUT_S = 15.0
 CAPABILITIES = ("plan-sliced-nozzles", "slice-reason", "slice-options", "slice-mesh", "camera", "plate-check",
-                "project-sync", "paint-filaments", "bambu-connect")
+                "project-sync", "paint-filaments", "gcode-preview", "bambu-connect")
 DEFAULT_CAMERA_URL = "http://127.0.0.1:8766"
 
 
@@ -901,6 +901,43 @@ def _serve_http(bind: str,
                 self.send_header("Content-Length", str(len(err)))
                 self.end_headers()
                 self.wfile.write(err)
+                return
+            if path == "/gcode":
+                # A sliced plate's G-code for the toolpath preview. Only files under this daemon's uploads
+                # dir (path-traversal guarded); text/plain.
+                qs = urllib.parse.parse_qs(url.query)
+                fpath = (qs.get("file") or [""])[0]
+                try:
+                    plate = max(1, int((qs.get("plate") or ["1"])[0]))
+                except ValueError:
+                    plate = 1
+                uploads = config_path("uploads").resolve()
+                try:
+                    target = Path(fpath).resolve()
+                except (OSError, ValueError, RuntimeError):
+                    target = None
+                if not fpath or target is None or not (target == uploads or uploads in target.parents):
+                    self._send_json({"error": "file must be a sliced file under this daemon's uploads"}, status=403)
+                    return
+                if not target.is_file():
+                    self._send_json({"error": "no such sliced file"}, status=404)
+                    return
+                import zipfile as _zf
+                try:
+                    with _zf.ZipFile(target) as z:
+                        member = f"Metadata/plate_{plate}.gcode"
+                        if member not in z.namelist():
+                            self._send_json({"error": f"no plate {plate} in this file"}, status=404)
+                            return
+                        data = z.read(member)
+                except (_zf.BadZipFile, OSError) as e:
+                    self._send_json({"error": f"cannot read the gcode: {e}"}, status=400)
+                    return
+                self.send_response(200)
+                self.send_header("Content-Type", "text/plain; charset=utf-8")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
                 return
             if path == "/state":
                 state = get_state(printer)

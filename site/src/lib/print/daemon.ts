@@ -431,6 +431,19 @@ export class Daemon {
             'http'));
     }
 
+    /** A sliced plate's G-code text (GET /gcode), for the toolpath preview. */
+    async gcode(file: string, plate: number): Promise<string> {
+        const url = `${this.url}/gcode?file=${encodeURIComponent(file)}&plate=${plate}`;
+        let res: Response;
+        try {
+            res = await this.fetchImpl(url, this.init({}));
+        } catch {
+            throw await this.diagnoseNetworkFailure(false);
+        }
+        if (!res.ok) throw new DaemonError(`beambam could not read the G-code (${res.status})`, 'http');
+        return res.text();
+    }
+
     /**
      * The project with `options` applied (the spools' filaments, the plate, print settings), as the
      * .3mf to keep: beambam's POST /project/update ("project-sync").

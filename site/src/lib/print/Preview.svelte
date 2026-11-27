@@ -14,6 +14,7 @@
     import type * as THREE_NS from 'three';
     import type { OrbitControls as OrbitControlsT } from 'three/examples/jsm/controls/OrbitControls.js';
     import { bounds, vertexColours, type LoadedModel, type PreviewPart } from './model';
+    import type { GcodePaths } from './gcodepath';
 
     interface Props {
         model: LoadedModel | null;
@@ -23,8 +24,10 @@
         paintMode?: boolean;
         /** A tap in paint mode: the part, the triangle index in its mesh, and the hit point. */
         onpick?: (part: PreviewPart, face: number, point: [number, number, number]) => void;
+        /** The sliced toolpaths to show instead of the model (the layer slider scrubs them). */
+        toolpath?: GcodePaths | null;
     }
-    let { model, palette, paintMode = false, onpick }: Props = $props();
+    let { model, palette, paintMode = false, onpick, toolpath = null }: Props = $props();
 
     let wrap: HTMLDivElement | undefined = $state();
     let canvas: HTMLCanvasElement | undefined = $state();
@@ -45,6 +48,7 @@
     let clipPlane: THREE_NS.Plane | null = null;
     let modelZ = $state<[number, number]>([0, 1]); // model Z bounds (min, max)
     let clipFrac = $state(1); // 1 = show the whole height
+    let toolLines: THREE_NS.LineSegments | null = null; // the sliced toolpaths, when shown
     let shown: LoadedModel | null = null;
     let reduceMotion = false;
 
@@ -178,6 +182,38 @@
         requestRender();
     }
 
+    /** Build (or clear) the sliced toolpath lines; hide the model mesh while they are shown. */
+    function showToolpath(tp: GcodePaths | null): void {
+        if (!THREE || !scene) return;
+        if (toolLines) {
+            toolLines.geometry.dispose();
+            (toolLines.material as THREE_NS.Material).dispose();
+            toolLines.removeFromParent();
+            toolLines = null;
+        }
+        if (modelGroup) modelGroup.visible = !tp; // the mesh hides while toolpaths show
+        if (!tp || !tp.positions.length) {
+            requestRender();
+            return;
+        }
+        const geo = new THREE.BufferGeometry();
+        geo.setAttribute('position', new THREE.BufferAttribute(tp.positions, 3));
+        toolLines = new THREE.LineSegments(geo, new THREE.LineBasicMaterial({ color: 0xe8a33d }));
+        scene.add(toolLines);
+        updateToolRange();
+        requestRender();
+    }
+
+    /** Draw the toolpaths only up to the slider's layer. */
+    function updateToolRange(): void {
+        if (!toolLines || !toolpath) return;
+        const n = toolpath.layers;
+        const layer = clipFrac >= 1 ? n : Math.max(0, Math.min(n, Math.round(clipFrac * n)));
+        const count = (toolpath.vertexAtLayer[layer] ?? toolpath.positions.length / 3) * 1;
+        toolLines.geometry.setDrawRange(0, count);
+        requestRender();
+    }
+
     function recolour(colours: string[]): void {
         if (!modelGroup) return;
         for (const o of modelGroup.children) {
@@ -294,14 +330,24 @@
         if (ready && shown) recolour(p);
     });
     $effect(() => {
-        clipFrac; // re-run when the height slider moves
-        if (ready && shown) updateClip();
+        const tp = toolpath;
+        if (ready) showToolpath(tp);
+    });
+    $effect(() => {
+        clipFrac; // re-run when the height / layer slider moves
+        if (!ready) return;
+        if (toolpath) updateToolRange();
+        else if (shown) updateClip();
     });
 
     onDestroy(() => {
         if (raf) cancelAnimationFrame(raf);
         observer?.disconnect();
         controls?.dispose();
+        if (toolLines) {
+            toolLines.geometry.dispose();
+            (toolLines.material as THREE_NS.Material).dispose();
+        }
         disposeGroup(modelGroup);
         disposeGroup(bedGroup);
         material?.dispose();
@@ -330,7 +376,11 @@
                 class="pv-layer-range"
             />
             <span class="pv-layer-val pp-mono">
-                {clipFrac >= 1 ? 'all' : `${(modelZ[0] + clipFrac * (modelZ[1] - modelZ[0])).toFixed(1)} mm`}
+                {#if toolpath}
+                    {clipFrac >= 1 ? `${toolpath.layers} L` : `L ${Math.max(0, Math.min(toolpath.layers, Math.round(clipFrac * toolpath.layers)))}`}
+                {:else}
+                    {clipFrac >= 1 ? 'all' : `${(modelZ[0] + clipFrac * (modelZ[1] - modelZ[0])).toFixed(1)} mm`}
+                {/if}
             </span>
         </div>
     {/if}

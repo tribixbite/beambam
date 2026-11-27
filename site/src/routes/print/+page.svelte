@@ -267,6 +267,49 @@
         preview?.repaint();
     }
 
+    // --- gcode toolpath preview --------------------------------------------------
+    const hasGcodePreview = $derived(caps.includes('gcode-preview'));
+    let showToolpath = $state(false);
+    let toolpathBusy = $state(false);
+    let toolpathError = $state('');
+    let toolpath = $state<import('$lib/print/gcodepath').GcodePaths | null>(null);
+    /** The sliced file + plate the current toolpath was parsed from, so a re-slice / plate change reloads. */
+    let toolpathKey = $state('');
+
+    async function loadToolpath(): Promise<void> {
+        if (!daemon || !printFile) return;
+        const key = `${printFile}#${printPlate}`;
+        if (toolpath && toolpathKey === key) return; // already parsed
+        toolpathBusy = true;
+        toolpathError = '';
+        try {
+            const { parseGcode } = await import('$lib/print/gcodepath');
+            const text = await daemon.gcode(printFile, printPlate);
+            toolpath = parseGcode(text);
+            toolpathKey = key;
+        } catch (e) {
+            toolpathError = e instanceof Error ? e.message : String(e);
+            toolpath = null;
+        } finally {
+            toolpathBusy = false;
+        }
+    }
+
+    async function toggleToolpath(): Promise<void> {
+        showToolpath = !showToolpath;
+        if (showToolpath) await loadToolpath();
+    }
+
+    // A re-slice / plate change invalidates the parsed toolpath; reload it if the view is open.
+    $effect(() => {
+        const key = printFile ? `${printFile}#${printPlate}` : '';
+        if (showToolpath && printFile && key !== toolpathKey) void loadToolpath();
+        if (!printFile) {
+            showToolpath = false;
+            toolpath = null;
+        }
+    });
+
     /**
      * The file and spools to send for a slice/download: when the model is painted, the paint baked into the
      * 3MF (writePainted3mf) and a spool per colour (paint entries over `baseSpools` so appended colours get a
@@ -872,7 +915,17 @@
             palette={previewPalette}
             paintMode={painting}
             onpick={(part, face) => colorPaint?.pick(part, face)}
+            toolpath={showToolpath ? toolpath : null}
         />
+        {#if printFile && hasGcodePreview && ftype !== 'gcode.3mf'}
+            <div class="pp-row" style="margin-top: var(--space-sm);">
+                <button type="button" class="pp-btn" class:primary={showToolpath} aria-pressed={showToolpath} disabled={toolpathBusy} onclick={toggleToolpath}>
+                    {toolpathBusy ? 'Loading toolpath…' : showToolpath ? 'Show model' : 'Show toolpath'}
+                </button>
+                {#if showToolpath && toolpath}<span class="pp-small pp-muted">{toolpath.layers} layers · drag the slider to scrub</span>{/if}
+            </div>
+            {#if toolpathError}<div class="pp-msg warn">Could not load the toolpath: {toolpathError}</div>{/if}
+        {/if}
         {#if canPaint}
             <ColorPaint
                 bind:this={colorPaint}
