@@ -36,7 +36,7 @@ describe('Daemon', () => {
         const d = new Daemon('http://127.0.0.1:8765', { origin: ORIGIN, fetchImpl: fake({
             '/healthz': () => [503, { healthy: false, version: '1.7.0', capabilities: ['slice-options'], last_message_age_s: 99 }]
         }) });
-        expect(await d.health()).toEqual({ healthy: false, version: '1.7.0', capabilities: ['slice-options'], lastMessageAge: 99, printerSilent: true, camera: null, slicerProblem: null, signing: null, bambuConnect: null });
+        expect(await d.health()).toEqual({ healthy: false, version: '1.7.0', capabilities: ['slice-options'], lastMessageAge: 99, printerSilent: true, camera: null, slicerProblem: null, signing: null, bambuConnect: null, uptime: null, restartable: false });
     });
 
     test('health says whether it can sign, and whether Bambu Connect can take the file instead', async () => {

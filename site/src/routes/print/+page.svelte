@@ -116,6 +116,42 @@
         }
     }
 
+    // --- daemon restart ----------------------------------------------------------
+    let restarting = $state(false);
+    let restartMsg = $state<{ ok: boolean; text: string } | null>(null);
+    function uptimeText(s: number): string {
+        if (s < 90) return `${Math.round(s)} s`;
+        if (s < 5400) return `${Math.round(s / 60)} min`;
+        if (s < 172800) return `${Math.round(s / 3600)} h`;
+        return `${Math.round(s / 86400)} d`;
+    }
+    async function restartDaemon(): Promise<void> {
+        if (!daemon || restarting) return;
+        if (!confirm('Restart the beambam daemon? It reloads and reconnects — your print is unaffected.')) return;
+        const d = daemon;
+        restarting = true;
+        restartMsg = null;
+        try {
+            await d.restart().catch(() => {}); // the response may be cut short by the re-exec
+            for (let i = 0; i < 25; i++) {
+                await new Promise((r) => setTimeout(r, 1000));
+                try {
+                    const h = await d.health();
+                    if ((h.uptime ?? 999) < 60) {
+                        health = h;
+                        restartMsg = { ok: true, text: `Restarted — beambam ${h.version || ''}.` };
+                        return;
+                    }
+                } catch {
+                    /* still coming back up */
+                }
+            }
+            restartMsg = { ok: false, text: 'Restarted, but it has not answered yet — give it a moment and refresh.' };
+        } finally {
+            restarting = false;
+        }
+    }
+
     async function connect(): Promise<void> {
         connError = null;
         connecting = true;
@@ -732,8 +768,11 @@
                 <div class="conn-head">
                     <span class="pill"><span class="pill-dot"></span>beambam {health?.version || ''}</span>
                     <span class="pp-mono pp-small pp-muted">{daemon.url}</span>
+                    {#if health?.uptime != null}<span class="pp-small pp-muted" title="How long this daemon has been running">up {uptimeText(health.uptime)}</span>{/if}
+                    {#if health?.restartable}<button type="button" class="pp-btn" disabled={restarting} onclick={restartDaemon} title="Reload the daemon (picks up an update)">{restarting ? 'Restarting…' : 'Restart'}</button>{/if}
                     <button type="button" class="pp-btn" onclick={disconnect}>Disconnect</button>
                 </div>
+                {#if restartMsg}<div class="pp-msg {restartMsg.ok ? 'ok' : 'warn'}">{restartMsg.text}</div>{/if}
                 {#if health?.printerSilent}
                     <div class="pp-msg warn">beambam runs but hears nothing from the printer{health.lastMessageAge !== null ? ` (last message ${Math.round(health.lastMessageAge)} s ago)` : ''}. Is the printer on and on this network?</div>
                 {/if}

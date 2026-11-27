@@ -106,6 +106,10 @@ export interface Health {
     /** Why POST /connect (hand the file to Bambu Connect) cannot work on the daemon's machine: '' when it can,
      * null from a beambam without it. */
     bambuConnect: string | null;
+    /** Seconds this daemon has been running; null from one that does not report it. */
+    uptime: number | null;
+    /** The daemon can re-exec itself (POST /restart). */
+    restartable: boolean;
 }
 
 /** `/healthz` `slicer` ({ready, problem, …}) → why it cannot slice, '' when it can, null when absent. */
@@ -319,8 +323,15 @@ export class Daemon {
             camera: typeof body.camera === 'boolean' ? body.camera : null,
             slicerProblem: slicerProblem(body.slicer),
             signing: signingOf(body.signing),
-            bambuConnect: typeof body.bambu_connect === 'string' ? body.bambu_connect : null
+            bambuConnect: typeof body.bambu_connect === 'string' ? body.bambu_connect : null,
+            uptime: typeof body.uptime_s === 'number' ? body.uptime_s : null,
+            restartable: body.restartable === true
         };
+    }
+
+    /** Ask the daemon to reload itself (POST /restart); it re-execs and comes back on the same port. */
+    async restart(): Promise<void> {
+        await this.request('/restart', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }, TIMEOUT_MS);
     }
 
     /**
