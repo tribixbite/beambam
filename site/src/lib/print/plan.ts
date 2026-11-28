@@ -65,6 +65,10 @@ export interface SliceOptions {
     spools?: SpoolOption[];
     filament_ids?: string[];
     filament_types?: string[];
+    /** Which plate of a multi-plate project to slice (1-based); the daemon extracts it to one clean plate. */
+    plate?: number;
+    /** Per-object quantity for that plate: object id -> one [dx, dy] offset per wanted copy ([] drops it). */
+    quantity?: Record<string, [number, number][]>;
 }
 
 /** One filament's spool as the `spools` slice option takes it (null id / type: keep the project's preset). */
@@ -89,7 +93,9 @@ export function buildSliceOptions(
     settings: PrintSettings,
     mesh: MeshFilament | null = null,
     nozzles: number[] | null = null,
-    spools: SpoolOption[] | null = null
+    spools: SpoolOption[] | null = null,
+    plate: number | null = null,
+    quantity: Record<string, [number, number][]> | null = null
 ): SliceOptions | null {
     const o: SliceOptions = {};
     if (settings.layerHeight !== null) o.layer_height = settings.layerHeight;
@@ -100,6 +106,9 @@ export function buildSliceOptions(
     if (settings.bed !== null) o.bed_type = settings.bed;
     if (nozzles && nozzles.length) o.nozzles = [...nozzles];
     if (spools && spools.length) o.spools = spools.map((s) => ({ ...s }));
+    // A multi-plate project is sliced one plate at a time; the quantity (if any) applies to that plate.
+    if (plate && plate >= 1) o.plate = plate;
+    if (quantity && Object.keys(quantity).length) o.quantity = quantity;
     if (mesh) {
         // An empty preset id would be refused; the material alone picks Bambu's generic profile.
         if (mesh.profileId) o.filament_ids = [mesh.profileId];

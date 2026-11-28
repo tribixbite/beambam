@@ -13,6 +13,7 @@ design into the spec and delete the plan — don't let planning docs accumulate.
 | [slice-pipeline](slice-pipeline.md) | Slicing on-device: profiles/flattening, re-targeting, the start-G-code / AMS-load (M620) invariant that prevents air prints |
 | [colour-painting](colour-painting.md) | Tap-to-paint on beambam.boo: paint_color codec, region detection, serialization, filament append |
 | [filament-mapping](filament-mapping.md) | Project-sync (adopt the spools' filaments), appending filaments for painted colours, AMS slot / nozzle mapping |
+| [multi-plate-slicing](multi-plate-slicing.md) | Slicing one chosen plate of a multi-plate project + per-object quantity: single-plate extraction (strip assemble, drop empty objects), why it fixes code -6/-50 |
 
 ## Related docs (not yet specs)
 

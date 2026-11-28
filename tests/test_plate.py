@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 import xml.etree.ElementTree as ET
 import zipfile
@@ -27,7 +28,9 @@ from beambam.plate import (
     cmd_plate_list,
     cmd_plate_select,
     cmd_plate_skip,
+    extract_plate,
     filter_3mf,
+    plate_count,
     read_plates,
 )
 
@@ -342,3 +345,119 @@ def test_cmd_plate_select_onto_itself_is_a_clean_refusal(tmp_path, capsys):
     assert rc == 1
     assert "same file" in capsys.readouterr().err
     assert src.read_bytes() == before          # input untouched
+
+
+# ----- extract_plate: single-plate extraction for the slicer ------------
+
+_EXTRACT_MODEL = """<?xml version="1.0" encoding="UTF-8"?>
+<model xmlns:p="http://schemas.microsoft.com/3dmanufacturing/production/2015/06">
+ <resources>
+  <object id="2" type="model"><mesh/></object>
+  <object id="4" type="model"><mesh/></object>
+ </resources>
+ <build p:UUID="aaaaaaaa-0000-0000-0000-000000000000">
+  <item objectid="2" p:UUID="00000002-0000-0000-0000-000000000000" transform="1 0 0 0 1 0 0 0 1 50 60 0" printable="1"/>
+  <item objectid="4" p:UUID="00000004-0000-0000-0000-000000000000" transform="1 0 0 0 1 0 0 0 1 120 60 0" printable="1"/>
+ </build>
+</model>"""
+
+_EXTRACT_SETTINGS = """<?xml version="1.0" encoding="UTF-8"?>
+<config>
+  <object id="2"><metadata key="name" value="A.stl"/></object>
+  <object id="4"><metadata key="name" value="B.stl"/></object>
+  <plate>
+    <metadata key="plater_id" value="1"/>
+    <metadata key="thumbnail_file" value="Metadata/plate_1.png"/>
+    <model_instance><metadata key="object_id" value="2"/><metadata key="instance_id" value="0"/></model_instance>
+  </plate>
+  <plate>
+    <metadata key="plater_id" value="2"/>
+    <metadata key="thumbnail_file" value="Metadata/plate_2.png"/>
+    <model_instance><metadata key="object_id" value="4"/><metadata key="instance_id" value="0"/></model_instance>
+  </plate>
+  <assemble>
+    <assemble_item object_id="2" instance_id="0" transform="1 0 0 0 1 0 0 0 1 0 0 0"/>
+    <assemble_item object_id="4" instance_id="0" transform="1 0 0 0 1 0 0 0 1 0 0 0"/>
+  </assemble>
+</config>"""
+
+
+def _build_two_plate_project(path: Path) -> None:
+    """A minimal two-plate Bambu project (object 2 on plate 1, object 4 on plate 2) with a build and an
+    assemble section — the shape extract_plate must reduce to one clean plate."""
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr("3D/3dmodel.model", _EXTRACT_MODEL)
+        z.writestr("Metadata/model_settings.config", _EXTRACT_SETTINGS)
+        z.writestr("Metadata/project_settings.config", "{}")
+        z.writestr("Metadata/plate_1.png", b"p1")
+        z.writestr("Metadata/plate_2.png", b"p2")
+        z.writestr("Metadata/plate_1.json", b"{}")
+        z.writestr("Metadata/plate_2.json", b"{}")
+
+
+def _read(dst: Path, member: str) -> str:
+    with zipfile.ZipFile(dst) as z:
+        return z.read(member).decode("utf-8")
+
+
+def test_plate_count_counts_plates(tmp_path):
+    src = tmp_path / "p.3mf"
+    _build_two_plate_project(src)
+    assert plate_count(src) == 2
+    # A bare mesh / non-project counts as one plate.
+    stub = tmp_path / "s.3mf"
+    with zipfile.ZipFile(stub, "w") as z:
+        z.writestr("x", "y")
+    assert plate_count(stub) == 1
+
+
+def test_extract_plate_keeps_only_its_objects_and_strips_assemble(tmp_path):
+    src = tmp_path / "p.3mf"
+    dst = tmp_path / "out.3mf"
+    _build_two_plate_project(src)
+    info = extract_plate(src, dst, 2)
+    assert info == {"objects": ["4"], "copies": {"4": 1}}
+    model = _read(dst, "3D/3dmodel.model")
+    assert 'objectid="4"' in model and 'objectid="2"' not in model
+    ms = _read(dst, "Metadata/model_settings.config")
+    assert "<assemble>" not in ms            # the section that aborts the slicer with code -6
+    assert ms.count("<plate>") == 1          # one plate, renumbered
+    assert 'value="1"' in ms                 # plater_id renumbered to 1
+    assert 'id="2"' not in ms                # the other plate's object dropped
+    with zipfile.ZipFile(dst) as z:
+        names = z.namelist()
+    assert "Metadata/plate_1.png" in names   # plate 2's png renamed to _1
+    assert "Metadata/plate_2.png" not in names
+
+
+def test_extract_plate_quantity_duplicates_and_drops(tmp_path):
+    src = tmp_path / "p.3mf"
+    dst = tmp_path / "out.3mf"
+    _build_two_plate_project(src)
+    # On plate 1: print object 2 three times (offset copies). Object 2 is the only one on plate 1.
+    info = extract_plate(src, dst, 1, {"2": [(0.0, 0.0), (30.0, 0.0), (0.0, 30.0)]})
+    assert info["copies"] == {"2": 3}
+    model = _read(dst, "3D/3dmodel.model")
+    items = re.findall(r"<item\b[^>]*/>", model)
+    assert len(items) == 3
+    # Translations: 50,60 then 80,60 then 50,90 (tx at index 9, ty at index 10).
+    tx = [it.split('transform="')[1].split('"')[0].split()[9:11] for it in items]
+    assert tx[0] == ["50", "60"] and tx[1] == ["80", "60"] and tx[2] == ["50", "90"]
+    # Fresh UUIDs on the copies (no duplicate p:UUID).
+    uuids = re.findall(r'<item[^>]*p:UUID="([^"]*)"', model)
+    assert len(uuids) == len(set(uuids)) == 3
+
+
+def test_extract_plate_count_zero_drops_the_object(tmp_path):
+    src = tmp_path / "p.3mf"
+    _build_two_plate_project(src)
+    # Plate 2 holds only object 4; dropping it leaves the plate empty -> ValueError.
+    with pytest.raises(ValueError):
+        extract_plate(src, tmp_path / "o.3mf", 2, {"4": []})
+
+
+def test_extract_plate_unknown_plate_raises(tmp_path):
+    src = tmp_path / "p.3mf"
+    _build_two_plate_project(src)
+    with pytest.raises(ValueError):
+        extract_plate(src, tmp_path / "o.3mf", 9)

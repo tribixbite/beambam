@@ -219,3 +219,31 @@ def test_a_spool_without_a_bundled_profile_keeps_the_project_preset_and_says_so(
     out = ps.adopt_filaments({**st, "printer_settings_id": "Bambu Lab X2D 0.2 nozzle"}, root,
                              [("GFG02", "PETG", "#00FF00")], notes)
     assert out["filament_settings_id"] == st["filament_settings_id"] and "0.4 mm nozzle" in notes[0]
+
+
+# ----- plate + per-object quantity options (multi-plate slicing) ---------
+
+def test_plate_and_quantity_parse_from_header():
+    h = json.dumps({"plate": 2, "quantity": {"4": [[0, 0], [28.5, 0], [57, 0]], "9": []}})
+    o = so.SliceOptions.from_header(h)
+    assert o.plate == 2
+    assert o.quantity == {"4": ((0.0, 0.0), (28.5, 0.0), (57.0, 0.0)), "9": ()}
+
+
+@pytest.mark.parametrize("bad", [
+    {"plate": 0},
+    {"plate": -1},
+    {"plate": True},
+    {"quantity": {"4": [[0]]}},              # offset not a pair
+    {"quantity": {"4": [["a", "b"]]}},       # non-numeric offset
+    {"quantity": {"notanid": [[0, 0]]}},     # key not an object id
+    {"quantity": [1, 2]},                    # not an object
+])
+def test_bad_plate_or_quantity_rejected(bad):
+    with pytest.raises(ValueError):
+        so.SliceOptions.from_dict(bad)
+
+
+def test_no_plate_or_quantity_by_default():
+    o = so.SliceOptions.from_header(None)
+    assert o.plate is None and o.quantity is None

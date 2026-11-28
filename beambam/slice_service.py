@@ -280,6 +280,19 @@ def slice_project(src: Path, out_dir: Path, *, timeout: float = SLICE_TIMEOUT_S,
         return {"ok": False, "error": slicer.problem()}
     prof = slicer.profiles
     out_dir.mkdir(parents=True, exist_ok=True)
+    # A multi-plate project, or an explicit plate/quantity, is reduced to one clean single plate the slicer
+    # can parse: plate_extract strips the cross-plate <assemble> section that aborts bs-bionic with code -6,
+    # keeps only that plate's objects (an object with no build item, which makes a plate "empty" -> code -50,
+    # is dropped), and applies the per-object quantity. Meshes (STL/OBJ) have no plates, so are left alone.
+    if not is_mesh(src):
+        from beambam.plate import extract_plate, plate_count
+        if opts.plate is not None or opts.quantity is not None or plate_count(src) > 1:
+            single = out_dir / f"plate_{src.name}"
+            try:
+                extract_plate(src, single, opts.plate or 1, opts.quantity)
+            except ValueError as e:
+                return {"ok": False, "error": f"could not prepare the plate to slice: {e}"}
+            src = single
     base = Path(name or src.name).name
     stem = re.sub(r"\.(3mf|stl|obj|step|stp)$", "", base, flags=re.I)
     out_name = f"{stem}.gcode.3mf"

@@ -60,6 +60,27 @@ def _strings(v: Any, name: str) -> tuple[str, ...]:
     return tuple(v)
 
 
+def _quantity(v: Any) -> dict[str, tuple[tuple[float, float], ...]]:
+    """Validate the per-object quantity map: {object id: [[dx, dy], ...]} — one XY offset per copy, [] to drop.
+    The web UI builds this (QuantitySpec); object ids are build-item object ids as strings."""
+    if not isinstance(v, dict) or len(v) > 256:
+        raise ValueError("quantity must be an object of up to 256 object ids")
+    out: dict[str, tuple[tuple[float, float], ...]] = {}
+    for oid, offs in v.items():
+        if not isinstance(oid, str) or not oid.isdigit():
+            raise ValueError("quantity keys must be numeric object ids")
+        if not isinstance(offs, list) or len(offs) > 256:
+            raise ValueError("each quantity value must be a list of up to 256 [dx, dy] offsets")
+        pairs: list[tuple[float, float]] = []
+        for p in offs:
+            if (not isinstance(p, list) or len(p) != 2
+                    or any(isinstance(n, bool) or not isinstance(n, (int, float)) for n in p)):
+                raise ValueError("each quantity offset must be [dx, dy] numbers")
+            pairs.append((float(p[0]), float(p[1])))
+        out[oid] = tuple(pairs)
+    return out
+
+
 _HEX = re.compile(r"#[0-9A-Fa-f]{6}([0-9A-Fa-f]{2})?")
 
 
@@ -91,6 +112,11 @@ class SliceOptions:
     brim: str | None = None
     nozzles: tuple[int, ...] | None = None
     bed_type: str | None = None
+    # Which plate of a multi-plate project to slice (1-based); None = the file as-is (every plate).
+    plate: int | None = None
+    # Per-object quantity for the selected plate: object id -> one (dx, dy) offset per wanted copy
+    # (empty tuple drops the object). Applied by plate_extract when `plate` is set. None = unchanged.
+    quantity: dict[str, tuple[tuple[float, float], ...]] | None = None
     # Per filament: (Bambu filament id | None, material | None, colour "#RRGGBB") of the spool it prints from.
     spools: tuple[tuple[str | None, str | None, str], ...] = field(default_factory=tuple)
     filament_ids: tuple[str, ...] = field(default_factory=tuple)
@@ -114,7 +140,7 @@ class SliceOptions:
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> "SliceOptions":
         known = {"layer_height", "wall_loops", "infill", "supports", "brim", "nozzles", "bed_type", "spools",
-                 "filament_ids", "filament_types"}
+                 "filament_ids", "filament_types", "plate", "quantity"}
         unknown = sorted(set(d) - known)
         if unknown:
             raise ValueError(f"unknown slice option(s): {', '.join(unknown)}")
@@ -138,7 +164,13 @@ class SliceOptions:
                     or any(isinstance(n, bool) or n not in (1, 2) for n in noz)):
                 raise ValueError("nozzles must be a list of 1 (left) / 2 (right), one per filament")
             noz = tuple(int(n) for n in noz)
+        plate = d.get("plate")
+        if plate is not None:
+            if isinstance(plate, bool) or not isinstance(plate, int) or plate < 1:
+                raise ValueError("plate must be a positive integer (1-based)")
+        quantity = _quantity(d["quantity"]) if d.get("quantity") is not None else None
         return cls(
+            plate=plate, quantity=quantity,
             layer_height=lh,
             wall_loops=_whole(d["wall_loops"], "wall_loops", 1, 10) if d.get("wall_loops") is not None else None,
             infill=_whole(d["infill"], "infill", 0, 100) if d.get("infill") is not None else None,

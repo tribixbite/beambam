@@ -28,6 +28,7 @@ The output is human-readable by default and `--json` for tools.
 from __future__ import annotations
 
 import argparse
+import io
 import json
 import re
 import sys
@@ -410,3 +411,190 @@ def add_subparser(sub: "argparse._SubParsersAction"
     pk.set_defaults(fn=cmd_plate_skip)
 
     return p
+
+
+# --------------------------------------------------------------------------- single-plate extraction
+# `filter_3mf` (above) keeps a plate's assets for re-opening in Bambu Studio, but leaves the whole
+# `<build>` and the cross-plate `<assemble>` in place, which the CLI slicer (bs-bionic) refuses:
+# `code -6` ("can not find object for assemble item") on the assemble section, and `code -50`
+# ("plate is empty") on a plate whose objects have no `<build>` item. `extract_plate` instead rewrites
+# the project down to one minimal, self-consistent plate the slicer parses, and carries the web UI's
+# per-object quantity. slice_service calls it before slicing a multi-plate (or plate-/quantity-chosen)
+# project. See docs/specs/multi-plate-slicing.md.
+
+_MODEL_PATH = "3D/3dmodel.model"
+_SETTINGS_PATH = "Metadata/model_settings.config"
+# Per object id, one (dx, dy) translation per wanted copy; an empty list drops the object.
+QuantitySpec = dict[str, list[tuple[float, float]]]
+_ITEM_RE = re.compile(r"<item\b[^>]*/>")
+_BUILD_RE = re.compile(r"<build\b[^>]*>.*?</build>", re.S)
+_NUMBERED_ASSET = re.compile(r"Metadata/(plate|top|pick|plate_no_light)_(\d+)\.(json|png)$")
+# Plate-level metadata that points at a plate's rendered previews: meaningless once renumbered, so dropped.
+_SKIP_PLATE_META = {"thumbnail_file", "thumbnail_no_light_file", "top_file", "pick_file"}
+
+
+def plate_count(src: Path) -> int:
+    """How many plates the project at `src` has (1 when it is not a Bambu project or names no plate)."""
+    try:
+        with zipfile.ZipFile(src) as z:
+            ms = z.read(_SETTINGS_PATH).decode("utf-8", "ignore")
+    except (KeyError, zipfile.BadZipFile, OSError):
+        return 1
+    return max(1, ms.count("<plate>"))
+
+
+def _translate_item(item: str, dx: float, dy: float) -> str:
+    """A `<build>` item with its transform's translation moved by (dx, dy). The 3MF transform is nine
+    rotation/scale terms then three translation terms (tx ty tz); tx is index 9, ty index 10."""
+    m = re.search(r'transform="([^"]*)"', item)
+    if not m:
+        return item
+    nums = m.group(1).split()
+    if len(nums) != 12:
+        return item
+    try:
+        nums[9] = _fmt_num(float(nums[9]) + dx)
+        nums[10] = _fmt_num(float(nums[10]) + dy)
+    except ValueError:
+        return item
+    return item[: m.start(1)] + " ".join(nums) + item[m.end(1):]
+
+
+def _fmt_num(n: float) -> str:
+    """Render a transform number without trailing noise (an integer stays integer)."""
+    return str(int(n)) if n == int(n) else repr(n)
+
+
+def _fresh_item_uuid(item: str, used: set[str]) -> str:
+    """`item` with a new, unique p:UUID when it already carries one (duplicate copies must not share it)."""
+    import uuid as _uuid
+
+    m = re.search(r'p:UUID="([^"]*)"', item)
+    if not m:
+        return item
+    while True:
+        u = str(_uuid.uuid4())
+        if u not in used:
+            used.add(u)
+            break
+    return item[: m.start(1)] + u + item[m.end(1):]
+
+
+def extract_plate(src: Path, dst: Path, plate: int = 1, spec: QuantitySpec | None = None) -> dict[str, object]:
+    """Write a single-plate copy of `src` (its `plate`-th plate) to `dst`, applying `spec`'s per-object
+    quantity ({object id: one (dx, dy) offset per wanted copy; empty list drops the object}; an object
+    with no entry is kept once, unmoved). Strips the cross-plate `<assemble>` section and keeps only this
+    plate's objects/build items, so the CLI slicer parses it. Returns {objects, copies}. Raises ValueError
+    when the project has no such plate or the plate ends up empty."""
+    spec = spec or {}
+    with zipfile.ZipFile(src) as zin:
+        try:
+            raw_ms = zin.read(_SETTINGS_PATH).decode("utf-8")
+            raw_model = zin.read(_MODEL_PATH).decode("utf-8")
+        except KeyError as e:
+            raise ValueError(f"not a Bambu project (missing {e})") from e
+
+        root = ET.fromstring(raw_ms)
+        plates = root.findall("plate")
+        target = None
+        for p in plates:
+            pid = p.find('metadata[@key="plater_id"]')
+            if pid is not None and pid.get("value") == str(plate):
+                target = p
+                break
+        if target is None:
+            if plate == 1 and plates:
+                target = plates[0]
+            else:
+                raise ValueError(f"the project has no plate {plate}")
+
+        order: list[str] = []
+        for mi in target.findall("model_instance"):
+            oid_el = mi.find('metadata[@key="object_id"]')
+            if oid_el is None:
+                continue
+            oid = oid_el.get("value") or ""
+            if oid and oid not in order:
+                order.append(oid)
+
+        def copies_of(oid: str) -> list[tuple[float, float]]:
+            return list(spec[oid]) if oid in spec else [(0.0, 0.0)]
+
+        kept = [oid for oid in order if copies_of(oid)]
+        if not kept:
+            raise ValueError("every object on this plate was dropped (quantity 0)")
+
+        # New model_settings.config: wanted objects, one plate, renumbered instances, no assemble.
+        new = ET.Element("config")
+        for obj in root.findall("object"):
+            if obj.get("id") in kept:
+                new.append(obj)
+        np = ET.SubElement(new, "plate")
+        for md in target.findall("metadata"):
+            k = md.get("key")
+            if k in _SKIP_PLATE_META:
+                continue
+            e = ET.SubElement(np, "metadata")
+            e.set("key", k or "")
+            e.set("value", "1" if k == "plater_id" else (md.get("value") or ""))
+        counts: dict[str, int] = {}
+        for oid in kept:
+            for inst in range(len(copies_of(oid))):
+                mi = ET.SubElement(np, "model_instance")
+                for key, val in (("object_id", oid), ("instance_id", str(inst))):
+                    e = ET.SubElement(mi, "metadata")
+                    e.set("key", key)
+                    e.set("value", val)
+        new_ms = '<?xml version="1.0" encoding="UTF-8"?>\n' + ET.tostring(new, encoding="unicode")
+
+        # New <build>: wanted items, each copy translated to its packed spot, fresh UUIDs.
+        used_uuids: set[str] = set(re.findall(r'p:UUID="([^"]*)"', raw_model))
+
+        def rebuild(build_tag: str) -> str:
+            by: dict[str, list[str]] = {}
+            for it in _ITEM_RE.findall(build_tag):
+                o = re.search(r'objectid="(\d+)"', it)
+                if o:
+                    by.setdefault(o.group(1), []).append(it)
+            out: list[str] = []
+            for oid in kept:
+                base = by.get(oid)
+                if not base:
+                    # Object on the plate but absent from <build>: nothing to place it from, so drop it.
+                    counts[oid] = 0
+                    continue
+                offs = copies_of(oid)
+                counts[oid] = len(offs)
+                for i, (dx, dy) in enumerate(offs):
+                    item = _translate_item(base[0], dx, dy)
+                    if i > 0:
+                        item = _fresh_item_uuid(item, used_uuids)
+                    out.append(item)
+            head = re.match(r"<build\b[^>]*>", build_tag).group(0)  # type: ignore[union-attr]
+            return head + "\n  " + "\n  ".join(out) + "\n </build>"
+
+        new_model = _BUILD_RE.sub(lambda m: rebuild(m.group(0)), raw_model)
+        kept = [oid for oid in kept if counts.get(oid, 0) > 0]
+        if not kept:
+            raise ValueError("no object on this plate has placeable geometry")
+
+        keep_n = str(plate)
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zo:
+            for it in zin.infolist():
+                n = it.filename
+                if n == _SETTINGS_PATH:
+                    zo.writestr(it, new_ms.encode("utf-8"))
+                    continue
+                if n == _MODEL_PATH:
+                    zo.writestr(it, new_model.encode("utf-8"))
+                    continue
+                am = _NUMBERED_ASSET.match(n)
+                if am:
+                    if am.group(2) != keep_n:
+                        continue  # another plate's preview/result: drop it
+                    zo.writestr(f"Metadata/{am.group(1)}_1.{am.group(3)}", zin.read(n))
+                    continue
+                zo.writestr(it, zin.read(n))
+    dst.write_bytes(buf.getvalue())
+    return {"objects": kept, "copies": {k: counts[k] for k in kept}}

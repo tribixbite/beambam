@@ -10,8 +10,10 @@ made for another Bambu printer (an A1/P2S from MakerWorld) is re-targeted to the
 3. **Preview** (step 03) — rotate/zoom the model on the plate; pick the plate if the project has
    several. On a two-nozzle printer with a multi-colour file you can also assign each colour to the
    **L**eft or **R**ight nozzle here, so it slices once (leave it to Bambu to choose and adjust after
-   the slice instead). For a file with several separate pieces, **Quantity** lets you set how many of
-   each to print (0 to skip one) — they auto-arrange on the plate and you're warned if they don't fit.
+   the slice instead). A multi-plate project slices one plate at a time — pick the plate on the preview;
+   each plate becomes its own clean single-plate slice. For a plate with several separate pieces,
+   **Quantity** lets you set how many of each to print (0 to skip one) — they auto-arrange on the plate
+   and you're warned if they don't fit.
    After slicing, **Show toolpath** switches the preview to the sliced paths, and the right-hand slider
    scrubs through the layers. Optionally [paint colours](Colour-painting.md).
 4. **Settings** (steps 04–05) — keep the project's settings or override layer height, walls, infill,

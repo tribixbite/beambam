@@ -18,7 +18,8 @@
     import { fileType, type FileType } from '$lib/print/load';
     import { NEUTRAL, partsOnPlate, type LoadedModel } from '$lib/print/model';
     import { shelfPack } from '$lib/print/arrange';
-    import type { QuantitySpec } from '$lib/print/quantity3mf';
+    /** Per object id, one XY offset per wanted copy (for the preview and the daemon quantity option). */
+    type QuantitySpec = Map<string, Array<{ dx: number; dy: number }>>;
     import {
         BED_TYPES,
         BRIM_MODES_UI,
@@ -327,7 +328,10 @@
     const pieces = $derived.by<Piece[]>(() => {
         if (!model || isMeshKind || ftype === 'gcode.3mf') return [];
         const by = new Map<string, Piece & { minx: number; miny: number; maxx: number; maxy: number }>();
-        for (const p of model.parts) {
+        // Quantity is per selected plate: a multi-plate project slices one plate at a time (the daemon
+        // extracts it), so the pieces are only that plate's objects.
+        const parts = model.plates > 1 ? partsOnPlate(model, printPlate) : model.parts;
+        for (const p of parts) {
             const oid = p.buildObjectId ?? p.objectId;
             if (!oid) continue;
             let ex = by.get(oid);
@@ -426,10 +430,23 @@
         if (!quantity?.changed || !quantity.spec) return shownModel;
         return { ...shownModel, parts: applyQuantity(shownModel.parts, quantity.spec) };
     });
+    /** The quantity spec as the daemon takes it (object id -> [dx, dy][]); null when no count changed. */
+    const quantityRecord = $derived.by<Record<string, [number, number][]> | null>(() => {
+        const spec = quantity?.spec;
+        if (!spec) return null;
+        const out: Record<string, [number, number][]> = {};
+        for (const [oid, offs] of spec) out[oid] = offs.map((o) => [o.dx, o.dy] as [number, number]);
+        return out;
+    });
+    /** The plate number the daemon should slice: a multi-plate project's selected plate (so it extracts one
+     * clean plate the slicer accepts); null for a single-plate project or a mesh, which slice as they are. */
+    const plateToSlice = $derived.by(() => (model && !isMeshKind && model.plates > 1 ? printPlate : null));
 
     /**
-     * The file and spools to send for a slice/download: paint baked in (serializePainted), the per-object
-     * quantity applied (writeQuantity3mf), and a spool per painted colour; otherwise the file unchanged.
+     * The file and spools to send for a slice/download: paint baked in (serializePainted) and a spool per
+     * painted colour; otherwise the file unchanged. The per-object quantity is NOT rewritten into the file
+     * here — it rides in the slice options (plate + quantity) and the daemon applies it while extracting the
+     * selected plate, so it works for multi-plate projects too (plate_extract).
      */
     async function sliceInput(src: File, baseSpools: SpoolOption[] | null): Promise<{ blob: Blob; spools: SpoolOption[] | null }> {
         const painted = canPaint && paintInfo?.dirty ? paintInfo : null;
@@ -439,10 +456,6 @@
             spools = baseSpools ? painted.spools?.map((s, i) => baseSpools[i] ?? s) ?? baseSpools : painted.spools;
             const { serializePainted } = await import('$lib/print/worker-client');
             blob = await serializePainted(blob, painted.paintMap);
-        }
-        if (quantity?.changed && quantity.spec) {
-            const { writeQuantity3mf } = await import('$lib/print/quantity3mf');
-            blob = await writeQuantity3mf(blob, quantity.spec);
         }
         return { blob, spools };
     }
@@ -522,7 +535,7 @@
         return `${(h >>> 0).toString(16)}:${paintInfo.palette.join(',')}`;
     });
     const settingsKey = $derived(
-        JSON.stringify([hasOptions ? settings : null, meshSpool ? [meshSpool.profileId, meshSpool.type] : null, adoptSpools, paintSig, chosenNozzles, counts])
+        JSON.stringify([hasOptions ? settings : null, meshSpool ? [meshSpool.profileId, meshSpool.type] : null, adoptSpools, paintSig, chosenNozzles, counts, plateToSlice])
     );
 
     /** What "not sent" means for this file: the project's own value, or Bambu's default for a mesh. */
@@ -670,7 +683,7 @@
             // Painting bakes paint_color into the 3MF and sends a spool per colour so the daemon adds a
             // filament for each painted colour (project_sync appends them); otherwise the file is sent as is.
             const { blob: sendBlob, spools } = await sliceInput(file, adoptSpools);
-            const opts = hasOptions ? buildSliceOptions(settings, mesh, nozzles, spools) : null;
+            const opts = hasOptions ? buildSliceOptions(settings, mesh, nozzles, spools, plateToSlice, quantityRecord) : null;
             const res = await d.slice(file.name, sendBlob, opts ? optionsHeader(opts) : null, (sec, step) => {
                 if (forSerial === fileSerial) sliceTick = `${again ? `Slicing again with ${what}` : 'Slicing'}: ${step || 'working'}… ${Math.round(sec)} s`;
             });
@@ -769,7 +782,7 @@
         syncError = '';
         try {
             const { blob: sendBlob, spools } = await sliceInput(file, adoptSpools);
-            const opts = buildSliceOptions(settings, null, chosenNozzles, spools);
+            const opts = buildSliceOptions(settings, null, chosenNozzles, spools, plateToSlice, quantityRecord);
             const blob = await daemon.updateProject(file.name, sendBlob, opts ? optionsHeader(opts) : null);
             const a = document.createElement('a');
             a.href = URL.createObjectURL(blob);
