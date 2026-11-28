@@ -4,6 +4,24 @@ All notable changes to this project.
 
 ## [Unreleased]
 
+## v1.10.1 — multi-plate & multi-material slicing (2026-11-28)
+
+### Fixed
+- **Multi-plate projects slice.** A project with several plates (a common MakerWorld layout, e.g. a body,
+  a handle and a nametag on three plates) never sliced: beambam sliced every plate and bs-bionic aborted on
+  the cross-plate `<assemble>` section (**code -6**) and on a plate whose objects had no build item
+  (**code -50**). The chosen plate is now extracted into one clean single-plate file: `<assemble>` stripped,
+  only that plate's objects kept, each **re-placed on the bed from its real geometry** (a multi-plate project
+  stores objects in a global grid, off any single bed). Pick the plate in step 03; it slices just that one.
+- **Per-object quantity is applied by the daemon**, so it works for multi-plate projects too: set how many of
+  each piece to print (0 to skip one), auto-arranged on the plate, with a clear "do not fit the plate" error
+  (and a pre-slice warning) when they can't.
+- **Dual-nozzle multi-material slices no longer fail code -102.** Objects were centred to clear the X2D right
+  nozzle's exclusion zone (x < 20.5), and the wipe/prime tower — which carried another printer's position
+  (off the bed on the X2D) — is now packed into a free, printable slot beside the model.
+- **The sliced plate is read as plate 1 downstream** (spool plan, toolpath preview, Start), fixing
+  "has no sliced plate N (sliced plates: [1])" after slicing a chosen plate.
+
 ### Added
 - **`beambam connect --install` installs Bambu Connect for you** (Windows and macOS), so the key-free print
   needs no rooted phone and no manual download: it reads the current version off the Bambu wiki (falling back to
