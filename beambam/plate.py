@@ -30,6 +30,7 @@ from __future__ import annotations
 import argparse
 import io
 import json
+import math
 import re
 import sys
 import xml.etree.ElementTree as ET
@@ -443,23 +444,6 @@ def plate_count(src: Path) -> int:
     return max(1, ms.count("<plate>"))
 
 
-def _translate_item(item: str, dx: float, dy: float) -> str:
-    """A `<build>` item with its transform's translation moved by (dx, dy). The 3MF transform is nine
-    rotation/scale terms then three translation terms (tx ty tz); tx is index 9, ty index 10."""
-    m = re.search(r'transform="([^"]*)"', item)
-    if not m:
-        return item
-    nums = m.group(1).split()
-    if len(nums) != 12:
-        return item
-    try:
-        nums[9] = _fmt_num(float(nums[9]) + dx)
-        nums[10] = _fmt_num(float(nums[10]) + dy)
-    except ValueError:
-        return item
-    return item[: m.start(1)] + " ".join(nums) + item[m.end(1):]
-
-
 def _fmt_num(n: float) -> str:
     """Render a transform number without trailing noise (an integer stays integer)."""
     return str(int(n)) if n == int(n) else repr(n)
@@ -480,12 +464,134 @@ def _fresh_item_uuid(item: str, used: set[str]) -> str:
     return item[: m.start(1)] + u + item[m.end(1):]
 
 
+_IDENTITY = [1.0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0]
+_VERTEX_RE = re.compile(r'<vertex\b[^>]*\bx="([^"]+)"[^>]*\by="([^"]+)"[^>]*\bz="([^"]+)"')
+_COMPONENT_RE = re.compile(r"<component\b[^>]*/>")
+_OBJECT_RE = re.compile(r'<object\s+id="([^"]+)"[^>]*>(.*?)</object>', re.S)
+
+
+def _parse_objects(xml: str) -> dict[str, tuple[list[tuple[float, float, float]], list[tuple[str | None, str, list[float]]]]]:
+    """object id -> (vertices, components) from one `.model` file. A component is (path|None, object id, transform)."""
+    out: dict[str, tuple[list[tuple[float, float, float]], list[tuple[str | None, str, list[float]]]]] = {}
+    for m in _OBJECT_RE.finditer(xml):
+        body = m.group(2)
+        verts = [(float(a), float(b), float(c)) for a, b, c in _VERTEX_RE.findall(body)]
+        comps: list[tuple[str | None, str, list[float]]] = []
+        for c in _COMPONENT_RE.findall(body):
+            cp = re.search(r'p:path="([^"]*)"', c)
+            co = re.search(r'objectid="([^"]*)"', c)
+            ct = re.search(r'transform="([^"]*)"', c)
+            tr = [float(x) for x in ct.group(1).split()] if ct and len(ct.group(1).split()) == 12 else list(_IDENTITY)
+            comps.append((cp.group(1) if cp else None, co.group(1) if co else "", tr))
+        out[m.group(1)] = (verts, comps)
+    return out
+
+
+def _compose(a: list[float], b: list[float]) -> list[float]:
+    """Compose two 3MF transforms (apply `a` then `b`), matching the web loader's `compose`."""
+    out = [0.0] * 12
+    for r in range(4):
+        for c in range(3):
+            s = b[9 + c] if r == 3 else 0.0
+            for k in range(3):
+                s += a[r * 3 + k] * b[k * 3 + c]
+            out[r * 3 + c] = s
+    return out
+
+
+def _accumulate_bbox(objs_by_path: dict, zin: zipfile.ZipFile, path: str, oid: str, M: list[float], acc: list[float]) -> None:
+    """Grow `acc` [minx, miny, maxx, maxy] over object `oid`'s vertices (and its components') under transform `M`."""
+    path = path.lstrip("/")  # 3MF component paths are absolute ("/3D/…"); zip members have no leading slash
+    objs = objs_by_path.get(path)
+    if objs is None:
+        try:
+            objs = _parse_objects(zin.read(path).decode("utf-8", "ignore"))
+        except KeyError:
+            objs = {}
+        objs_by_path[path] = objs
+    node = objs.get(oid)
+    if not node:
+        return
+    verts, comps = node
+    m0, m1, m3, m4, m6, m7, m9, m10 = M[0], M[1], M[3], M[4], M[6], M[7], M[9], M[10]
+    for (x, y, z) in verts:
+        wx = x * m0 + y * m3 + z * m6 + m9
+        wy = x * m1 + y * m4 + z * m7 + m10
+        if wx < acc[0]:
+            acc[0] = wx
+        if wy < acc[1]:
+            acc[1] = wy
+        if wx > acc[2]:
+            acc[2] = wx
+        if wy > acc[3]:
+            acc[3] = wy
+    for (cpath, coid, ct) in comps:
+        _accumulate_bbox(objs_by_path, zin, cpath or path, coid, _compose(ct, M), acc)
+
+
+def _shelf_pack(rects: list[tuple[float, float]], bed: tuple[float, float, float, float], margin: float = 5.0) -> list[tuple[float, float]]:
+    """Greedy shelf pack (tallest first); returns one (cx, cy) target centre per rect, in input order. Mirrors
+    the web `shelfPack` so the daemon lays a plate out the way the preview does."""
+    bed_w = bed[2] - bed[0]
+    bed_h = bed[3] - bed[1]
+    order = sorted(range(len(rects)), key=lambda i: -rects[i][1])
+    places: list[tuple[float, float]] = [(0.0, 0.0)] * len(rects)
+    x = margin
+    y = margin
+    shelf_h = 0.0
+    for i in order:
+        w = rects[i][0] + 2 * margin
+        h = rects[i][1] + 2 * margin
+        if x + w > bed_w and x > margin:
+            x = margin
+            y += shelf_h
+            shelf_h = 0.0
+        places[i] = (bed[0] + x + w / 2, bed[1] + y + h / 2)
+        x += w
+        if h > shelf_h:
+            shelf_h = h
+    return places
+
+
+def _bed_of(zin: zipfile.ZipFile) -> tuple[float, float, float, float]:
+    """The project's printable area as (minx, miny, maxx, maxy); 256×256 when absent. Used to arrange a plate's
+    objects on the bed (conservative: fitting the source bed fits the X2D's larger one)."""
+    try:
+        s = json.loads(zin.read("Metadata/project_settings.config").decode("utf-8", "ignore"))
+        xs: list[float] = []
+        ys: list[float] = []
+        for p in s.get("printable_area") or []:
+            a, _, b = str(p).partition("x")
+            xs.append(float(a))
+            ys.append(float(b))
+        if len(xs) >= 3:
+            return (min(xs), min(ys), max(xs), max(ys))
+    except (KeyError, ValueError, TypeError):
+        pass
+    return (0.0, 0.0, 256.0, 256.0)
+
+
+def _set_item_xy(item: str, tx: float, ty: float) -> str:
+    """A `<build>` item with its transform's translation set to (tx, ty) (rotation/scale/tz untouched)."""
+    m = re.search(r'transform="([^"]*)"', item)
+    if not m:
+        return item
+    nums = m.group(1).split()
+    if len(nums) != 12:
+        return item
+    nums[9] = _fmt_num(tx)
+    nums[10] = _fmt_num(ty)
+    return item[: m.start(1)] + " ".join(nums) + item[m.end(1):]
+
+
 def extract_plate(src: Path, dst: Path, plate: int = 1, spec: QuantitySpec | None = None) -> dict[str, object]:
     """Write a single-plate copy of `src` (its `plate`-th plate) to `dst`, applying `spec`'s per-object
-    quantity ({object id: one (dx, dy) offset per wanted copy; empty list drops the object}; an object
-    with no entry is kept once, unmoved). Strips the cross-plate `<assemble>` section and keeps only this
-    plate's objects/build items, so the CLI slicer parses it. Returns {objects, copies}. Raises ValueError
-    when the project has no such plate or the plate ends up empty."""
+    quantity ({object id: one offset per wanted copy; empty list drops the object}; an object with no entry
+    is kept once). Strips the cross-plate `<assemble>` section, keeps only this plate's objects/build items,
+    and **re-places every object on the bed from its real geometry** (a multi-plate project stores objects in
+    a global grid off this single bed, which the slicer rejects as an empty plate). `spec`'s offsets are only
+    counted (one per copy); the daemon arranges the copies itself. Returns {objects, copies}. Raises
+    ValueError when the project has no such plate or the plate ends up empty."""
     spec = spec or {}
     with zipfile.ZipFile(src) as zin:
         try:
@@ -547,8 +653,13 @@ def extract_plate(src: Path, dst: Path, plate: int = 1, spec: QuantitySpec | Non
                     e.set("value", val)
         new_ms = '<?xml version="1.0" encoding="UTF-8"?>\n' + ET.tostring(new, encoding="unicode")
 
-        # New <build>: wanted items, each copy translated to its packed spot, fresh UUIDs.
+        # New <build>: each wanted object placed on the bed from its real geometry (a multi-plate project
+        # keeps objects in a global grid, off this single bed — the -50 cause — so the source translation is
+        # NOT trusted). Compute each object's world XY bbox, shelf-pack every copy on the bed, and set each
+        # item's translation so the object's bbox centre lands on its packed slot. Fresh UUIDs on copies.
         used_uuids: set[str] = set(re.findall(r'p:UUID="([^"]*)"', raw_model))
+        bed = _bed_of(zin)
+        objs_by_path: dict = {}
 
         def rebuild(build_tag: str) -> str:
             by: dict[str, list[str]] = {}
@@ -556,20 +667,47 @@ def extract_plate(src: Path, dst: Path, plate: int = 1, spec: QuantitySpec | Non
                 o = re.search(r'objectid="(\d+)"', it)
                 if o:
                     by.setdefault(o.group(1), []).append(it)
-            out: list[str] = []
+            # Per kept object with a build item: its base item, current (tx, ty), bbox centre and footprint.
+            geo: dict[str, tuple[str, float, float, float, float, float, float]] = {}
             for oid in kept:
                 base = by.get(oid)
                 if not base:
-                    # Object on the plate but absent from <build>: nothing to place it from, so drop it.
-                    counts[oid] = 0
+                    counts[oid] = 0  # on the plate but no <build> item: nothing to place it from
                     continue
-                offs = copies_of(oid)
-                counts[oid] = len(offs)
-                for i, (dx, dy) in enumerate(offs):
-                    item = _translate_item(base[0], dx, dy)
-                    if i > 0:
-                        item = _fresh_item_uuid(item, used_uuids)
-                    out.append(item)
+                item = base[0]
+                tm = re.search(r'transform="([^"]*)"', item)
+                nums = tm.group(1).split() if tm else []
+                M = [float(x) for x in nums] if len(nums) == 12 else list(_IDENTITY)
+                acc = [math.inf, math.inf, -math.inf, -math.inf]
+                _accumulate_bbox(objs_by_path, zin, _MODEL_PATH, oid, M, acc)
+                if math.isinf(acc[0]):
+                    geo[oid] = (item, M[9], M[10], M[9], M[10], 0.0, 0.0)  # no geometry: leave where it is
+                else:
+                    geo[oid] = (item, M[9], M[10], (acc[0] + acc[2]) / 2, (acc[1] + acc[3]) / 2,
+                                acc[2] - acc[0], acc[3] - acc[1])
+            # Pack every copy of every object onto the bed.
+            entries: list[str] = []
+            rects: list[tuple[float, float]] = []
+            for oid in kept:
+                if oid not in geo:
+                    continue
+                n = len(copies_of(oid))
+                counts[oid] = n
+                for _ in range(n):
+                    entries.append(oid)
+                    rects.append((geo[oid][5], geo[oid][6]))
+            places = _shelf_pack(rects, bed, 5.0)
+            out: list[str] = []
+            seen: dict[str, int] = {}
+            for idx, oid in enumerate(entries):
+                item, btx, bty, cx, cy, _w, _h = geo[oid]
+                px, py = places[idx]
+                placed = _set_item_xy(item, btx + (px - cx), bty + (py - cy))
+                i = seen.get(oid, 0)
+                seen[oid] = i + 1
+                if i > 0:
+                    placed = _fresh_item_uuid(placed, used_uuids)
+                out.append(placed)
             head = re.match(r"<build\b[^>]*>", build_tag).group(0)  # type: ignore[union-attr]
             return head + "\n  " + "\n  ".join(out) + "\n </build>"
 

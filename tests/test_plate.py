@@ -349,15 +349,21 @@ def test_cmd_plate_select_onto_itself_is_a_clean_refusal(tmp_path, capsys):
 
 # ----- extract_plate: single-plate extraction for the slicer ------------
 
-_EXTRACT_MODEL = """<?xml version="1.0" encoding="UTF-8"?>
+_SQUARE = ('<mesh><vertices>'
+           '<vertex x="0" y="0" z="0"/><vertex x="10" y="0" z="0"/>'
+           '<vertex x="10" y="10" z="0"/><vertex x="0" y="10" z="0"/>'
+           '</vertices><triangles><triangle v1="0" v2="1" v3="2"/><triangle v1="0" v2="2" v3="3"/></triangles></mesh>')
+# Objects 2 and 4 are 10×10 squares; their build items place them off-origin (and, like a real multi-plate
+# project, object 4 off any single bed) — extract_plate re-places them on the bed from this geometry.
+_EXTRACT_MODEL = f"""<?xml version="1.0" encoding="UTF-8"?>
 <model xmlns:p="http://schemas.microsoft.com/3dmanufacturing/production/2015/06">
  <resources>
-  <object id="2" type="model"><mesh/></object>
-  <object id="4" type="model"><mesh/></object>
+  <object id="2" type="model">{_SQUARE}</object>
+  <object id="4" type="model">{_SQUARE}</object>
  </resources>
  <build p:UUID="aaaaaaaa-0000-0000-0000-000000000000">
   <item objectid="2" p:UUID="00000002-0000-0000-0000-000000000000" transform="1 0 0 0 1 0 0 0 1 50 60 0" printable="1"/>
-  <item objectid="4" p:UUID="00000004-0000-0000-0000-000000000000" transform="1 0 0 0 1 0 0 0 1 120 60 0" printable="1"/>
+  <item objectid="4" p:UUID="00000004-0000-0000-0000-000000000000" transform="1 0 0 0 1 0 0 0 1 400 -300 0" printable="1"/>
  </build>
 </model>"""
 
@@ -428,21 +434,30 @@ def test_extract_plate_keeps_only_its_objects_and_strips_assemble(tmp_path):
         names = z.namelist()
     assert "Metadata/plate_1.png" in names   # plate 2's png renamed to _1
     assert "Metadata/plate_2.png" not in names
+    # Object 4's build item was off any single bed (400, -300); it is re-placed onto the bed from geometry.
+    tx = model.split('transform="')[1].split('"')[0].split()
+    x, y = float(tx[9]), float(tx[10])
+    assert 0 <= x <= 256 and 0 <= y <= 256     # on the (default 256) bed, not the source's off-bed spot
 
 
 def test_extract_plate_quantity_duplicates_and_drops(tmp_path):
     src = tmp_path / "p.3mf"
     dst = tmp_path / "out.3mf"
     _build_two_plate_project(src)
-    # On plate 1: print object 2 three times (offset copies). Object 2 is the only one on plate 1.
-    info = extract_plate(src, dst, 1, {"2": [(0.0, 0.0), (30.0, 0.0), (0.0, 30.0)]})
+    # On plate 1: print object 2 three times. Object 2 (a 10×10 square) is the only one on plate 1.
+    info = extract_plate(src, dst, 1, {"2": [(0.0, 0.0), (0.0, 0.0), (0.0, 0.0)]})
     assert info["copies"] == {"2": 3}
     model = _read(dst, "3D/3dmodel.model")
     items = re.findall(r"<item\b[^>]*/>", model)
     assert len(items) == 3
-    # Translations: 50,60 then 80,60 then 50,90 (tx at index 9, ty at index 10).
-    tx = [it.split('transform="')[1].split('"')[0].split()[9:11] for it in items]
-    assert tx[0] == ["50", "60"] and tx[1] == ["80", "60"] and tx[2] == ["50", "90"]
+    # Three copies, each re-placed on the bed at a distinct, non-overlapping spot.
+    centres = []
+    for it in items:
+        t = it.split('transform="')[1].split('"')[0].split()
+        x, y = float(t[9]), float(t[10])
+        assert 0 <= x <= 256 and 0 <= y <= 256
+        centres.append((x, y))
+    assert len(set(centres)) == 3            # no two copies share a position
     # Fresh UUIDs on the copies (no duplicate p:UUID).
     uuids = re.findall(r'<item[^>]*p:UUID="([^"]*)"', model)
     assert len(uuids) == len(set(uuids)) == 3
