@@ -83,6 +83,14 @@ live preview (`arrange.ts` `shelfPack` → `displayModel`), and sends the result
 5. **Meshes (STL/OBJ) have no plates** — `slice_service` only extracts when `is_mesh(src)` is false.
 6. **Changing the selected plate must re-slice**: the web `settingsKey` includes `plateToSlice`, and the
    quantity preview/spec are scoped to that plate's parts.
+7. **The wipe/prime tower is re-placed too.** A project made for another printer carries that printer's
+   `wipe_tower_x`/`wipe_tower_y` (the A1 default `15, 220.7`). On the X2D that is in the right nozzle's
+   exclusion zone (`extruder_printable_area` of extruder 2 starts at x=20.5) and runs the tower off the top
+   edge, so a dual-nozzle multi-material slice fails **code -102** ("G-code in unprintable area of
+   multi-extruder printers") even with the object on the bed. `extract_plate` reserves a tower-sized rect in
+   the same shelf-pack as the objects and writes `wipe_tower_x`/`wipe_tower_y` to that free, printable slot.
+   This is only applied for projects that go through extraction (multi-plate, or a plate/quantity choice); a
+   genuine single-plate project with a bad tower position is a follow-up.
 
 ## Verification
 

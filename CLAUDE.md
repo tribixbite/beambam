@@ -128,6 +128,19 @@ Running GUI apps (BambuStudio / wxWidgets 3.3) on termux-x11. These lessons were
   The spec's object ids are **root build-item object ids** = the web `PreviewPart.buildObjectId` (Bambu
   wraps a mesh in an assembly, so ≠ the mesh object id). Quantity moved off the browser
   (`writeQuantity3mf` deleted) onto the daemon so it works for multi-plate. Full: docs/specs/multi-plate-slicing.md.
+  Three more traps `extract_plate` handles, each a separate slicer failure: (1) objects in a multi-plate
+  project sit in a **global grid off any single bed** (y can be negative) → re-place from real geometry, not
+  the source transform (else **-50**); (2) packing from a corner lands in the X2D **right-nozzle exclusion**
+  (`extruder_printable_area` extruder 2 starts x=20.5) → centre the packed block (else **-102**); (3) the
+  project carries another printer's **wipe/prime tower position** (A1 default x=15,y=220.7, in the exclusion /
+  off the top edge) → reserve a tower slot in the same pack and rewrite `wipe_tower_x/y` (else **-102** on any
+  dual-nozzle multi-material slice, even with the object on the bed). Component `p:path` is absolute
+  (`/3D/...`); strip the leading slash to read the zip member.
+- **Daemon auth token**: `--auth-token` / `$X2D_AUTH_TOKEN`. On a **loopback** bind (127.0.0.1) none is
+  needed (open); a **non-loopback** bind refuses to serve without one. There is no pre-existing token to
+  fetch — you choose it: `beambam daemon --http 0.0.0.0:8765 --auth-token "$(openssl rand -hex 16)"
+  --cors-origin https://beambam.boo`, then paste that same value into the site's token field (the connect UI
+  even prints this command). Sent as `Authorization: Bearer <token>`.
 - CLI help is built by `beambam/cli/manhelp.py` (ManParser, inherited by every subparser) and
   argument text missing at the `add_argument` site is filled from `beambam/cli/arghelp.py`.
   `tests/test_cli_manhelp.py` fails if any argument has no help, or an EXAMPLES entry does not
