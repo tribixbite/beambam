@@ -117,6 +117,17 @@ Running GUI apps (BambuStudio / wxWidgets 3.3) on termux-x11. These lessons were
   where every machine/process list divides by one. Always verify a filament-append change with a **real slice**
   (bs-bionic on this box), not only unit tests — a single-colour A1 project painted to two colours must slice
   to two filaments. See `docs/specs/colour-painting.md`.
+- **A multi-plate Bambu project fails to slice as-is (bs-bionic), and it is NOT the quantity feature.**
+  beambam slices *every* plate; bs aborts on the project's global `<assemble>` section (**code -6**,
+  "can not find object for assemble item") and on a plate whose objects have no `<build>` item (**code
+  -50**, "plate is empty" — Bambu recomputes those positions on load, bs does not). Fix:
+  `beambam/plate.py` `extract_plate(src, dst, plate, spec)` reduces the project to one clean plate
+  (keep that plate's objects/build items + one renumbered `<plate>`, **strip `<assemble>`**, drop a
+  build-item-less object) and applies the per-object quantity `spec` ({object id: [(dx,dy),…]}, [] drops
+  it). `slice_service` calls it when `SliceOptions.plate`/`.quantity` is set or `plate_count(src)>1`.
+  The spec's object ids are **root build-item object ids** = the web `PreviewPart.buildObjectId` (Bambu
+  wraps a mesh in an assembly, so ≠ the mesh object id). Quantity moved off the browser
+  (`writeQuantity3mf` deleted) onto the daemon so it works for multi-plate. Full: docs/specs/multi-plate-slicing.md.
 - CLI help is built by `beambam/cli/manhelp.py` (ManParser, inherited by every subparser) and
   argument text missing at the `add_argument` site is filled from `beambam/cli/arghelp.py`.
   `tests/test_cli_manhelp.py` fails if any argument has no help, or an EXAMPLES entry does not
