@@ -476,3 +476,27 @@ def test_extract_plate_unknown_plate_raises(tmp_path):
     _build_two_plate_project(src)
     with pytest.raises(ValueError):
         extract_plate(src, tmp_path / "o.3mf", 9)
+
+
+def test_extract_plate_moves_an_offbed_wipe_tower_onto_the_plate(tmp_path):
+    """A project carries another printer's wipe-tower position (x=15, off the X2D's dual-nozzle zone / top
+    edge). extract_plate repositions it to a reserved, on-bed slot so the multi-material slice does not fail
+    code -102."""
+    src = tmp_path / "p.3mf"
+    dst = tmp_path / "out.3mf"
+    with zipfile.ZipFile(src, "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr("3D/3dmodel.model", _EXTRACT_MODEL)
+        z.writestr("Metadata/model_settings.config", _EXTRACT_SETTINGS)
+        z.writestr("Metadata/project_settings.config", json.dumps({
+            "printable_area": ["0x0", "256x0", "256x256", "0x256"],
+            "enable_prime_tower": "1",
+            "prime_tower_width": "35",
+            "wipe_tower_x": ["15", "15"],
+            "wipe_tower_y": ["245", "245"],
+        }))
+    extract_plate(src, dst, 1)  # plate 1 holds object 2 (a 10×10 square)
+    ps = json.loads(_read(dst, "Metadata/project_settings.config"))
+    x = float(ps["wipe_tower_x"][0])
+    y = float(ps["wipe_tower_y"][0])
+    # On the bed, clear of the X2D right-nozzle exclusion (x>=20.5) and the top edge (tower width 35).
+    assert 20.5 <= x <= 256 - 35 and 0 <= y <= 256 - 35

@@ -449,6 +449,13 @@ def _fmt_num(n: float) -> str:
     return str(int(n)) if n == int(n) else repr(n)
 
 
+def _first(v: object, default: object = None) -> object:
+    """First element of a list value, else the value itself (project_settings values are often per-filament lists)."""
+    if isinstance(v, list):
+        return v[0] if v else default
+    return v if v is not None else default
+
+
 def _fresh_item_uuid(item: str, used: set[str]) -> str:
     """`item` with a new, unique p:UUID when it already carries one (duplicate copies must not share it)."""
     import uuid as _uuid
@@ -671,6 +678,24 @@ def extract_plate(src: Path, dst: Path, plate: int = 1, spec: QuantitySpec | Non
         bed = _bed_of(zin)
         objs_by_path: dict = {}
 
+        # Reserve a slot for the wipe/prime tower in the same pack, so it lands in a free, printable spot. A
+        # project made for another printer carries that printer's tower position, which on the X2D is in the
+        # right-nozzle exclusion (x < 20.5) or off the top edge -> the multi-material slice fails code -102.
+        ps_raw = ""
+        try:
+            ps_raw = zin.read("Metadata/project_settings.config").decode("utf-8", "ignore")
+        except KeyError:
+            pass
+        tower_pw = 0.0
+        if ps_raw:
+            try:
+                ps = json.loads(ps_raw)
+                if str(_first(ps.get("enable_prime_tower"), "0")).lower() not in ("0", "", "false"):
+                    tower_pw = float(_first(ps.get("prime_tower_width"), 35.0) or 35.0)
+            except (ValueError, TypeError):
+                tower_pw = 0.0
+        tower_pos: list[tuple[float, float]] = []  # [(wipe_tower_x, wipe_tower_y)] once packed
+
         def rebuild(build_tag: str) -> str:
             by: dict[str, list[str]] = {}
             for it in _ITEM_RE.findall(build_tag):
@@ -706,10 +731,19 @@ def extract_plate(src: Path, dst: Path, plate: int = 1, spec: QuantitySpec | Non
                 for _ in range(n):
                     entries.append(oid)
                     rects.append((geo[oid][5], geo[oid][6]))
+            tower_idx = -1
+            if tower_pw > 0:
+                tower_idx = len(rects)
+                entries.append("")  # sentinel: the wipe tower, packed with the objects so it never overlaps
+                rects.append((tower_pw, tower_pw))
             places = _shelf_pack(rects, bed, 5.0)
             out: list[str] = []
             seen: dict[str, int] = {}
             for idx, oid in enumerate(entries):
+                if idx == tower_idx:
+                    cx, cy = places[idx]
+                    tower_pos.append((cx - tower_pw / 2, cy - tower_pw / 2))  # tower x/y = its lower-left corner
+                    continue
                 item, btx, bty, cx, cy, _w, _h = geo[oid]
                 px, py = places[idx]
                 placed = _set_item_xy(item, btx + (px - cx), bty + (py - cy))
@@ -726,6 +760,21 @@ def extract_plate(src: Path, dst: Path, plate: int = 1, spec: QuantitySpec | Non
         if not kept:
             raise ValueError("no object on this plate has placeable geometry")
 
+        # Move the wipe/prime tower onto its reserved, printable slot.
+        new_ps = ps_raw
+        if tower_pos and ps_raw:
+            try:
+                ps = json.loads(ps_raw)
+                tx, ty = tower_pos[0]
+                for key, val in (("wipe_tower_x", tx), ("wipe_tower_y", ty)):
+                    if isinstance(ps.get(key), list):
+                        ps[key] = [_fmt_num(val)] * len(ps[key])
+                    elif key in ps:
+                        ps[key] = _fmt_num(val)
+                new_ps = json.dumps(ps)
+            except (ValueError, TypeError):
+                new_ps = ps_raw
+
         keep_n = str(plate)
         buf = io.BytesIO()
         with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zo:
@@ -736,6 +785,9 @@ def extract_plate(src: Path, dst: Path, plate: int = 1, spec: QuantitySpec | Non
                     continue
                 if n == _MODEL_PATH:
                     zo.writestr(it, new_model.encode("utf-8"))
+                    continue
+                if n == "Metadata/project_settings.config" and new_ps != ps_raw:
+                    zo.writestr(it, new_ps.encode("utf-8"))
                     continue
                 am = _NUMBERED_ASSET.match(n)
                 if am:
