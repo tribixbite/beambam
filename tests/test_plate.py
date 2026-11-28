@@ -478,6 +478,19 @@ def test_extract_plate_unknown_plate_raises(tmp_path):
         extract_plate(src, tmp_path / "o.3mf", 9)
 
 
+def test_extract_plate_rejects_copies_that_do_not_fit(tmp_path):
+    """Too many / too-large copies get a clear 'do not fit' error, not the slicer's misleading 'plate is
+    empty'. Object 2 is a 10×10 square; two copies cannot fit a 25×25 plate."""
+    src = tmp_path / "p.3mf"
+    with zipfile.ZipFile(src, "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr("3D/3dmodel.model", _EXTRACT_MODEL)
+        z.writestr("Metadata/model_settings.config", _EXTRACT_SETTINGS)
+        z.writestr("Metadata/project_settings.config",
+                   json.dumps({"printable_area": ["0x0", "25x0", "25x25", "0x25"]}))
+    with pytest.raises(ValueError, match="do not fit"):
+        extract_plate(src, tmp_path / "o.3mf", 1, {"2": [(0.0, 0.0), (0.0, 0.0)]})
+
+
 def test_extract_plate_moves_an_offbed_wipe_tower_onto_the_plate(tmp_path):
     """A project carries another printer's wipe-tower position (x=15, off the X2D's dual-nozzle zone / top
     edge). extract_plate repositions it to a reserved, on-bed slot so the multi-material slice does not fail

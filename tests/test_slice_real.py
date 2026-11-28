@@ -4,6 +4,7 @@ runs it on Linux, macOS and Windows after `beambam slicer install`; on the phone
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import zipfile
 from pathlib import Path
@@ -86,6 +87,21 @@ def test_the_sliced_file_slices_again_as_a_project(tmp_path, slicer):
     res = ss.slice_project(project, tmp_path / "b", name="cube_project.3mf", track_switch=True)
     _check(res, tmp_path / "b").close()
     assert not res["mesh"] and res["machine_profile"] == "Bambu Lab X2D 0.4 nozzle.json"
+
+
+def test_a_chosen_plate_with_quantity_slices(tmp_path, slicer):
+    """extract_plate end to end: ask a single-plate project to print its object 3 times. The chosen plate is
+    extracted, the object is re-placed on the bed and duplicated, and the result slices to ~3x the grams."""
+    first = ss.slice_project(_stl(tmp_path / "cube.stl", [(0, 15)]), tmp_path / "a", name="cube.stl")
+    _check(first, tmp_path / "a").close()
+    project = tmp_path / "cube_project.3mf"
+    shutil.copy(first["file"], project)
+    model = zipfile.ZipFile(project).read("3D/3dmodel.model").decode("utf-8", "replace")
+    oid = re.search(r'<item[^>]*objectid="(\d+)"', model).group(1)
+    res = ss.slice_project(project, tmp_path / "b", name="cube_project.3mf", track_switch=True,
+                           options=SliceOptions(plate=1, quantity={oid: ((0.0, 0.0), (0.0, 0.0), (0.0, 0.0))}))
+    _check(res, tmp_path / "b").close()
+    assert res["grams"] > first["grams"] * 2.0  # three copies, minus shared overhead
 
 
 def test_the_daemon_slices_over_http(tmp_path, slicer, daemon):

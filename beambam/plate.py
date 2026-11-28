@@ -695,6 +695,7 @@ def extract_plate(src: Path, dst: Path, plate: int = 1, spec: QuantitySpec | Non
             except (ValueError, TypeError):
                 tower_pw = 0.0
         tower_pos: list[tuple[float, float]] = []  # [(wipe_tower_x, wipe_tower_y)] once packed
+        overflow: list[tuple[float, float]] = []    # [(bed_w, bed_h)] if the copies do not fit the plate
 
         def rebuild(build_tag: str) -> str:
             by: dict[str, list[str]] = {}
@@ -737,6 +738,14 @@ def extract_plate(src: Path, dst: Path, plate: int = 1, spec: QuantitySpec | Non
                 entries.append("")  # sentinel: the wipe tower, packed with the objects so it never overlaps
                 rects.append((tower_pw, tower_pw))
             places = _shelf_pack(rects, bed, 5.0)
+            # Does every packed footprint sit within the bed? (Too many / too-large copies cannot — the
+            # slicer would otherwise fail with a misleading "plate is empty".)
+            for i, (px, py) in enumerate(places):
+                w, h = rects[i]
+                if (px - w / 2 < bed[0] - 1e-6 or px + w / 2 > bed[2] + 1e-6
+                        or py - h / 2 < bed[1] - 1e-6 or py + h / 2 > bed[3] + 1e-6):
+                    overflow.append((bed[2] - bed[0], bed[3] - bed[1]))
+                    break
             out: list[str] = []
             seen: dict[str, int] = {}
             for idx, oid in enumerate(entries):
@@ -759,6 +768,10 @@ def extract_plate(src: Path, dst: Path, plate: int = 1, spec: QuantitySpec | Non
         kept = [oid for oid in kept if counts.get(oid, 0) > 0]
         if not kept:
             raise ValueError("no object on this plate has placeable geometry")
+        if overflow:
+            w, h = overflow[0]
+            total = sum(counts[o] for o in kept)
+            raise ValueError(f"these {total} object(s) do not fit the {w:g}×{h:g} mm plate — reduce the quantity")
 
         # Move the wipe/prime tower onto its reserved, printable slot.
         new_ps = ps_raw
