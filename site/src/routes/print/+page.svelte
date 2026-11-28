@@ -281,13 +281,13 @@
 
     async function loadToolpath(): Promise<void> {
         if (!daemon || !printFile) return;
-        const key = `${printFile}#${printPlate}`;
+        const key = `${printFile}#${slicedPlate}`;
         if (toolpath && toolpathKey === key) return; // already parsed
         toolpathBusy = true;
         toolpathError = '';
         try {
             const { parseGcode } = await import('$lib/print/gcodepath');
-            const text = await daemon.gcode(printFile, printPlate);
+            const text = await daemon.gcode(printFile, slicedPlate);
             toolpath = parseGcode(text);
             toolpathKey = key;
         } catch (e) {
@@ -305,7 +305,7 @@
 
     // A re-slice / plate change invalidates the parsed toolpath; reload it if the view is open.
     $effect(() => {
-        const key = printFile ? `${printFile}#${printPlate}` : '';
+        const key = printFile ? `${printFile}#${slicedPlate}` : '';
         if (showToolpath && printFile && key !== toolpathKey) void loadToolpath();
         if (!printFile) {
             showToolpath = false;
@@ -578,8 +578,13 @@
     let connectMsg = $state<{ ok: boolean; text: string } | null>(null);
     let slicedKey = $state('');
     let printFile = $state<string | null>(null);
-    /** The plate of a multi-plate project to preview and print (1-based); beambam slices every plate. */
+    /** The plate of a multi-plate project to preview (1-based). The daemon slices exactly this plate and
+     * renumbers it to plate 1 in the output, so the ORIGINAL plate number drives the preview/quantity/selector
+     * while `slicedPlate` (below) drives everything that reads the sliced file. */
     let printPlate = $state(1);
+    /** The plate number inside the sliced file (the daemon extracts one plate and renumbers it to 1); used
+     * for the toolpath, the spool plan/mapping and the print, so they don't ask for a plate the file lacks. */
+    const slicedPlate = $derived(sliceResult ? Math.min(printPlate, sliceResult.plateSeconds.length || 1) : printPlate);
     let reslicing = $state(false);
     let resliceNote = $state('');
     /** Slice outcome shown in the floating status bar for a few seconds after a slice settles. */
@@ -856,7 +861,7 @@
             // The warnings on screen when Start was pressed are the user's OK; beambam checks the spools again.
             const said = await daemon.print(printFile, startSlots, plan.warnings.length > 0, (sec, what) => {
                 startTick = `${what || 'Sending'}… ${Math.round(sec)} s`;
-            }, plan.digest, printPlate);
+            }, plan.digest, slicedPlate);
             startedHere = true;
             startedJobBusy = startedJobEnded = false;
             startDone = said ? `The printer accepted the print: ${said}` : 'The printer accepted the print.';
@@ -1314,11 +1319,11 @@
     <section class="pp-step" class:locked={!printFile} aria-labelledby="s6">
         <div class="pp-step-head"><span class="pp-step-num">06</span><h2 class="pp-step-title" id="s6">Spools</h2></div>
         {#if daemon && printFile}
-            {#key `${fileSerial}#${printPlate}`}
+            {#key `${fileSerial}#${slicedPlate}`}
                 <MappingPanel
                     {daemon}
                     file={printFile}
-                    plate={printPlate}
+                    plate={slicedPlate}
                     {trays}
                     {traySig}
                     canRenozzle={canRenozzle}
@@ -1328,7 +1333,7 @@
                     initialSlots={isMeshKind && meshTray !== null ? [meshTray] : null}
                     locked={starting}
                     onrenozzle={(n, what) => slice(n, what)}
-                    onchange={(p, s, f, n) => { const ours = f === printFile && n === printPlate; plan = ours ? p : null; startSlots = ours ? s : null; }}
+                    onchange={(p, s, f, n) => { const ours = f === printFile && n === slicedPlate; plan = ours ? p : null; startSlots = ours ? s : null; }}
                 />
             {/key}
             {#if spoolSync && hasProjectSync && hasOptions}
