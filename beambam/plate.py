@@ -530,8 +530,9 @@ def _accumulate_bbox(objs_by_path: dict, zin: zipfile.ZipFile, path: str, oid: s
 
 
 def _shelf_pack(rects: list[tuple[float, float]], bed: tuple[float, float, float, float], margin: float = 5.0) -> list[tuple[float, float]]:
-    """Greedy shelf pack (tallest first); returns one (cx, cy) target centre per rect, in input order. Mirrors
-    the web `shelfPack` so the daemon lays a plate out the way the preview does."""
+    """Greedy shelf pack (tallest first), then centre the whole packed block on the bed; returns one (cx, cy)
+    target centre per rect, in input order. Centring keeps objects out of a dual-extruder printer's unprintable
+    zones near the bed edges (packing from a corner lands in them -> slicer code -102)."""
     bed_w = bed[2] - bed[0]
     bed_h = bed[3] - bed[1]
     order = sorted(range(len(rects)), key=lambda i: -rects[i][1])
@@ -546,10 +547,19 @@ def _shelf_pack(rects: list[tuple[float, float]], bed: tuple[float, float, float
             x = margin
             y += shelf_h
             shelf_h = 0.0
-        places[i] = (bed[0] + x + w / 2, bed[1] + y + h / 2)
+        places[i] = (x + w / 2, y + h / 2)  # bed-relative for now; centred below
         x += w
         if h > shelf_h:
             shelf_h = h
+    # Centre the packed block on the bed: shift so the arrangement's bbox centre is the bed centre.
+    if places:
+        lo_x = min(places[i][0] - (rects[i][0] / 2 + margin) for i in range(len(rects)))
+        hi_x = max(places[i][0] + (rects[i][0] / 2 + margin) for i in range(len(rects)))
+        lo_y = min(places[i][1] - (rects[i][1] / 2 + margin) for i in range(len(rects)))
+        hi_y = max(places[i][1] + (rects[i][1] / 2 + margin) for i in range(len(rects)))
+        dx = bed[0] + bed_w / 2 - (lo_x + hi_x) / 2
+        dy = bed[1] + bed_h / 2 - (lo_y + hi_y) / 2
+        places = [(cx + dx, cy + dy) for (cx, cy) in places]
     return places
 
 
