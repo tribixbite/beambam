@@ -394,6 +394,39 @@
         return { spec, fits, total: items.length, changed: true };
     });
 
+    /** The parts to preview with the chosen quantity: drop a count-0 piece, duplicate others at their packed
+     * spots, so the 3D view matches what will slice. */
+    function applyQuantity(parts: LoadedModel['parts'], spec: QuantitySpec): LoadedModel['parts'] {
+        const out: LoadedModel['parts'] = [];
+        for (const p of parts) {
+            const oid = p.buildObjectId ?? p.objectId;
+            const offs = oid ? spec.get(oid) : undefined;
+            if (!offs) {
+                out.push(p); // not in the spec: keep as is
+                continue;
+            }
+            for (const o of offs) {
+                if (!o.dx && !o.dy) {
+                    out.push(p);
+                    continue;
+                }
+                const positions = new Float32Array(p.positions);
+                for (let i = 0; i < positions.length; i += 3) {
+                    positions[i] += o.dx;
+                    positions[i + 1] += o.dy;
+                }
+                out.push({ ...p, positions, normals: p.normals ? new Float32Array(p.normals) : undefined });
+            }
+        }
+        return out;
+    }
+    /** The model shown in the 3D preview, with the per-object quantity applied. */
+    const displayModel = $derived.by<LoadedModel | null>(() => {
+        if (!shownModel) return null;
+        if (!quantity?.changed || !quantity.spec) return shownModel;
+        return { ...shownModel, parts: applyQuantity(shownModel.parts, quantity.spec) };
+    });
+
     /**
      * The file and spools to send for a slice/download: paint baked in (serializePainted), the per-object
      * quantity applied (writeQuantity3mf), and a spool per painted colour; otherwise the file unchanged.
@@ -575,6 +608,26 @@
         chosenNozzles = base.map((v, j) => (j === i ? n : v));
     }
 
+    /** A project's filaments can be mapped to loaded spools before slicing (uses each spool's colour/material). */
+    const canPickSpools = $derived(!isMeshKind && ftype !== 'gcode.3mf' && loaded.length > 0 && (model?.filaments.length ?? 0) > 0);
+    /** Per filament, the trayId chosen before slicing (null = the project's own filament). */
+    let presetSpool = $state<(number | null)[]>([]);
+    function projectSpools(): SpoolOption[] {
+        return (model?.filaments ?? []).map((f) => ({ id: null, type: null, colour: (f.colour || '#808080').slice(0, 7).toUpperCase() }));
+    }
+    function setFilamentSpool(i: number, trayId: number): void {
+        presetSpool = (model?.filaments ?? []).map((_, j) => (j === i ? trayId : presetSpool[j] ?? null));
+        const tray = trays.find((t) => t.trayId === trayId) ?? null;
+        const base = adoptSpools ?? projectSpools();
+        adoptSpools = base.map((s, j) =>
+            j === i && tray ? { id: tray.profileId || null, type: tray.type || null, colour: (tray.colour || s.colour).slice(0, 7).toUpperCase() } : s
+        );
+    }
+    function clearFilamentSpools(): void {
+        presetSpool = [];
+        adoptSpools = null;
+    }
+
     function resetSlice(): void {
         sliceResult = null;
         printPlate = 1;
@@ -587,6 +640,7 @@
         painting = false;    // a new file starts with painting off and no carried-over paint
         paintInfo = null;
         counts = {};         // reset per-object quantity
+        presetSpool = [];    // reset pre-slice spool choices
         plan = null;
         startSlots = null;
         resliceNote = '';
@@ -1003,7 +1057,7 @@
         {/if}
         <Preview
             bind:this={preview}
-            model={shownModel}
+            model={displayModel}
             palette={previewPalette}
             paintMode={painting}
             onpick={(part, face) => colorPaint?.pick(part, face)}
@@ -1099,6 +1153,27 @@
                             </ul>
                             <p class="pp-muted pp-small">
                                 {#if chosenNozzles}Assigned — it slices once with this. <button type="button" class="pp-link" onclick={() => (chosenNozzles = null)}>Let Bambu choose</button>.{:else}Pick L/R per colour to set the nozzle before slicing, or leave it to Bambu and adjust after.{/if}
+                            </p>
+                        </div>
+                    {/if}
+                    {#if canPickSpools}
+                        <div class="spool-assign">
+                            <div class="pp-legend">Filament spools (before slicing)</div>
+                            {#each model.filaments as f, i (i)}
+                                <div class="spool-row">
+                                    <Swatch colour={f.colour} text={String(i + 1)} />
+                                    <SpoolPicker
+                                        choices={spoolChoices(trays, f.colour, presetSpool[i] ?? null, f.type)}
+                                        value={presetSpool[i] ?? null}
+                                        label={`Filament ${i + 1}`}
+                                        disabled={slicing || reslicing}
+                                        onpick={(t) => setFilamentSpool(i, t)}
+                                    />
+                                </div>
+                            {/each}
+                            <p class="pp-muted pp-small">
+                                Pick the loaded spool each colour prints from; it slices with that spool's colour and material.
+                                {#if adoptSpools}<button type="button" class="pp-link" onclick={clearFilamentSpools}>Use the file's own filaments</button>.{/if}
                             </p>
                         </div>
                     {/if}
@@ -1443,6 +1518,9 @@
     .fil-g { font-family: var(--font-mono); }
     .nozzle-assign { margin-top: var(--space-md); display: grid; gap: var(--space-sm); }
     .quantity { margin-top: var(--space-md); display: grid; gap: var(--space-sm); }
+    .spool-assign { margin-top: var(--space-md); display: grid; gap: var(--space-sm); }
+    .spool-row { display: flex; align-items: center; gap: var(--space-md); }
+    .spool-row :global(.sp) { flex: 1; min-width: 0; }
     .qty { display: inline-flex; align-items: center; gap: var(--space-xs); margin-left: auto; }
     .qty-n { min-width: 1.5rem; text-align: center; }
     .fil-nozzle { display: inline-flex; gap: 2px; margin-left: auto; }
